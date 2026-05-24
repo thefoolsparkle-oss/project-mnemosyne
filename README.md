@@ -1,0 +1,515 @@
+# 忆界树 / Project Mnemosyne
+
+一个以长期记忆为核心的多人格 AI 对话系统地基。
+
+目标不是维护几个固定人格文件，而是让每个用户注册后，通过选项和自由描述创建自己的专属 AI 对话对象。人格会在后续对话中继续被记忆、反馈和关系状态塑造。
+
+## 接力开发说明
+
+如果换一个聊天窗口继续开发，先阅读：
+
+```text
+SYSTEM_PLAN.md
+```
+
+它记录了当前项目定位、已完成改动、近期用户反馈、优先级、后阶段计划、启动命令和重要文件。`README.md` 保留较完整的系统说明，`SYSTEM_PLAN.md` 用来快速接上开发现场。
+
+## 阶段状态
+
+- 第一阶段“单人格文字聊天基础”已达到功能闭环：账号/游客、人格创建与命名、资料真实生效、主界面与聊天记录、未读、失败重试、删除恢复及普通端流程验证均已落地。手机实机布局和操作手感继续作为维护项随测随修，不阻塞后续主线。
+- 第二阶段“人格成长与反馈体验”第一版闭环已落地：用户能在资料页自然感知相处痕迹，管理员可查看依据、审核 Sculptor 建议、比较版本变化并追踪落地证据；后续继续随真实体验校准反馈文案与变化边界。
+- 第二阶段不直接展开复杂主动联系、多 agent 拆分、完整表情资源、多模型成本调度、生图、语音或视频；这些依赖人格成长链路先稳定。
+
+## 后续计划清单
+
+- 第二阶段主线 - 养成反馈与长期吸引力：忆界树不是普通聊天框，而是长期关系养成产品。让用户持续感到对象在记住自己、回应自己、因为互动而变化，同时避免粗暴等级条和频繁系统弹窗。
+- 第二阶段主线 - 人格变化证据链：完善管理员成长面板，显示触发变化的记忆/状态/反馈、Sculptor 调整建议、确认或忽略操作、版本对比和变化原因；重要变化不得未经审核静默生效。
+- 主动联系系统：未来人格可以在合适时机主动给用户发消息。必须先有用户许可，并通过多模块/多 agent 排查机会、时机、记忆依据、风险边界和最终发送策略；主动消息要直接显示人格说的话，不做“有话想说”的系统提示。后续可用 contextual bandit 根据用户回复、忽略、反感或喜欢来学习频率和类型。
+- 多平台平行推进：桌面网页、手机网页/PWA、后续桌面壳和原生移动端要共享同一套主界面、未读状态、人格资料、聊天体验和后端数据能力，只按设备适配布局，不做割裂产品。
+- 移动端主界面：手机端已采用人格列表进入聊天、聊天页返回主界面的结构，并显示未读红点/数字；作为第一阶段维护项继续依据实机体验修正密度、按钮与资料面板，同时与第二阶段反馈入口平行推进。
+- 聊天人格主体性底层：聊天人格只负责自然对话，不在口头上自称 AI、模型、机器人或程序；更深层要把“系统知道它是 AI”和“人格在对话中作为一个有自主性的对象行动”分层处理。
+- 输出净化与表达层：括号动作不直接进入聊天文本，先抽取成 expression label；后续由表情/动作小 agent 决定是否发贴纸、头像表情或动作。
+- 删除人格：第一版已实现软删除与恢复。资料编辑页底部的危险操作区要求输入人格名字确认；删除后普通端隐藏人格和相关会话，并禁止从旧会话继续读取或聊天；用户可从主界面/创建页的“已删除”面板恢复对象与保留聊天，记忆与版本历史仍保留。
+- 表情资源系统：建立表情包/动作资源库、人格专属表情映射、频率控制和管理员审查。
+- 形象、声音和实时陪伴：远期接入擅长生图的 AI，生成头像、立绘、表情或完整形象；再逐步扩展声音合成、语音聊天，甚至视频电话或实时形象驱动。这些属于后阶段，在人格成长与反馈链路稳定后再展开。
+
+## 当前能力
+
+- FastAPI 后端
+- SQLite 本地数据库：`data/app.db`
+- 注册 / 登录 / 退出
+- 游客模式：登录页可直接进入“游客体验（3天）”，功能基本可用；三天后自动清除游客账号、人格、会话、消息、记忆和上传头像等数据；游客也可以在资料弹窗里转为正式账号并保留当前数据
+- 用户资料：昵称、生日、签名等
+- 人格创建向导：选项 + 自由描述
+- 初始人格命名使用独立 `Name Crafter` 步骤：读取用户期待和 Forge 轮廓生成名称，并避开同一用户已有对象重名；不再使用固定随机名字池；命名失败时不会落库为“未命名”，用户可在原创建页重新生成或直接给出名字
+- 人格创建关系提示仅保留像朋友一样、稳定陪伴、给予引导等宽泛入口；用户可以不选择或在自由描述里写任意关系
+- 聊天界面：用户头像与人格头像的双边对话
+- 普通端对象状态层：聊天顶部和未开聊人格项会显示关系、说话方式和人格版本
+- 人格资料可编辑：名字、摘要、关系定位、说话方式、头像图片、外貌参考、期望形象；这些内容会重建人格 prompt 并进入人格版本历史
+- 删除人格支持软删除、输入名字二次确认与普通端恢复；彻底清除和数据导出策略留待后续完善
+- 人格资料页以联系人资料为主视图，形象、心理适配和成长方向等较深信息收进折叠区域
+- 聊天运行时会额外注入当前人格资料，确保用户编辑过的关系定位和说话方式立即反馈给聊天 AI
+- 聊天上下文末尾会用当前人格名和关系定位做最终锁定，旧历史自称不再优先
+- 人格改名后，聊天上下文会把旧 assistant 自称和旧上下文里的旧名临时改写为当前名，避免资料页和聊天主体脱节；原始聊天记录保留不变
+- 第一版主界面：电脑端和手机端默认进入人格列表，同一人格只显示一张卡片并汇总最近消息与未读；点击人格进入聊天，聊天页有返回主界面的按钮
+- 聊天页的“记录”面板在桌面和手机端均可使用：可新开聊天段落、重命名、置顶、移到历史并恢复历史聊天
+- 模型未能回复时显示独立状态提示，不让人格说“服务不稳定”；失败状态保存在原用户消息上，刷新或重新进入聊天后仍可点击重试；每次发言带有客户端消息 ID，网络在响应返回前中断后的再次尝试也会复用同一句，不造成重复发言或重复记忆
+- 用户发言落库后会立刻更新会话最近活动时间；即使回复失败，主界面最近消息顺序也不会落后，卡片与聊天记录预览会标明“回复未送达”
+- 未读状态地基：会话记录 `last_read_message_id` / `last_read_at`，列表返回 `unread_count`，主界面可显示未读红点或数字；如果用户发完消息后返回主界面，assistant 回复完成后应显示未读，进入聊天后再清零
+- 会话列表标题默认显示人格名，不再用第一句用户消息作为标题
+- 人格关系不默认是恋人或陪伴者；只有用户选中或正向明确写出的关系才会进入初始人格，只写气质/性别或写“不要像恋人”会保持中性关系，界面自然显示为“刚刚认识”
+- 身份污染清理：人格 prompt、历史消息、上下文追踪和人格修订建议会清除“模型/机器人/虚拟人格/默认恋人”等污染表达；新用户后续创建、编辑、记忆、用户画像、会话摘要和人格修订也会走清理链路
+- 用户和人格头像支持本地图片上传；图片保存在 `data/uploads`，URL 只作为可选图片链接方式
+- Archivist 记忆档案员：从用户消息提取长期记忆
+- Layered Memory 分层记忆：event / episode / fact / relation / summary / state
+- Mirror 用户画像器：整理用户画像、话题偏好/避雷、聊天策略指令
+- 人格记忆侧写：只影响“主动召回风格”，不删除后台完整记忆
+- 独立管理员控制台：普通用户前端不包含记忆审查代码
+- 记忆注入追踪：记录每次聊天前实际注入给模型的状态变量、摘要和召回记忆
+- 动态状态变量：固定核心字段之外，自动从高重要度事实/关系生成 `dynamic.*` 状态
+- 会话滚动摘要：先结合状态变量预提取关键点，再把长聊压缩成可追踪摘要
+- Memory RAG：将长期记忆生成 embedding，按语义相似度召回相关记忆
+- Memory Judge：对新写入记忆进行质量、风险和建议动作审校
+- Memory Conflict Resolver：记录记忆替代、偏好冲突和称呼变化，交给管理员确认
+- Memory Evaluation Suite：生成测试用户和测试记忆，自动评测召回、状态变量、摘要、冲突和聊天上下文注入
+- Sculptor 人格调整器：根据记忆和反馈生成候选人格版本，管理员确认后才应用
+- 普通端第一阶段流程验证：`py scripts/verify_phase1_flows.py` 使用临时数据库且不调用真实模型，检查关系生成、命名兜底、删除恢复、回复失败状态和消息幂等
+- 第二阶段第一轮已接入普通端“相处痕迹”：资料页按依据轻量显示记忆线索、正在留意的状态/边界和经过审核的人格变化，并提示用户可在聊天中直接表达相处偏好；最近审核变化会根据公开人格字段显示概括摘要和确认时间，不暴露后台原始审查细节，也不做等级条或弹窗
+- 人格版本证据链已结构化：新版本记录变化类型、Sculptor 建议来源与变化摘要；管理台可从已应用建议看到对应版本，并在版本历史中查看审核关联
+- Sculptor 建议新增基线版本锁：管理台展示候选版本相对基线的字段差异与依据概览；若建议生成后人格已被用户编辑或其他审核改动更新，旧建议会标为过期且不能覆盖新版本
+- 用户在聊天中明确提出“回复短一点”“不要说教”等相处方式反馈时，会自动排入一条保守的 Sculptor 待审候选；含糊提问只作为普通线索记录，不会触发改动；管理台标明自动来源、触发消息与记忆依据，同一基线上的后续明确反馈会合并刷新自动候选，且绝不自动应用
+- 管理员对 Sculptor 候选的“应用 / 忽略”现在会保存审核人、审核时间与可选审核备注；管理台可回看最终决定理由，使未采纳建议同样具备审计证据
+- 管理台在应用人格候选等刷新动作后会保持仍存在的当前人格选择，便于连续审核同一对象的建议与版本结果
+- 已审核变化新增克制的入口提示：只有 `sculptor_review` 已应用且用户尚未查看资料时，主界面人格卡与聊天顶部才提示“有变化”；用户打开“相处痕迹”后记录已读并自然消退，不对普通记忆或待审建议弹通知
+- 第二阶段成长链路验证：`py scripts/verify_phase2_growth.py` 使用临时数据库检查建议应用、版本来源关联、审核决定记录、普通端公开变化摘要与明确聊天反馈的自动候选排队
+
+## 模型配置
+
+当前 `config.yaml` 默认使用 DeepSeek：
+
+```yaml
+llm:
+  provider: deepseek
+  model: deepseek-v4-flash
+  base_url: https://api.deepseek.com/v1
+  temperature: 0.75
+```
+
+`config.yaml` 的 `llm_routes.namer` 可单独为 Name Crafter 指定模型。它与 `forge` 分开，是为了让“人格结构生成”和“是否起了一个真正合适的名字”分别可追踪、可替换。
+
+Windows 用户变量需要配置：
+
+```text
+变量名：DEEPSEEK_API_KEY
+变量值：你的 DeepSeek API Key
+```
+
+配置后重新打开 PowerShell / VS Code 终端，让新环境变量生效。
+
+## 仓库与数据安全
+
+- 对外项目名称统一为 `忆界树 / Project Mnemosyne`，GitHub 仓库名称使用 `project-mnemosyne`。
+- `data/` 包含本地 SQLite 数据库、聊天数据和上传图片，不进入版本控制。
+- `*.log`、`tools/` 下的临时隧道工具以及 `.env*` 本地密钥文件不进入版本控制。
+- `config.yaml` 只保存模型路由和环境变量名，不应写入真实 API Key。
+
+## 启动
+
+```powershell
+git clone https://github.com/thefoolsparkle-oss/project-mnemosyne.git
+cd project-mnemosyne
+py -m uvicorn app.server:app --host 127.0.0.1 --port 8000
+```
+
+普通用户页面：
+
+```text
+http://127.0.0.1:8000
+```
+
+管理员页面：
+
+```text
+http://127.0.0.1:8000/admin
+```
+
+管理员台当前可以做三件事：
+
+- 查看用户的状态变量、摘要、事实、关系
+- 查看 Mirror 用户画像、话题避雷和聊天策略
+- 手动校正 Mirror 用户画像，例如喜欢/讨厌话题、避开话题和聊天禁忌
+- 查看每个会话的滚动摘要和关键点
+- 通过 RAG 同步和语义搜索检查记忆是否能被相似问题召回
+- 查看 Memory Judge 对新记忆的质量评分、风险评分、建议动作和原因
+- 查看 Memory Conflict Resolver 记录的当前/历史冲突，并标记 resolved / dismissed
+- 运行 Memory Evaluation Suite，在没有真实数据时生成可控样本并检查记忆系统
+- 展开最近聊天的上下文注入记录，排查“失忆”到底发生在哪一层
+- 生成、应用或忽略 Sculptor 人格调整建议
+
+## Mirror 用户画像
+
+Mirror 会在每次用户发言后更新 `user_insights`：
+
+```text
+profile_summary        用户总体互动画像
+interaction_style      用户偏好的回复风格
+emotional_patterns     非诊断式的支持方式线索
+topic_model_json       喜欢、不喜欢、应避开、可安全使用的话题
+guidance_json          给聊天 AI 的语气、话题、支持和禁忌规则
+```
+
+例如用户说“不喜欢原神”，Mirror 会把它沉淀为：
+
+```text
+dislikes: ["原神"]
+avoid_topics: ["原神"]
+do_not: ["Do not proactively bring up 原神."]
+```
+
+这些内容会进入聊天前的 `Mirror user model` prompt，用来约束聊天 AI 的话题选择。
+
+## 会话滚动摘要
+
+长聊不会只依赖最近几条消息。每次 AI 回复成功后，系统会刷新 `conversation_summaries`。
+
+它不是简单压缩前文，而是先结合当前状态变量和用户画像做关键点预提取，再生成摘要：
+
+```text
+memory_state / dynamic.* 状态变量
+Mirror 用户画像
+新消息中的承诺、计划、称呼、偏好、避雷、关系变化
+-> pre_extracted_key_points
+-> rolling summary
+```
+
+```text
+summary_text          当前会话的压缩摘要
+key_points_json       关键连续性要点，包含预提取状态信号
+covered_message_id    摘要已经覆盖到哪条消息
+source_message_count  已参与摘要的消息数量
+```
+
+下一轮聊天时，摘要会作为 `Conversation rolling summary` 注入给聊天 AI。最近消息仍然保留，摘要负责补足更早的上下文；如果摘要和最新状态变量冲突，聊天 AI 应优先服从状态变量。
+
+## 动态状态变量
+
+固定状态变量只覆盖最核心的少数项，例如称呼、喜欢、讨厌、禁用称呼、互动风格。除此之外，系统会通过 State Curator 从高重要度事实和关系中自动生成动态状态：
+
+```text
+memory_facts / memory_relations
+-> importance / priority / locked 判断是否 stateworthy
+-> kind / label / value / urgency / stability / recall_weight / tags
+-> lifecycle / expires_at / injection_policy
+-> memory_state.dynamic_state
+-> memory_state.dynamic.<semantic_kind>
+-> State prompt
+```
+
+例如用户说“我明天要准备简历项目展示，提醒我别忘了讲记忆系统”，如果被抽取成 `plan` 记忆，它会进入类似：
+
+```text
+dynamic.plan
+dynamic.plans.upcoming
+dynamic.reminders.active
+dynamic.projects.active
+```
+
+这让系统不必在第一天枚举所有状态变量类型，也能在对话过程中逐步发现“什么东西应该被当作当前状态”。后台完整记忆仍然保留，动态状态只是更强的当前工作集。
+
+动态状态现在带生命周期：
+
+```text
+long_term              长期边界、沟通规则、关系期待
+time_bound             今天、明天、下周这类有时间边界的状态
+active_until_resolved  计划、提醒，默认保留到解决或过期
+session_scoped         当前情境状态
+working                默认工作状态
+resolved               已完成/已取消的状态，不再作为当前任务强注入
+```
+
+同时带注入策略：
+
+```text
+always_inject          高优先级边界、沟通规则、紧急提醒
+inject_when_relevant   相关时注入
+recall_only            只作为召回候选
+```
+
+如果用户后续说“已经完成”“展示完了”“不用提醒了”，State Curator 会把匹配到的 `plans.upcoming` / `reminders.active` / `projects.active` 从当前强注入里移出，同时把完成事实保留到：
+
+```text
+dynamic.resolutions.completed
+```
+
+这保证系统不会把过期任务一直当成当前任务，也不会把完成历史直接删掉。
+
+时间状态的过期基于原始记忆写入时间计算，而不是每次刷新时重新从当前时间起算。例如“明天提醒我”会按那条记忆的 `updated_at / valid_from` 推算过期时间，过期后从当前强状态里移除；长期边界和沟通规则不会因此过期。
+
+## Memory Cost Mode
+
+记忆系统支持成本模式，避免为了省额度牺牲状态完整度：
+
+```yaml
+memory:
+  mode: balanced   # eco / balanced / deep
+```
+
+三种模式：
+
+```text
+eco       不跑记忆侧 LLM；规则提取、State Curator、生命周期、冲突检测照常运行
+balanced 只在消息有强记忆信号时用 LLM 精修；默认模式
+deep      尽量启用 LLM 抽取、Mirror 精修、Memory Judge、Semantic RAG
+```
+
+无论哪种模式，下面这些结构层都会运行：
+
+```text
+规则记忆提取
+Layered Memory
+State Curator
+dynamic.*
+生命周期 / 完成 / 过期
+冲突检测
+状态 prompt 注入
+```
+
+因此低消耗模式不是“少记”，而是“先用结构算法保证状态连续，再把昂贵模型调用变成可选精修”。
+
+## Memory RAG
+
+系统已经具备第一版语义检索层：
+
+```text
+memory_facts / memory_relations / memory_summaries
+-> memory_embeddings
+-> semantic_memory_recall
+-> Semantic memory retrieval prompt
+```
+
+开发阶段仍然使用 SQLite 存储 embedding JSON，不需要额外安装向量数据库。后续生产部署可以迁移到 PostgreSQL + pgvector。
+
+默认 embedding 模型：
+
+```text
+text-embedding-3-small
+```
+
+管理员接口：
+
+```text
+POST /api/admin/rag/sync
+GET  /api/admin/rag/search?q=...
+```
+
+聊天时会同时使用：
+
+```text
+状态变量强制注入
+关键词/优先级召回
+分层记忆召回
+Semantic RAG 语义召回
+会话滚动摘要
+```
+
+## Memory Judge
+
+Memory Judge 是记忆审校员。当前版本采用旁路审查，不阻塞聊天：
+
+```text
+Archivist 写入记忆
+-> Memory Judge 审查质量和风险
+-> 写入 memory_judgements
+-> 管理员在审查台处理 accepted / dismissed
+```
+
+审校字段：
+
+```text
+quality_score   记忆质量
+risk_score      敏感/误判风险
+action          keep / revise / archive / lock
+reasons         审校原因
+flags           duplicate / too_vague / sensitive / unsupported / conflict / important
+```
+
+后续稳定后，可以把旁路审查升级成写入前拦截或自动降权。
+
+## Memory Conflict Resolver
+
+Memory Conflict Resolver 负责把“新记忆和旧记忆不一致”的地方显式记录下来。后台完整记忆不删除，只在召回和审查层判断哪条应该优先。
+
+当前会记录三类情况：
+
+```text
+fact/relation superseded   新事实或关系替代旧事实或关系
+preference_conflict        喜欢/不喜欢一类偏好发生正反冲突
+address/preference drift   称呼、关系、偏好这类会随时间变化的状态被更新
+```
+
+数据库表：
+
+```text
+memory_conflicts
+current_uid / previous_uid     当前记忆和历史记忆编号
+current_text / previous_text   当前文本和历史文本
+conflict_type                  冲突类型
+resolution                     系统建议，例如 prefer_current / needs_review
+status                         open / resolved / dismissed
+```
+
+管理员审查台会显示 open 冲突。管理员可以确认已解决，也可以忽略误报。后续可以继续把它升级成更强的“写入前合并器”，在写入记忆前先判断是更新、补充、冲突还是重复。
+
+## Memory Evaluation Suite
+
+Memory Evaluation Suite 用来解决开发阶段“没有真实数据可测”的问题。管理员可以一键生成一个隔离的测试用户：
+
+```text
+__mnemosyne_memory_eval__
+```
+
+评测会写入一组确定样本，例如：
+
+```text
+用户希望被称为阿月
+不要称呼用户为主人
+用户喜欢青柠苏打
+用户先喜欢原神，后来讨厌原神
+用户希望回复短一点，不要说教，不要一直追问
+```
+
+然后自动检查：
+
+```text
+状态变量是否正确：preferred_address / likes / dislikes / forbidden_addresses
+分层记忆是否能按关键词召回
+稳定摘要是否生成
+聊天 prompt 注入是否包含关键记忆
+偏好正反变化是否生成 preference_polarity 冲突
+可选：Semantic RAG 是否能召回相关记忆
+```
+
+其中 `chat_context_v1` 会模拟用户提问：
+
+```text
+我喜欢喝什么？你应该怎么称呼我？可以主动聊原神吗？
+```
+
+它不消耗大模型额度，只检查真正准备交给聊天 AI 的上下文包，确认状态变量、Mirror 用户画像、稳定摘要、分层记忆和旧版记忆都把关键信息注入进去了。
+
+`live_answer_v1` 会在 API 可用时真正调用聊天流程，并检查模型回答是否：
+
+```text
+回答用户喜欢青柠苏打
+回答应该称呼用户为阿月
+说明不会主动聊原神
+没有错误地称呼用户为主人
+保持简短
+```
+
+如果当前 OpenAI / Ollama 不可用或额度不足，这组评测会标记为 `skipped`，不会误判记忆系统失败。
+
+管理员接口：
+
+```text
+POST /api/admin/evaluations/memory/seed
+POST /api/admin/evaluations/memory/run
+POST /api/admin/evaluations/chat-context/run
+POST /api/admin/evaluations/live-answer/run
+POST /api/admin/evaluations/state-resolution/run
+POST /api/admin/evaluations/state-expiry/run
+POST /api/admin/evaluations/memory-policy/run
+GET  /api/admin/evaluations/memory/runs
+```
+
+每次评测结果会保存到 `memory_eval_runs`，方便后续做回归测试。
+
+第一个注册用户会自动成为管理员。后续可以用本地命令调整角色：
+
+```powershell
+py -m app.admin set-admin 用户名
+py -m app.admin set-user 用户名
+```
+
+## 远程访问、部署和打包路线
+
+短期优先级：
+
+- 本机开发：`127.0.0.1:8001`。
+- 跨城市/跨省测试：用临时隧道工具把本机 `8001` 暴露成一个临时 HTTPS 地址，例如 Cloudflare Tunnel / ngrok / frp 这类方案。
+- 当前项目已提供临时隧道脚本：
+
+```powershell
+.\scripts\start_remote_tunnel.ps1
+```
+
+脚本会自动下载 `tools\cloudflared.exe`，并把当前本机服务暴露成一个 `https://*.trycloudflare.com` 地址。
+
+- 临时隧道只适合小范围测试，不适合当正式产品入口。
+- 不要把开发服务器裸露到公网。
+
+中期如果要让所有人都能稳定打开网页：
+
+- 部署到 VPS / 云服务器 / PaaS。
+- 绑定正式域名和 HTTPS。
+- 使用 Nginx / Caddy / 云平台反向代理。
+- 从 SQLite 迁移到 PostgreSQL；后续向量检索可迁移到 pgvector。
+- 补齐生产能力：日志、备份、限流、错误监控、管理员权限保护、用户隐私和数据导出/删除。
+
+打包方向：
+
+- 桌面端可以考虑 Tauri 或 Electron，但不建议现在优先做。
+- 手机端可以先做 PWA / 响应式网页，成熟后再考虑 React Native / Flutter。
+- 打包程序本身不能解决“两省之间访问同一套数据”的问题；如果要多设备同步，仍然需要远程服务器作为统一后端。
+- 当前阶段更适合先把网页体验、账号、人格、聊天和部署地基做稳，再决定是否打包。
+
+手机端产品路线：
+
+- 第一版先做响应式网页和真正的移动端主界面。
+- 主界面显示人格卡片：头像、名字、关系/最近一句、时间、置顶状态、未读红点/数字。
+- 聊天页提供明确返回按钮，不依赖浏览器返回。
+- 未读状态先用普通数据字段实现，例如 `last_read_message_id` 或 `last_seen_at`；进入聊天并看到底部后清零。
+- 如果未来人格会在用户离线后主动发消息，再考虑通知/主动联系 agent。仅显示未读红点不需要 agent。
+
+## 管理隔离
+
+普通用户页面只加载：
+
+- `web/index.html`
+- `web/app.js`
+- `web/style.css`
+
+管理员页面单独加载：
+
+- `admin_web/index.html`
+- `admin_web/admin.js`
+- `admin_web/admin.css`
+
+这些管理员页面和资源由后端 `current_admin` 保护。未登录或非管理员访问会被拒绝。
+
+## 人格版本
+
+Sculptor 不会直接改人格。管理员可手动生成候选；用户在聊天中明确提出表达/相处方式调整时，系统也会用规则提取反馈并自动排入一条保守候选，不额外调用 Sculptor 模型。候选会将依据上下文、生成时的 `base_version`、来源类型以及自动候选的触发消息/记忆编号写入 `persona_revision_suggestions`：
+
+```text
+pending -> applied
+pending -> dismissed
+```
+
+只有管理员点击应用后，才会：
+
+- 更新 `personas` 当前人格
+- 写入 `persona_versions` 新版本
+- 标记建议为 `applied`
+
+管理台会展示建议是手动生成还是自动候选、自动候选的触发证据、相对基线版本的字段差异、依据概览、落地版本与版本历史对比。同一基线、同一来源的待审候选会合并刷新；手动建议与自动候选可以同时保留，应用其中一条后其余旧基线建议即过期。管理员在应用或忽略时可填写审核备注，系统持久化审核人、审核时间和理由，保留最终判断证据。如果审批前人格版本已经改变，旧建议也会被拒绝应用。审核变化应用后，普通端主界面会以一次轻提示引导用户在资料页看到“相处痕迹”，并仅根据用户原本可见的版本字段给出“回应方式更贴近你的偏好”等概括摘要和确认时间，看过入口提示后消退。这让人格可以长期成长，同时避免暴露后台证据、过时建议覆盖用户刚做的修改或把反馈做成打扰式弹窗。
+
+## 验证命令
+
+```powershell
+py -m compileall app scripts
+node --check web\app.js
+node --check admin_web\admin.js
+py scripts\verify_phase1_flows.py
+py scripts\verify_phase2_growth.py
+```

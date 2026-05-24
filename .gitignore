@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local secrets and editor files
+.env
+.env.*
+.vscode/
+.idea/
+
+# Runtime data must remain local
+/data/
+/personas/*.json
+*.log
+
+# Downloaded helper binaries
+/tools/
+
+# Operating system files
+.DS_Store
+Thumbs.db

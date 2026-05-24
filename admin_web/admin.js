@@ -1,0 +1,1068 @@
+const app = document.getElementById("admin-app");
+
+let state = {
+  user: null,
+  users: [],
+  personas: [],
+  selectedUserId: null,
+  selectedPersonaId: null,
+  review: null,
+  traces: [],
+  revisions: [],
+  growth: null,
+  versions: [],
+  evalRuns: [],
+  llmCalls: [],
+  llmRoutes: null,
+  runningEval: false,
+  generatingRevision: false,
+  editingInsight: false,
+  error: "",
+};
+
+async function api(path, options = {}) {
+  const res = await fetch(path, {
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    ...options,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+  return data;
+}
+
+function h(tag, attrs = {}, children = []) {
+  const el = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (key === "class") el.className = value;
+    else if (key === "text") el.textContent = value;
+    else if (key.startsWith("on") && typeof value === "function") el.addEventListener(key.slice(2), value);
+    else if (value !== undefined && value !== null) el.setAttribute(key, value);
+  }
+  for (const child of Array.isArray(children) ? children : [children]) {
+    if (child === null || child === undefined) continue;
+    el.append(child.nodeType ? child : document.createTextNode(String(child)));
+  }
+  return el;
+}
+
+async function bootstrap() {
+  try {
+    const me = await api("/api/me");
+    if (me.user.role !== "admin") throw new Error("当前账号不是管理员。");
+    state.user = me.user;
+    const users = await api("/api/admin/users");
+    state.users = users.users;
+    state.selectedUserId = state.users[0]?.id || me.user.id;
+    await loadPersonas();
+    render();
+  } catch (err) {
+    app.className = "admin-auth";
+    app.replaceChildren(
+      h("section", { class: "auth-card" }, [
+        h("p", { class: "eyebrow", text: "忆界树 / Project Mnemosyne" }),
+        h("h1", { text: "管理台不可用" }),
+        h("p", { class: "muted", text: err.message }),
+        h("button", { type: "button", text: "回到聊天", onclick: () => { window.location.href = "/"; } }),
+      ])
+    );
+  }
+}
+
+async function loadPersonas() {
+  const previousPersonaId = state.selectedPersonaId;
+  const data = await api(`/api/admin/personas?target_user_id=${state.selectedUserId}`);
+  state.personas = data.personas;
+  state.selectedPersonaId = state.personas.some((persona) => Number(persona.id) === Number(previousPersonaId))
+    ? previousPersonaId
+    : state.personas[0]?.id || null;
+  await loadReview();
+}
+
+async function loadReview() {
+  if (!state.selectedUserId || !state.selectedPersonaId) {
+    state.review = null;
+    state.traces = [];
+    state.revisions = [];
+    state.growth = null;
+    state.versions = [];
+    state.llmRoutes = null;
+    return;
+  }
+  const [data, traceData, revisionData, growthData, versionData, evalData, llmData, routeData] = await Promise.all([
+    api(`/api/admin/memory/review?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}&include_history=true`),
+    api(`/api/admin/chat-context-traces?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}&limit=6`),
+    api(`/api/admin/persona-revisions?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}&limit=8`),
+    api(`/api/admin/persona-growth?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}`),
+    api(`/api/admin/persona-versions?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}&limit=10`),
+    api("/api/admin/evaluations/memory/runs?limit=5"),
+    api("/api/admin/llm-calls?limit=20"),
+    api("/api/admin/llm-routes"),
+  ]);
+  state.review = data.review;
+  state.traces = traceData.traces;
+  state.revisions = revisionData.suggestions;
+  state.growth = growthData;
+  state.versions = versionData.versions;
+  state.evalRuns = evalData.runs;
+  state.llmCalls = llmData.calls;
+  state.llmRoutes = routeData;
+}
+
+function render() {
+  app.className = "admin-shell";
+  app.replaceChildren(renderSidebar(), renderMain());
+}
+
+function renderSidebar() {
+  return h("aside", { class: "sidebar" }, [
+    h("div", { class: "brand" }, [
+      h("p", { class: "eyebrow", text: "Project Mnemosyne / Admin" }),
+      h("h1", { text: "忆界树" }),
+      h("small", { text: state.user?.username || "" }),
+    ]),
+    h("section", {}, [
+      h("div", { class: "section-head" }, [h("strong", { text: "用户" })]),
+      h("div", { class: "user-list" }, state.users.map(renderUserButton)),
+    ]),
+    h("button", { type: "button", class: "ghost full", text: "回到聊天", onclick: () => { window.location.href = "/"; } }),
+  ]);
+}
+
+function renderUserButton(user) {
+  const label = user.nickname || user.username;
+  return h("button", {
+    type: "button",
+    class: `list-item ${Number(state.selectedUserId) === Number(user.id) ? "active" : ""}`,
+    onclick: async () => {
+      state.selectedUserId = user.id;
+      state.error = "";
+      try {
+        await loadPersonas();
+      } catch (err) {
+        state.error = err.message;
+      }
+      render();
+    },
+  }, [
+    h("span", { class: "avatar", text: String(label || "U").slice(0, 1).toUpperCase() }),
+    h("span", {}, [
+      h("strong", { text: label }),
+      h("small", { text: `${user.role} / ${user.status}` }),
+    ]),
+  ]);
+}
+
+function renderMain() {
+  return h("section", { class: "main" }, [
+    h("header", { class: "topbar" }, [
+      h("div", {}, [
+        h("p", { class: "eyebrow", text: "Memory Review" }),
+        h("h2", { text: "记忆审查台" }),
+      ]),
+      h("div", { class: "toolbar" }, [
+        renderPersonaSelect(),
+        h("button", { type: "button", class: "ghost", text: "刷新", onclick: refresh }),
+      ]),
+    ]),
+    state.error ? h("p", { class: "error", text: state.error }) : null,
+    state.review ? renderReview() : renderEmpty(),
+  ]);
+}
+
+function renderPersonaSelect() {
+  const select = h("select", {
+    onchange: async (event) => {
+      state.selectedPersonaId = event.target.value ? Number(event.target.value) : null;
+      state.error = "";
+      try {
+        await loadReview();
+      } catch (err) {
+        state.error = err.message;
+      }
+      render();
+    },
+  });
+  if (!state.personas.length) {
+    select.append(h("option", { value: "", text: "暂无人格" }));
+    return select;
+  }
+  for (const persona of state.personas) {
+    const option = h("option", { value: persona.id, text: persona.name });
+    if (Number(persona.id) === Number(state.selectedPersonaId)) option.selected = true;
+    select.append(option);
+  }
+  return select;
+}
+
+function renderReview() {
+  const review = state.review;
+  return h("div", { class: "review-grid" }, [
+    card("状态变量", renderStateList(review.state || [])),
+    card("用户画像", renderInsight(review.insight || {})),
+    card("摘要", renderLines((review.summaries || []).map((item) => item.text))),
+    card("会话滚动摘要", renderConversationSummaries(review.conversation_summaries || []), "wide"),
+    card("人格调整建议", renderRevisionPanel(), "wide"),
+    card("最近注入上下文", renderTraceList(state.traces || []), "wide"),
+    card("当前事实", renderMemoryList(review.facts || []), "wide"),
+    card("当前关系", renderMemoryList(review.relations || []), "wide"),
+  ]);
+}
+
+function renderEmpty() {
+  return h("section", { class: "empty" }, [
+    h("h3", { text: "还没有可审查的记忆" }),
+    h("p", { text: "先让这个用户和人格聊几句，Archivist 会把重要内容写入分层记忆。" }),
+  ]);
+}
+
+function card(title, body, extraClass = "") {
+  return h("section", { class: `card ${extraClass}` }, [
+    h("h3", { text: title }),
+    body,
+  ]);
+}
+
+function renderStateList(items) {
+  if (!items.length) return h("p", { class: "muted", text: "暂无" });
+  return h("ul", { class: "plain-list" }, items.map((item) => h("li", { text: `${item.key}: ${JSON.stringify(item.value)}` })));
+}
+
+function renderLines(lines) {
+  if (!lines.length) return h("p", { class: "muted", text: "暂无" });
+  return h("ul", { class: "plain-list" }, lines.slice(0, 12).map((line) => h("li", { text: line })));
+}
+
+function renderInsight(insight) {
+  const topic = insight.topic_model || {};
+  const guidance = insight.guidance || {};
+  const lines = [
+    insight.profile_summary ? `画像：${insight.profile_summary}` : "",
+    listLine("喜欢", topic.likes),
+    listLine("不喜欢", topic.dislikes),
+    listLine("避开话题", topic.avoid_topics),
+    listLine("语气规则", guidance.tone_rules),
+    listLine("话题规则", guidance.topic_rules),
+    listLine("不要做", guidance.do_not),
+  ].filter(Boolean);
+  return lines.length ? renderLines(lines) : h("p", { class: "muted", text: "暂无画像。聊天几轮后 Mirror 会逐步形成。" });
+}
+
+function renderConversationSummaries(items) {
+  if (!items.length) return h("p", { class: "muted", text: "暂无。成功聊天后会自动生成会话摘要。" });
+  return h("div", { class: "summary-list" }, items.map((item) => {
+    const points = Array.isArray(item.key_points) ? item.key_points : [];
+    return h("article", { class: "summary-item" }, [
+      h("div", { class: "memory-title" }, [
+        h("strong", { text: `Conversation #${item.conversation_id}` }),
+        h("small", { text: `covered message ${item.covered_message_id || "-"}` }),
+      ]),
+      h("p", { text: item.summary_text || "暂无摘要" }),
+      points.length ? h("ul", { class: "plain-list" }, points.slice(0, 8).map((point) => h("li", { text: point }))) : null,
+    ]);
+  }));
+}
+
+function listLine(label, values) {
+  return Array.isArray(values) && values.length ? `${label}：${values.join("、")}` : "";
+}
+
+function renderMemoryList(items) {
+  if (!items.length) return h("p", { class: "muted", text: "暂无" });
+  return h("div", { class: "memory-list" }, items.slice(0, 40).map(renderMemoryItem));
+}
+
+function renderRevisionPanel() {
+  return h("div", { class: "revision-panel" }, [
+    h("div", { class: "inline-actions" }, [
+      h("button", {
+        type: "button",
+        class: "ghost",
+        text: state.generatingRevision ? "生成中" : "生成建议",
+        onclick: generateRevision,
+        disabled: state.generatingRevision ? "disabled" : null,
+      }),
+    ]),
+    state.revisions.length
+      ? h("div", { class: "revision-list" }, state.revisions.map(renderRevisionItem))
+      : h("p", { class: "muted", text: "暂无建议。可以先让人格多聊几轮，或者直接生成一个保守建议。" }),
+  ]);
+}
+
+function renderRevisionItem(item) {
+  const suggestion = item.suggestion || {};
+  const notes = Array.isArray(suggestion.change_notes) ? suggestion.change_notes : [];
+  const changes = Array.isArray(item.changes) ? item.changes : [];
+  const triggerUids = Array.isArray(item.trigger_memory_uids) ? item.trigger_memory_uids : [];
+  const decisionNote = item.status === "pending"
+    ? h("textarea", {
+        class: "revision-decision-input",
+        rows: "2",
+        maxlength: "1000",
+        placeholder: item.stale ? "记录为何忽略这条已过期建议（可选）" : "记录采纳或忽略原因（可选）",
+      })
+    : null;
+  const source = item.source_context || {};
+  const sourceMemories = [
+    ...(source.feedback_facts || []),
+    ...(source.feedback_relations || []),
+  ].filter(Boolean);
+  return h("details", { id: `revision-${item.id}`, class: `revision-item ${item.status} ${item.stale ? "stale" : ""}` }, [
+    h("summary", {}, [
+      h("strong", { text: `#${item.id} ${item.status}` }),
+      h("small", { text: revisionVersionText(item) }),
+      h("span", { text: `${revisionOriginLabel(item)} · ${notes[0] || item.reason || "Sculptor suggestion"}` }),
+    ]),
+    h("section", { class: "revision-body" }, [
+      h("h4", { text: suggestion.name || "未命名" }),
+      item.stale ? h("p", { class: "stale-notice", text: `${item.stale_reason || "这条建议已经过期。"} 请重新生成后审核。` }) : null,
+      renderEvidenceOverview(item.evidence_summary || {}, item.base_version),
+      item.trigger_message_id ? growthLine("触发消息", `message #${item.trigger_message_id}`) : null,
+      triggerUids.length ? growthLine("触发记忆", triggerUids) : null,
+      renderChangeList(changes, item.base_version ? `相对 v${item.base_version} 没有可显示的字段变化。` : "旧建议缺少可比较的基线版本。"),
+      renderRevisionDecision(item),
+      h("p", { text: suggestion.summary || "暂无摘要" }),
+      h("p", { class: "muted", text: `关系：${suggestion.relationship || ""}` }),
+      h("p", { class: "muted", text: `说话方式：${suggestion.speaking_style || ""}` }),
+      suggestion.psychological_fit_notes ? h("p", { class: "muted", text: `心理适配：${suggestion.psychological_fit_notes}` }) : null,
+      suggestion.growth_notes ? h("p", { class: "muted", text: `成长备注：${suggestion.growth_notes}` }) : null,
+      notes.length ? h("ul", { class: "plain-list" }, notes.map((note) => h("li", { text: note }))) : null,
+      sourceMemories.length ? renderGrowthMemoryList(sourceMemories.slice(0, 8)) : null,
+      decisionNote ? h("label", { class: "revision-decision-editor" }, [
+        h("span", { text: "审核备注" }),
+        decisionNote,
+      ]) : null,
+      h("div", { class: "memory-actions" }, [
+        item.status === "pending" && !item.stale ? h("button", { type: "button", class: "ghost", text: "应用", onclick: () => applyRevision(item.id, decisionNote.value) }) : null,
+        item.status === "pending" ? h("button", { type: "button", class: "ghost", text: "忽略", onclick: () => dismissRevision(item.id, decisionNote.value) }) : null,
+      ]),
+    ]),
+  ]);
+}
+
+function revisionVersionText(item) {
+  if (item.applied_version) return `v${item.base_version || "?"} -> v${item.applied_version}`;
+  if (item.stale) return `v${item.base_version || "?"} -> 已过期`;
+  return `v${item.base_version || "?"} -> 待审核`;
+}
+
+function revisionOriginLabel(item) {
+  return item.origin === "explicit_feedback" ? "自动候选" : "手动生成";
+}
+
+function renderRevisionDecision(item) {
+  if (!item.decided_at && !item.decided_by_user_id && !item.decision_note) return null;
+  const metadata = [
+    item.status === "applied" ? "已应用" : "已忽略",
+    item.decided_by_user_id ? `admin #${item.decided_by_user_id}` : "",
+    item.decided_at ? formatTs(item.decided_at) : "",
+  ].filter(Boolean).join(" / ");
+  return h("section", { class: "revision-decision-record" }, [
+    h("strong", { text: "审核决定" }),
+    h("p", { text: item.decision_note || "未填写审核备注。" }),
+    h("small", { text: metadata }),
+  ]);
+}
+
+function renderEvidenceOverview(evidence, baseVersion) {
+  const stateKeys = Array.isArray(evidence.state_keys) ? evidence.state_keys : [];
+  const parts = [
+    baseVersion ? `基线 v${baseVersion}` : "无基线",
+    `${Number(evidence.memory_count || 0)} 条反馈/关系依据`,
+    `${Number(evidence.summary_count || 0)} 条摘要`,
+    `${Number(evidence.trace_count || 0)} 次近期上下文记录`,
+  ];
+  return h("section", { class: "evidence-summary" }, [
+    h("strong", { text: "建议依据" }),
+    h("p", { text: parts.join(" / ") }),
+    stateKeys.length ? h("small", { text: `涉及状态：${stateKeys.join("、")}` }) : null,
+  ]);
+}
+
+function renderChangeList(changes, emptyText) {
+  return h("section", { class: "revision-diff" }, [
+    h("strong", { text: "字段差异" }),
+    changes.length
+      ? h("div", { class: "revision-diff-list" }, changes.map((change) => h("div", { class: "revision-diff-row" }, [
+        h("span", { text: change.label || change.field }),
+        h("p", { class: "diff-before", text: change.before || "（空）" }),
+        h("p", { class: "diff-after", text: change.after || "（空）" }),
+      ])))
+      : h("p", { class: "muted", text: emptyText }),
+  ]);
+}
+
+function renderTraceList(traces) {
+  if (!traces.length) return h("p", { class: "muted", text: "暂无。发送一次聊天后，这里会显示后台喂给聊天 AI 的记忆上下文。" });
+  return h("div", { class: "trace-list" }, traces.map(renderTraceItem));
+}
+
+function renderTraceItem(trace) {
+  const context = trace.context?.model_context || {};
+  return h("details", { class: `trace-item ${trace.status}` }, [
+    h("summary", {}, [
+      h("strong", { text: `#${trace.id} ${trace.status}` }),
+      h("small", { text: `prompt ${trace.prompt_chars} chars` }),
+      h("span", { text: trace.query_text }),
+    ]),
+    renderPromptBlock("会话摘要", context.conversation_summary_prompt),
+    renderPromptBlock("状态变量", context.state_prompt),
+    renderPromptBlock("摘要", context.summary_prompt),
+    renderPromptBlock("分层记忆", context.layered_prompt),
+    renderPromptBlock("Semantic RAG", context.semantic_memory_prompt),
+    renderPromptBlock("旧记忆召回", context.legacy_memory_prompt),
+    trace.error_text ? h("p", { class: "error", text: trace.error_text }) : null,
+  ]);
+}
+
+function renderPromptBlock(title, content) {
+  return h("section", { class: "prompt-block" }, [
+    h("h4", { text: title }),
+    h("pre", { text: content || "暂无" }),
+  ]);
+}
+
+function renderMemoryItem(item) {
+  const text = item.text || [item.subject, item.predicate, item.object].filter(Boolean).join(" ");
+  return h("article", { class: `memory-item ${item.archived ? "archived" : ""}` }, [
+    h("div", {}, [
+      h("div", { class: "memory-title" }, [
+        h("strong", { text: item.uid }),
+        h("small", { text: `${item.type || ""} / ${item.priority || "normal"} / ${item.confidence ?? ""}` }),
+      ]),
+      h("p", { text }),
+      h("small", { text: item.valid_to ? `已被替代：${item.valid_to}` : "当前有效" }),
+    ]),
+    h("div", { class: "memory-actions" }, [
+      h("button", { type: "button", class: "ghost", text: item.locked ? "解锁" : "锁定", onclick: () => patchMemory(item.uid, { locked: !item.locked }) }),
+      h("button", { type: "button", class: "ghost", text: item.archived ? "恢复" : "归档", onclick: () => patchMemory(item.uid, { archived: !item.archived }) }),
+    ]),
+  ]);
+}
+
+async function patchMemory(uid, patch) {
+  state.error = "";
+  try {
+    await api(`/api/admin/memory/items/${encodeURIComponent(uid)}?target_user_id=${state.selectedUserId}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+    await loadReview();
+  } catch (err) {
+    state.error = err.message;
+  }
+  render();
+}
+
+async function generateRevision() {
+  if (!state.selectedPersonaId) return;
+  state.error = "";
+  state.generatingRevision = true;
+  render();
+  try {
+    await api(`/api/admin/persona-revisions?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}`, {
+      method: "POST",
+      body: JSON.stringify({ reason: "Manual admin review from memory console" }),
+    });
+    await loadReview();
+  } catch (err) {
+    state.error = err.message;
+  }
+  state.generatingRevision = false;
+  render();
+}
+
+async function applyRevision(id, note = "") {
+  state.error = "";
+  try {
+    await api(`/api/admin/persona-revisions/${id}/apply?target_user_id=${state.selectedUserId}`, {
+      method: "POST",
+      body: JSON.stringify({ note: note.trim() }),
+    });
+    await loadPersonas();
+  } catch (err) {
+    state.error = err.message;
+  }
+  render();
+}
+
+async function dismissRevision(id, note = "") {
+  state.error = "";
+  try {
+    await api(`/api/admin/persona-revisions/${id}/dismiss?target_user_id=${state.selectedUserId}`, {
+      method: "POST",
+      body: JSON.stringify({ note: note.trim() }),
+    });
+    await loadReview();
+  } catch (err) {
+    state.error = err.message;
+  }
+  render();
+}
+
+function renderInsight(insight) {
+  const topic = insight.topic_model || {};
+  const guidance = insight.guidance || {};
+  if (state.editingInsight) return renderInsightEditor(insight);
+  const lines = [
+    insight.profile_summary ? `Profile: ${insight.profile_summary}` : "",
+    listLine("Likes", topic.likes),
+    listLine("Dislikes", topic.dislikes),
+    listLine("Avoid topics", topic.avoid_topics),
+    listLine("Tone rules", guidance.tone_rules),
+    listLine("Topic rules", guidance.topic_rules),
+    listLine("Do not", guidance.do_not),
+  ].filter(Boolean);
+  return h("div", { class: "insight-panel" }, [
+    h("div", { class: "inline-actions" }, [
+      h("button", { type: "button", class: "ghost", text: "编辑画像", onclick: () => { state.editingInsight = true; render(); } }),
+    ]),
+    lines.length ? renderLines(lines) : h("p", { class: "muted", text: "暂无画像。聊天几轮后 Mirror 会逐步形成。" }),
+  ]);
+}
+
+function renderInsightEditor(insight) {
+  const topic = insight.topic_model || {};
+  const guidance = insight.guidance || {};
+  const profile = h("textarea", { rows: "3" }, insight.profile_summary || "");
+  const likes = h("textarea", { rows: "3" }, linesValue(topic.likes));
+  const dislikes = h("textarea", { rows: "3" }, linesValue(topic.dislikes));
+  const avoid = h("textarea", { rows: "3" }, linesValue(topic.avoid_topics));
+  const safe = h("textarea", { rows: "3" }, linesValue(topic.safe_topics));
+  const tone = h("textarea", { rows: "3" }, linesValue(guidance.tone_rules));
+  const topicRules = h("textarea", { rows: "3" }, linesValue(guidance.topic_rules));
+  const support = h("textarea", { rows: "3" }, linesValue(guidance.support_rules));
+  const doNot = h("textarea", { rows: "3" }, linesValue(guidance.do_not));
+  return h("form", {
+    class: "insight-editor",
+    onsubmit: async (event) => {
+      event.preventDefault();
+      await saveInsight({
+        profile_summary: profile.value,
+        interaction_style: insight.interaction_style || [],
+        emotional_patterns: insight.emotional_patterns || [],
+        inferred_profile: insight.inferred_profile || {},
+        topic_model: {
+          likes: parseLines(likes.value),
+          dislikes: parseLines(dislikes.value),
+          avoid_topics: parseLines(avoid.value),
+          safe_topics: parseLines(safe.value),
+        },
+        guidance: {
+          tone_rules: parseLines(tone.value),
+          topic_rules: parseLines(topicRules.value),
+          support_rules: parseLines(support.value),
+          do_not: parseLines(doNot.value),
+        },
+      });
+    },
+  }, [
+    editorField("Profile summary", profile),
+    editorField("Likes", likes),
+    editorField("Dislikes", dislikes),
+    editorField("Avoid topics", avoid),
+    editorField("Safe topics", safe),
+    editorField("Tone rules", tone),
+    editorField("Topic rules", topicRules),
+    editorField("Support rules", support),
+    editorField("Do not", doNot),
+    h("div", { class: "inline-actions" }, [
+      h("button", { type: "submit", text: "保存画像" }),
+      h("button", { type: "button", class: "ghost", text: "取消", onclick: () => { state.editingInsight = false; render(); } }),
+    ]),
+  ]);
+}
+
+function editorField(label, control) {
+  return h("label", { class: "editor-field" }, [label, control]);
+}
+
+function linesValue(values) {
+  return Array.isArray(values) ? values.join("\n") : "";
+}
+
+function parseLines(value) {
+  return String(value || "").split(/\n+/).map((line) => line.trim()).filter(Boolean);
+}
+
+async function saveInsight(payload) {
+  state.error = "";
+  try {
+    const data = await api(`/api/admin/insight?target_user_id=${state.selectedUserId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+    state.review.insight = data.insight;
+    state.editingInsight = false;
+    await loadReview();
+  } catch (err) {
+    state.error = err.message;
+  }
+  render();
+}
+
+function renderReview() {
+  const review = state.review;
+  return h("div", { class: "review-grid" }, [
+    card("Persona Growth", renderGrowthPanel(), "wide"),
+    card("State Variables", renderStateList(review.state || [])),
+    card("LLM Calls", renderLlmCalls(), "wide"),
+    card("LLM Routes", renderLlmRoutes(), "wide"),
+    card("Memory Eval", renderEvalPanel(), "wide"),
+    card("User Model", renderInsight(review.insight || {})),
+    card("Stable Summaries", renderLines((review.summaries || []).map((item) => item.text))),
+    card("Conversation Summary", renderConversationSummaries(review.conversation_summaries || []), "wide"),
+    card("Memory Judge", renderJudgements(review.judgements || []), "wide"),
+    card("Memory Conflicts", renderConflicts(review.conflicts || []), "wide"),
+    card("Persona Revisions", renderRevisionPanel(), "wide"),
+    card("Context Traces", renderTraceList(state.traces || []), "wide"),
+    card("Current Facts", renderMemoryList(review.facts || []), "wide"),
+    card("Current Relations", renderMemoryList(review.relations || []), "wide"),
+  ]);
+}
+
+function renderLlmCalls() {
+  const calls = state.llmCalls || [];
+  if (!calls.length) return h("p", { class: "muted", text: "No LLM calls logged yet." });
+  return h("div", { class: "llm-call-list" }, calls.map((item) => h("article", { class: `llm-call ${item.status}` }, [
+    h("div", { class: "memory-title" }, [
+      h("strong", { text: `${item.task} / ${item.status}` }),
+      h("small", { text: `#${item.id} ${item.duration_ms}ms` }),
+    ]),
+    h("p", { text: `${item.provider} ${item.model}` }),
+    h("small", { text: `prompt ${item.prompt_chars} chars / response ${item.response_chars} chars / ${formatTs(item.created_at)}` }),
+    item.error_text ? h("pre", { text: item.error_text }) : null,
+  ])));
+}
+
+function renderLlmRoutes() {
+  const routes = state.llmRoutes?.effective || {};
+  const entries = Object.entries(routes);
+  if (!entries.length) {
+    const fallback = state.llmRoutes?.default || {};
+    return h("div", { class: "llm-route-list" }, [
+      renderLlmRoute("default", fallback),
+      h("p", { class: "muted", text: "No task routes configured yet." }),
+    ]);
+  }
+  return h("div", { class: "llm-route-list" }, entries.map(([task, config]) => renderLlmRoute(task, config)));
+}
+
+function renderLlmRoute(task, config = {}) {
+  return h("article", { class: "llm-route" }, [
+    h("strong", { text: task }),
+    h("p", { text: `${config.provider || "provider"} / ${config.model || "model"}` }),
+    h("small", { text: [config.base_url, config.api_key_env, config.temperature !== undefined ? `temp ${config.temperature}` : ""].filter(Boolean).join(" / ") }),
+  ]);
+}
+
+function renderGrowthPanel() {
+  const growth = state.growth || {};
+  const persona = growth.persona || currentPersona() || {};
+  const memories = [
+    ...((growth.growth_memories || {}).facts || []),
+    ...((growth.growth_memories || {}).relations || []),
+  ];
+  return h("div", { class: "growth-panel" }, [
+    renderPersonaSnapshot(persona),
+    h("section", { class: "growth-section" }, [
+      h("h4", { text: "推动人格变化的记忆" }),
+      memories.length ? renderGrowthMemoryList(memories) : h("p", { class: "muted", text: "暂无明确人格反馈、边界或关系期待记忆。" }),
+    ]),
+    h("section", { class: "growth-section" }, [
+      h("h4", { text: "版本历史" }),
+      (state.versions || []).length ? renderVersionList(state.versions) : h("p", { class: "muted", text: "暂无版本记录。" }),
+    ]),
+  ]);
+}
+
+function renderPersonaSnapshot(persona) {
+  const profile = persona.psychological_profile || {};
+  return h("section", { class: "persona-snapshot" }, [
+    h("div", { class: "snapshot-head" }, [
+      h("div", {}, [
+        h("h4", { text: persona.name || "未命名人格" }),
+        h("small", { text: `v${persona.version || 1} / ${persona.relationship || "关系未定"}` }),
+      ]),
+      h("small", { text: persona.updated_at ? `updated ${formatTs(persona.updated_at)}` : "" }),
+    ]),
+    growthLine("摘要", persona.summary),
+    growthLine("说话方式", persona.speaking_style),
+    growthLine("外貌参考", persona.appearance_description || persona.desired_image),
+    growthLine("心理适配", persona.psychological_fit_notes),
+    growthLine("成长备注", persona.growth_notes || listText(profile.growth_direction)),
+    growthLine("主要需要", listText(profile.primary_needs)),
+    growthLine("安抚策略", listText(profile.comfort_strategy)),
+    growthLine("避免模式", listText(profile.avoid_patterns)),
+  ]);
+}
+
+function renderGrowthMemoryList(items) {
+  return h("div", { class: "growth-memory-list" }, items.map((item) => {
+    const text = item.text || [item.subject, item.predicate, item.object].filter(Boolean).join(" ");
+    return h("article", { class: "growth-memory-item" }, [
+      h("strong", { text: item.uid || item.predicate || item.type || "memory" }),
+      h("p", { text }),
+      h("small", { text: `${item.type || item.predicate || ""} / ${item.priority || "normal"} / importance ${Number(item.importance || 0).toFixed(2)}` }),
+    ]);
+  }));
+}
+
+function renderVersionList(items) {
+  const versions = new Map(items.map((item) => [Number(item.version), item]));
+  return h("div", { class: "version-list" }, items.map((item) => {
+    const previous = versions.get(Number(item.version) - 1);
+    const changes = previous ? personaFieldChanges(previous, item) : [];
+    return h("details", { class: "version-item" }, [
+    h("summary", {}, [
+      h("strong", { text: `v${item.version}` }),
+      h("span", { text: item.name || "未命名" }),
+      h("small", { text: versionTypeLabel(item) }),
+    ]),
+    h("div", { class: "version-body" }, [
+      growthLine("摘要", item.summary),
+      growthLine("关系", item.relationship),
+      growthLine("说话方式", item.speaking_style),
+      growthLine("心理适配", item.psychological_fit_notes),
+      growthLine("成长备注", item.growth_notes),
+      growthLine("变化类型", versionTypeLabel(item)),
+      item.source_suggestion_id ? revisionLinkLine(item.source_suggestion_id) : null,
+      growthLine("变化摘要", item.change_notes),
+      previous ? renderChangeList(changes, `相对 v${previous.version} 没有可显示的字段变化。`) : null,
+      growthLine("创建时间", item.created_at ? formatTs(item.created_at) : ""),
+    ]),
+  ]);
+  }));
+}
+
+function versionTypeLabel(item) {
+  const types = {
+    initial_forge: "初始创建",
+    user_profile_update: "用户编辑资料",
+    sculptor_review: "Sculptor 审核应用",
+  };
+  return types[item.change_type] || item.reason || "历史版本";
+}
+
+function revisionLinkLine(suggestionId) {
+  return h("div", { class: "growth-line" }, [
+    h("span", { text: "审核建议" }),
+    h("p", {}, [h("a", {
+      class: "evidence-link",
+      href: `#revision-${suggestionId}`,
+      text: `查看建议 #${suggestionId}`,
+      onclick: (event) => focusRevisionSuggestion(event, suggestionId),
+    })]),
+  ]);
+}
+
+function focusRevisionSuggestion(event, suggestionId) {
+  event.preventDefault();
+  const target = document.getElementById(`revision-${suggestionId}`);
+  if (!target) return;
+  target.open = true;
+  target.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+function personaFieldChanges(before, after) {
+  const fields = [
+    ["name", "名字"],
+    ["summary", "摘要"],
+    ["relationship", "关系定位"],
+    ["speaking_style", "说话方式"],
+    ["traits", "人格特征"],
+    ["boundaries", "边界"],
+    ["psychological_fit_notes", "心理适配"],
+    ["growth_notes", "成长备注"],
+    ["appearance_description", "外貌参考"],
+    ["desired_image", "期望形象"],
+  ];
+  return fields.flatMap(([field, label]) => {
+    const oldValue = visibleValue(before?.[field]);
+    const newValue = visibleValue(after?.[field]);
+    return oldValue === newValue ? [] : [{ field, label, before: oldValue, after: newValue }];
+  });
+}
+
+function visibleValue(value) {
+  if (Array.isArray(value)) return value.join("、");
+  if (value && typeof value === "object") return JSON.stringify(value);
+  return String(value || "").trim();
+}
+
+function growthLine(label, value) {
+  const text = Array.isArray(value) ? listText(value) : String(value || "").trim();
+  if (!text) return null;
+  return h("div", { class: "growth-line" }, [h("span", { text: label }), h("p", { text })]);
+}
+
+function listText(value) {
+  return Array.isArray(value) && value.length ? value.join("、") : "";
+}
+
+function currentPersona() {
+  return state.personas.find((item) => Number(item.id) === Number(state.selectedPersonaId)) || null;
+}
+
+function formatTs(value) {
+  const date = new Date(Number(value) * 1000);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("zh-CN", { hour12: false });
+}
+
+function renderEvalPanel() {
+  const latest = state.evalRuns?.[0];
+  const result = latest?.results || {};
+  const failed = (result.cases || []).filter((item) => item.required && !item.passed && !item.skipped);
+  return h("div", { class: "eval-panel" }, [
+    h("div", { class: "inline-actions" }, [
+      h("button", { type: "button", text: state.runningEval ? "Running..." : "Run Core Eval", disabled: state.runningEval ? "disabled" : null, onclick: runMemoryEval }),
+      h("button", { type: "button", class: "ghost", text: "Run Chat Eval", disabled: state.runningEval ? "disabled" : null, onclick: runChatContextEval }),
+      h("button", { type: "button", class: "ghost", text: "Run Resolve Eval", disabled: state.runningEval ? "disabled" : null, onclick: runStateResolutionEval }),
+      h("button", { type: "button", class: "ghost", text: "Run Expiry Eval", disabled: state.runningEval ? "disabled" : null, onclick: runStateExpiryEval }),
+      h("button", { type: "button", class: "ghost", text: "Run Policy Eval", disabled: state.runningEval ? "disabled" : null, onclick: runMemoryPolicyEval }),
+      h("button", { type: "button", class: "ghost", text: "Run Live Eval", disabled: state.runningEval ? "disabled" : null, onclick: runLiveAnswerEval }),
+      h("button", { type: "button", class: "ghost", text: "Seed Data", onclick: seedMemoryEval }),
+      h("button", { type: "button", class: "ghost", text: "Run + Semantic", disabled: state.runningEval ? "disabled" : null, onclick: () => runMemoryEval(true) }),
+    ]),
+    latest ? h("div", { class: `eval-result ${latest.status}` }, [
+      h("strong", { text: `${latest.suite_name}: ${latest.status}` }),
+      h("small", { text: `score ${Number(latest.score || 0).toFixed(2)} / run #${latest.id}` }),
+      h("small", { text: `passed ${result.passed || 0}/${result.total || 0}, semantic ${result.semantic_status || "skipped"}` }),
+    ]) : h("p", { class: "muted", text: "No memory evaluation runs yet." }),
+    result.reply ? h("details", { class: "eval-reply" }, [
+      h("summary", { text: "Latest live reply" }),
+      h("pre", { text: result.reply }),
+    ]) : null,
+    failed.length ? h("div", { class: "eval-failures" }, failed.map((item) => h("details", {}, [
+      h("summary", { text: item.name }),
+      h("pre", { text: JSON.stringify({ expected: item.expected, actual: item.actual }, null, 2) }),
+    ]))) : null,
+  ]);
+}
+
+async function seedMemoryEval() {
+  state.error = "";
+  try {
+    const data = await api("/api/admin/evaluations/memory/seed", { method: "POST", body: JSON.stringify({}) });
+    const users = await api("/api/admin/users");
+    state.users = users.users;
+    state.selectedUserId = data.seed.user_id;
+    await loadPersonas();
+  } catch (err) {
+    state.error = err.message;
+  }
+  render();
+}
+
+async function runMemoryEval(includeSemantic = false) {
+  state.error = "";
+  state.runningEval = true;
+  render();
+  try {
+    const data = await api("/api/admin/evaluations/memory/run", {
+      method: "POST",
+      body: JSON.stringify({ reset_seed: true, include_semantic: includeSemantic }),
+    });
+    const users = await api("/api/admin/users");
+    state.users = users.users;
+    state.selectedUserId = data.run.seed.user_id;
+    await loadPersonas();
+  } catch (err) {
+    state.error = err.message;
+  }
+  state.runningEval = false;
+  render();
+}
+
+async function runChatContextEval() {
+  state.error = "";
+  state.runningEval = true;
+  render();
+  try {
+    const data = await api("/api/admin/evaluations/chat-context/run", {
+      method: "POST",
+      body: JSON.stringify({ reset_seed: true, include_semantic: false }),
+    });
+    const users = await api("/api/admin/users");
+    state.users = users.users;
+    state.selectedUserId = data.run.seed.user_id;
+    await loadPersonas();
+  } catch (err) {
+    state.error = err.message;
+  }
+  state.runningEval = false;
+  render();
+}
+
+async function runLiveAnswerEval() {
+  state.error = "";
+  state.runningEval = true;
+  render();
+  try {
+    const data = await api("/api/admin/evaluations/live-answer/run", {
+      method: "POST",
+      body: JSON.stringify({ reset_seed: true, include_semantic: false }),
+    });
+    const users = await api("/api/admin/users");
+    state.users = users.users;
+    state.selectedUserId = data.run.seed.user_id;
+    await loadPersonas();
+  } catch (err) {
+    state.error = err.message;
+  }
+  state.runningEval = false;
+  render();
+}
+
+async function runStateResolutionEval() {
+  state.error = "";
+  state.runningEval = true;
+  render();
+  try {
+    const data = await api("/api/admin/evaluations/state-resolution/run", {
+      method: "POST",
+      body: JSON.stringify({ reset_seed: true, include_semantic: false }),
+    });
+    const users = await api("/api/admin/users");
+    state.users = users.users;
+    state.selectedUserId = data.run.seed.user_id;
+    await loadPersonas();
+  } catch (err) {
+    state.error = err.message;
+  }
+  state.runningEval = false;
+  render();
+}
+
+async function runStateExpiryEval() {
+  state.error = "";
+  state.runningEval = true;
+  render();
+  try {
+    const data = await api("/api/admin/evaluations/state-expiry/run", {
+      method: "POST",
+      body: JSON.stringify({ reset_seed: true, include_semantic: false }),
+    });
+    const users = await api("/api/admin/users");
+    state.users = users.users;
+    state.selectedUserId = data.run.seed.user_id;
+    await loadPersonas();
+  } catch (err) {
+    state.error = err.message;
+  }
+  state.runningEval = false;
+  render();
+}
+
+async function runMemoryPolicyEval() {
+  state.error = "";
+  state.runningEval = true;
+  render();
+  try {
+    const data = await api("/api/admin/evaluations/memory-policy/run", {
+      method: "POST",
+      body: JSON.stringify({ reset_seed: true, include_semantic: false }),
+    });
+    const users = await api("/api/admin/users");
+    state.users = users.users;
+    state.selectedUserId = data.run.seed.user_id;
+    await loadPersonas();
+  } catch (err) {
+    state.error = err.message;
+  }
+  state.runningEval = false;
+  render();
+}
+
+function renderJudgements(items) {
+  if (!items.length) return h("p", { class: "muted", text: "No open memory judgements." });
+  return h("div", { class: "judgement-list" }, items.map(renderJudgementItem));
+}
+
+function renderConflicts(items) {
+  if (!items.length) return h("p", { class: "muted", text: "No open memory conflicts." });
+  return h("div", { class: "conflict-list" }, items.map(renderConflictItem));
+}
+
+function renderConflictItem(item) {
+  return h("article", { class: `conflict-item resolution-${item.resolution}` }, [
+    h("div", { class: "memory-title" }, [
+      h("strong", { text: `${item.conflict_type} / ${item.resolution}` }),
+      h("small", { text: `#${item.id}` }),
+    ]),
+    h("div", { class: "conflict-compare" }, [
+      h("section", {}, [
+        h("small", { text: `current ${item.current_uid}` }),
+        h("p", { text: item.current_text || "" }),
+      ]),
+      h("section", {}, [
+        h("small", { text: `previous ${item.previous_uid || "-"}` }),
+        h("p", { text: item.previous_text || "" }),
+      ]),
+    ]),
+    item.reason ? h("small", { text: item.reason }) : null,
+    h("div", { class: "memory-actions" }, [
+      h("button", { type: "button", class: "ghost", text: "Resolved", onclick: () => setConflictStatus(item.id, "resolved") }),
+      h("button", { type: "button", class: "ghost", text: "Dismiss", onclick: () => setConflictStatus(item.id, "dismissed") }),
+    ]),
+  ]);
+}
+
+async function setConflictStatus(id, status) {
+  state.error = "";
+  try {
+    await api(`/api/admin/memory/conflicts/${id}?target_user_id=${state.selectedUserId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    });
+    await loadReview();
+  } catch (err) {
+    state.error = err.message;
+  }
+  render();
+}
+
+function renderJudgementItem(item) {
+  const reasons = Array.isArray(item.reasons) ? item.reasons : [];
+  const flags = Array.isArray(item.flags) ? item.flags : [];
+  return h("article", { class: `judgement-item action-${item.action}` }, [
+    h("div", { class: "memory-title" }, [
+      h("strong", { text: `${item.memory_uid} / ${item.action}` }),
+      h("small", { text: `quality ${Number(item.quality_score || 0).toFixed(2)} / risk ${Number(item.risk_score || 0).toFixed(2)}` }),
+    ]),
+    h("p", { text: item.memory_text || "" }),
+    flags.length ? h("small", { text: `flags: ${flags.join(", ")}` }) : null,
+    reasons.length ? h("ul", { class: "plain-list" }, reasons.map((reason) => h("li", { text: reason }))) : null,
+    h("div", { class: "memory-actions" }, [
+      h("button", { type: "button", class: "ghost", text: "Accepted", onclick: () => setJudgementStatus(item.id, "accepted") }),
+      h("button", { type: "button", class: "ghost", text: "Dismiss", onclick: () => setJudgementStatus(item.id, "dismissed") }),
+    ]),
+  ]);
+}
+
+async function setJudgementStatus(id, status) {
+  state.error = "";
+  try {
+    await api(`/api/admin/memory/judgements/${id}?target_user_id=${state.selectedUserId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    });
+    await loadReview();
+  } catch (err) {
+    state.error = err.message;
+  }
+  render();
+}
+
+async function refresh() {
+  state.error = "";
+  try {
+    await loadReview();
+  } catch (err) {
+    state.error = err.message;
+  }
+  render();
+}
+
+bootstrap();
