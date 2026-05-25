@@ -168,6 +168,64 @@ def insight_prompt(user_id: int) -> str:
     return "\n".join(lines)
 
 
+def discovery_prompt(
+    user_id: int,
+    *,
+    recent_assistant_messages: list[str] | None = None,
+    current_user_text: str = "",
+) -> str:
+    insight = ensure_user_insight(user_id)
+    topic_model = insight.get("topic_model", {})
+    known_topics = {
+        *topic_model.get("likes", []),
+        *topic_model.get("dislikes", []),
+        *topic_model.get("avoid_topics", []),
+    }
+    evidence_count = (
+        len(known_topics)
+        + len(insight.get("interaction_style", []))
+        + len(insight.get("emotional_patterns", []))
+    )
+    sparse_profile = evidence_count < 4
+    lines = [
+        "Conversation discovery policy:",
+        "- Stored likes and memories are context, not a recurring conversation theme. A known favorite is not a default conversational hook.",
+        "- Mention a remembered preference only when the user brings it up, it directly helps the current reply, or the current topic naturally reaches it.",
+        "- Never funnel unrelated topics through one remembered detail merely to show familiarity.",
+        "- Answer the user's current message first. Curiosity must feel like conversation, not an interview; normally ask no more than one exploratory question in a reply.",
+        "- A question may be direct or somewhat personal when natural in this AI conversation, but it must be non-coercive and easy to decline or skip. Do not push after hesitation or refusal.",
+        "- Do not infer broad identity, personality, or relationship needs from a single preference or anecdote.",
+    ]
+    if sparse_profile:
+        lines.extend(
+            [
+                "- The user profile is currently sparse. Prefer gradually learning a different dimension over returning to an already known preference.",
+                "- When the moment welcomes a question, explore one new area such as daily rhythm, other interests, values, comfort style, annoyances, ambitions, or boundaries.",
+            ]
+        )
+    else:
+        lines.append("- The profile has multiple signals, but keep discovering naturally instead of treating existing interests as a closed script.")
+    recent_text = "\n".join(str(item or "") for item in (recent_assistant_messages or [])[-4:])
+    current_text = str(current_user_text or "")
+    reusable_topics = [
+        str(topic).strip()
+        for topic in [*topic_model.get("likes", []), *topic_model.get("safe_topics", [])]
+        if str(topic).strip()
+    ]
+    recently_repeated = list(dict.fromkeys(
+        topic for topic in reusable_topics
+        if topic in recent_text and topic not in current_text
+    ))
+    if recently_repeated:
+        lines.extend(
+            [
+                f"- Recent assistant replies already used these remembered topics without a new user cue: {json.dumps(recently_repeated, ensure_ascii=False)}.",
+                "- Do not bring these topics back in this reply unless answering the current message truly requires them. Move to the user's current concern or a new dimension instead.",
+            ]
+        )
+    return "\n".join(lines)
+
+
 def _analyze_with_llm(
     current: dict,
     user_text: str,

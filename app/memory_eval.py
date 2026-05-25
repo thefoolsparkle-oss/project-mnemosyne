@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any
 
 from .auth import hash_password
 from .database import dict_from_row, get_db, now_ts
 from .archivist import recall_memories
 from .conversation_memory import conversation_summary_prompt
-from .db_chat import _memory_prompt, _profile_prompt, db_chat, get_persona_for_user
+from .db_chat import _memory_prompt, _profile_prompt, _profile_usage_prompt, db_chat, get_persona_for_user
 from .layered_memory import (
     create_episode_from_event,
     layered_memory_prompt,
@@ -22,7 +23,7 @@ from .layered_memory import (
 from .memory_conflicts import list_conflicts
 from .memory_rag import semantic_memory_prompt, semantic_memory_recall, sync_memory_embeddings
 from .memory_review import memory_review
-from .mirror import insight_prompt, update_user_insight
+from .mirror import discovery_prompt, insight_prompt, update_user_insight
 from .memory_policy import policy_snapshot
 
 
@@ -30,6 +31,8 @@ EVAL_USERNAME = "__mnemosyne_memory_eval__"
 EVAL_SUITE = "memory_core_v1"
 CHAT_CONTEXT_SUITE = "chat_context_v1"
 LIVE_ANSWER_SUITE = "live_answer_v1"
+PROFILE_CONTEXT_SUITE = "profile_context_v1"
+PROFILE_LIVE_ANSWER_SUITE = "profile_live_answer_v1"
 STATE_RESOLUTION_SUITE = "state_resolution_v1"
 STATE_EXPIRY_SUITE = "state_expiry_v1"
 MEMORY_POLICY_SUITE = "memory_policy_v1"
@@ -231,8 +234,14 @@ def run_chat_context_evaluation(*, reset_seed: bool = True, include_semantic: bo
     identity = seed_memory_eval_data(reset=reset_seed)
     user_id = int(identity["user_id"])
     persona_id = int(identity["persona_id"])
-    query = "我喜欢喝什么？你应该怎么称呼我？可以主动聊原神吗？"
-    payload = build_eval_chat_context(user_id, persona_id, query, include_semantic=include_semantic)
+    query = "今天是什么日子？我喜欢喝什么？你应该怎么称呼我？可以主动聊原神吗？"
+    payload = build_eval_chat_context(
+        user_id,
+        persona_id,
+        query,
+        include_semantic=include_semantic,
+        current_time=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+    )
     model_context = payload["model_context"]
     messages = payload["messages"]
     combined = "\n\n".join(str(message.get("content", "")) for message in messages)
@@ -240,6 +249,8 @@ def run_chat_context_evaluation(*, reset_seed: bool = True, include_semantic: bo
     insight_text = model_context.get("insight_prompt", "")
     layered_text = model_context.get("layered_prompt", "")
     summary_text = model_context.get("summary_prompt", "")
+    discovery_text = model_context.get("discovery_prompt", "")
+    profile_usage_text = model_context.get("profile_usage_prompt", "")
 
     cases: list[dict[str, Any]] = []
     _case(cases, "context.has_address", "阿月" in combined, "上下文包含阿月", _excerpt(combined, "阿月"))
@@ -253,6 +264,11 @@ def run_chat_context_evaluation(*, reset_seed: bool = True, include_semantic: bo
     _case(cases, "state.precise_dislike", "dislikes" in state_text and "原神" in state_text, "状态变量包含讨厌原神", state_text)
     _case(cases, "state.no_stale_like", not _line_mentions(state_text, "likes", "原神"), "状态变量 likes 不包含原神", state_text)
     _case(cases, "mirror.guidance", "Do not proactively bring up 原神" in insight_text, "Mirror 注入话题禁忌", insight_text)
+    _case(cases, "discovery.no_single_hook", "not a default conversational hook" in discovery_text, "探索策略禁止把单点偏好当默认话题", discovery_text)
+    _case(cases, "discovery.direct_but_optional", "direct or somewhat personal" in discovery_text and "easy to decline" in discovery_text, "探索策略允许直接提问但必须可跳过", discovery_text)
+    _case(cases, "profile_usage.has_today", "current_local_date: 2026-01-01" in profile_usage_text, "按需资料策略提供中性当前日期", profile_usage_text)
+    _case(cases, "profile_usage.calls_for_lookup", "This turn invites checking the saved user profile" in profile_usage_text, "用户给出资料线索时提示核对资料", profile_usage_text)
+    _case(cases, "profile_usage.no_occasion_push", "Today is the user's birthday" not in profile_usage_text, "按需策略不主动宣告具体纪念日", profile_usage_text)
     _case(cases, "layered.recall", "阿月" in layered_text or "主人" in layered_text, "分层召回称呼相关信息", layered_text)
     _case(cases, "summary.recall", "青柠苏打" in summary_text or "阿月" in summary_text, "稳定摘要包含关键事实", summary_text)
     _case(cases, "prompt.size", payload["prompt_chars"] <= 12000, "prompt 不超过 12000 字符", payload["prompt_chars"])
@@ -323,6 +339,16 @@ def run_live_answer_evaluation(*, reset_seed: bool = True) -> dict[str, Any]:
             },
         )
 
+    if chat_result.get("degraded"):
+        return _skipped_live_result(
+            user_id=user_id,
+            persona_id=persona_id,
+            suite_name=LIVE_ANSWER_SUITE,
+            identity=identity,
+            query=query,
+            error=str(chat_result.get("error_message") or "LLM response unavailable"),
+        )
+
     reply = str(chat_result.get("reply") or "")
     cases: list[dict[str, Any]] = []
     _case(cases, "answer.mentions_drink", "青柠苏打" in reply, "回答用户喜欢青柠苏打", reply)
@@ -342,6 +368,93 @@ def run_live_answer_evaluation(*, reset_seed: bool = True) -> dict[str, Any]:
         user_id=user_id,
         persona_id=persona_id,
         suite_name=LIVE_ANSWER_SUITE,
+        cases=cases,
+        extra={
+            "seed": identity,
+            "query": query,
+            "reply": reply,
+            "llm_status": "completed",
+            "context_trace_id": chat_result.get("context_trace_id"),
+            "conversation_id": chat_result.get("conversation_id"),
+        },
+    )
+
+
+def run_profile_context_evaluation(*, reset_seed: bool = True) -> dict[str, Any]:
+    identity = seed_memory_eval_data(reset=reset_seed)
+    user_id = int(identity["user_id"])
+    persona_id = int(identity["persona_id"])
+    with get_db() as db:
+        profile = dict_from_row(db.execute("SELECT * FROM user_profiles WHERE user_id = ?", (user_id,)).fetchone()) or {}
+
+    lookup_query = "请看看我的信息：我的昵称和签名是什么？"
+    ordinary_query = "今天有点累，先陪我坐一会儿。"
+    profile_text = _profile_prompt(profile)
+    lookup_policy = _profile_usage_prompt(lookup_query)
+    ordinary_policy = _profile_usage_prompt(ordinary_query)
+    cases: list[dict[str, Any]] = []
+    _case(cases, "profile.has_nickname", "记忆评测用户" in profile_text, "用户昵称进入聊天资料上下文", profile_text)
+    _case(cases, "profile.has_signature", "自动评测账号" in profile_text, "用户签名进入聊天资料上下文", profile_text)
+    _case(cases, "profile.lookup_on_request", "This turn invites checking the saved user profile" in lookup_policy, "用户询问资料时提示使用资料", lookup_policy)
+    _case(cases, "profile.lookup_is_scoped", "Do not add unrequested memories" in lookup_policy, "资料查询只回答被问到的字段", lookup_policy)
+    _case(cases, "profile.quiet_on_ordinary_turn", "does not explicitly invite profile lookup" in ordinary_policy, "普通聊天不主动突出资料", ordinary_policy)
+    _case(cases, "profile.no_special_fact_push", "Today is the user's birthday" not in lookup_policy and "Today is the user's birthday" not in ordinary_policy, "策略不主动突出具体个人资料", {"lookup": lookup_policy, "ordinary": ordinary_policy})
+    return _store_eval_result(
+        user_id=user_id,
+        persona_id=persona_id,
+        suite_name=PROFILE_CONTEXT_SUITE,
+        cases=cases,
+        extra={
+            "seed": identity,
+            "lookup_query": lookup_query,
+            "ordinary_query": ordinary_query,
+        },
+    )
+
+
+def run_profile_live_answer_evaluation(*, reset_seed: bool = True) -> dict[str, Any]:
+    identity = seed_memory_eval_data(reset=reset_seed)
+    user_id = int(identity["user_id"])
+    persona_id = int(identity["persona_id"])
+    conversation_id = identity.get("conversation_id")
+    query = "请看看我的个人资料：我的昵称和签名是什么？只回答这两项，不要猜兴趣或纪念日。"
+    try:
+        chat_result = db_chat(
+            user_id=user_id,
+            persona_id=persona_id,
+            conversation_id=int(conversation_id) if conversation_id else None,
+            message=query,
+        )
+    except Exception as exc:
+        return _skipped_live_result(
+            user_id=user_id,
+            persona_id=persona_id,
+            suite_name=PROFILE_LIVE_ANSWER_SUITE,
+            identity=identity,
+            query=query,
+            error=str(exc),
+        )
+    if chat_result.get("degraded"):
+        return _skipped_live_result(
+            user_id=user_id,
+            persona_id=persona_id,
+            suite_name=PROFILE_LIVE_ANSWER_SUITE,
+            identity=identity,
+            query=query,
+            error=str(chat_result.get("error_message") or "LLM response unavailable"),
+        )
+
+    reply = str(chat_result.get("reply") or "")
+    cases: list[dict[str, Any]] = []
+    _case(cases, "profile_answer.mentions_nickname", "记忆评测用户" in reply, "回答资料中的昵称", reply)
+    _case(cases, "profile_answer.mentions_signature", "自动评测账号" in reply, "回答资料中的签名", reply)
+    _case(cases, "profile_answer.no_unasked_interest", "青柠苏打" not in reply and "原神" not in reply, "不把无关兴趣或避雷扯进资料回答", reply)
+    _case(cases, "profile_answer.concise", len(reply) <= 200, "资料回答保持简短", {"length": len(reply), "reply": reply})
+    _case(cases, "profile_answer.trace_recorded", bool(chat_result.get("context_trace_id")), "生成上下文追踪记录", chat_result.get("context_trace_id"))
+    return _store_eval_result(
+        user_id=user_id,
+        persona_id=persona_id,
+        suite_name=PROFILE_LIVE_ANSWER_SUITE,
         cases=cases,
         extra={
             "seed": identity,
@@ -479,6 +592,7 @@ def build_eval_chat_context(
     query: str,
     *,
     include_semantic: bool = False,
+    current_time: datetime | None = None,
 ) -> dict[str, Any]:
     persona = get_persona_for_user(user_id, persona_id)
     with get_db() as db:
@@ -507,6 +621,8 @@ def build_eval_chat_context(
         "layered_prompt": layered_memory_prompt(layered),
         "semantic_memory_prompt": semantic_memory_prompt(semantic_memories),
         "legacy_memory_prompt": _memory_prompt(recalled_memories),
+        "discovery_prompt": discovery_prompt(user_id),
+        "profile_usage_prompt": _profile_usage_prompt(query, current_time=current_time),
         "semantic_memories": semantic_memories,
         "recalled_legacy_memories": recalled_memories,
         "recalled_layered_memory": layered,
@@ -521,6 +637,8 @@ def build_eval_chat_context(
         {"role": "system", "content": model_context["layered_prompt"]},
         {"role": "system", "content": model_context["semantic_memory_prompt"]},
         {"role": "system", "content": model_context["legacy_memory_prompt"]},
+        {"role": "system", "content": model_context["discovery_prompt"]},
+        {"role": "system", "content": model_context["profile_usage_prompt"]},
         {"role": "user", "content": query},
     ]
     return {
@@ -585,6 +703,39 @@ def _store_eval_result(
         )
         result["id"] = int(db.execute("SELECT last_insert_rowid()").fetchone()[0])
     return result
+
+
+def _skipped_live_result(
+    *,
+    user_id: int,
+    persona_id: int,
+    suite_name: str,
+    identity: dict[str, Any],
+    query: str,
+    error: str,
+) -> dict[str, Any]:
+    return _store_eval_result(
+        user_id=user_id,
+        persona_id=persona_id,
+        suite_name=suite_name,
+        cases=[
+            {
+                "name": f"{suite_name}.available",
+                "passed": False,
+                "required": False,
+                "skipped": True,
+                "expected": "LLM API available",
+                "actual": error[:1200],
+            }
+        ],
+        extra={
+            "seed": identity,
+            "query": query,
+            "reply": "",
+            "llm_status": "skipped",
+            "error": error[:1200],
+        },
+    )
 
 
 def _eval_identity() -> dict[str, Any] | None:

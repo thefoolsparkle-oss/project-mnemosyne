@@ -1,4 +1,6 @@
 const app = document.getElementById("admin-app");
+const TAB_SESSION_MODE_KEY = "mnemosyne:tab-session-mode";
+const TAB_SESSION_TOKEN_KEY = "mnemosyne:tab-session-token";
 
 let state = {
   user: null,
@@ -14,17 +16,39 @@ let state = {
   evalRuns: [],
   llmCalls: [],
   llmRoutes: null,
+  growthDemo: null,
   runningEval: false,
   generatingRevision: false,
+  cleaningStaleRevisions: false,
   editingInsight: false,
   error: "",
 };
 
+function tabSessionMode() {
+  try {
+    return sessionStorage.getItem(TAB_SESSION_MODE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function tabSessionToken() {
+  try {
+    return sessionStorage.getItem(TAB_SESSION_TOKEN_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
 async function api(path, options = {}) {
+  const isolated = tabSessionMode();
+  const token = tabSessionToken();
+  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  if (isolated && token) headers.Authorization = `Bearer ${token}`;
   const res = await fetch(path, {
-    credentials: "same-origin",
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     ...options,
+    credentials: isolated ? "omit" : "same-origin",
+    headers,
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
@@ -71,7 +95,11 @@ async function bootstrap() {
 
 async function loadPersonas() {
   const previousPersonaId = state.selectedPersonaId;
-  const data = await api(`/api/admin/personas?target_user_id=${state.selectedUserId}`);
+  const [users, data] = await Promise.all([
+    api("/api/admin/users"),
+    api(`/api/admin/personas?target_user_id=${state.selectedUserId}`),
+  ]);
+  state.users = users.users;
   state.personas = data.personas;
   state.selectedPersonaId = state.personas.some((persona) => Number(persona.id) === Number(previousPersonaId))
     ? previousPersonaId
@@ -131,6 +159,16 @@ function renderSidebar() {
 
 function renderUserButton(user) {
   const label = user.nickname || user.username;
+  const pending = Number(user.pending_revision_count || 0);
+  const requests = Number(user.pending_preference_request_count || 0);
+  const adjustment = Number(user.adjustment_feedback_count || 0);
+  const stale = Number(user.stale_revision_count || 0);
+  const queueText = [
+    pending ? `待审 ${pending}` : "",
+    requests ? `主动请求 ${requests}` : "",
+    adjustment ? `待跟进 ${adjustment}` : "",
+    stale ? `过期 ${stale}` : "",
+  ].filter(Boolean).join(" / ");
   return h("button", {
     type: "button",
     class: `list-item ${Number(state.selectedUserId) === Number(user.id) ? "active" : ""}`,
@@ -149,6 +187,7 @@ function renderUserButton(user) {
     h("span", {}, [
       h("strong", { text: label }),
       h("small", { text: `${user.role} / ${user.status}` }),
+      queueText ? h("small", { class: pending ? "queue-active" : adjustment ? "queue-followup" : "queue-stale", text: queueText }) : null,
     ]),
   ]);
 }
@@ -161,12 +200,24 @@ function renderMain() {
         h("h2", { text: "记忆审查台" }),
       ]),
       h("div", { class: "toolbar" }, [
+        renderRevisionQueueSummary(),
+        h("button", { type: "button", class: "ghost", text: "载入成长演示", onclick: seedGrowthDemo }),
+        h("button", { type: "button", class: "ghost", text: "清除演示", onclick: clearGrowthDemo }),
         renderPersonaSelect(),
         h("button", { type: "button", class: "ghost", text: "刷新", onclick: refresh }),
       ]),
     ]),
     state.error ? h("p", { class: "error", text: state.error }) : null,
+    state.growthDemo ? renderGrowthDemoNotice(state.growthDemo) : null,
     state.review ? renderReview() : renderEmpty(),
+  ]);
+}
+
+function renderGrowthDemoNotice(demo) {
+  return h("section", { class: "growth-demo-notice" }, [
+    h("strong", { text: "人格成长演示已载入" }),
+    h("p", { text: "当前选中的是可随时清除的演示账号。可以在管理台试待审、待跟进和版本对比，也可以在普通端登录体验“相处痕迹”。" }),
+    h("p", { class: "demo-credentials", text: `普通端账号：${demo.username} / 密码：${demo.password}` }),
   ]);
 }
 
@@ -188,11 +239,42 @@ function renderPersonaSelect() {
     return select;
   }
   for (const persona of state.personas) {
-    const option = h("option", { value: persona.id, text: persona.name });
+    const pending = Number(persona.pending_revision_count || 0);
+    const requests = Number(persona.pending_preference_request_count || 0);
+    const adjustment = Number(persona.adjustment_feedback_count || 0);
+    const stale = Number(persona.stale_revision_count || 0);
+    const suffix = [
+      pending ? `待审 ${pending}` : "",
+      requests ? `主动请求 ${requests}` : "",
+      adjustment ? `待跟进 ${adjustment}` : "",
+      stale ? `过期 ${stale}` : "",
+    ].filter(Boolean).join(" / ");
+    const option = h("option", { value: persona.id, text: `${persona.name}${suffix ? ` · ${suffix}` : ""}` });
     if (Number(persona.id) === Number(state.selectedPersonaId)) option.selected = true;
     select.append(option);
   }
   return select;
+}
+
+function renderRevisionQueueSummary() {
+  const pending = state.personas.reduce((count, persona) => count + Number(persona.pending_revision_count || 0), 0);
+  const requests = state.personas.reduce((count, persona) => count + Number(persona.pending_preference_request_count || 0), 0);
+  const auto = state.personas.reduce((count, persona) => count + Number(persona.pending_auto_revision_count || 0), 0);
+  const adjustment = state.personas.reduce((count, persona) => count + Number(persona.adjustment_feedback_count || 0), 0);
+  const stale = state.personas.reduce((count, persona) => count + Number(persona.stale_revision_count || 0), 0);
+  if (!pending && !adjustment && !stale) return null;
+  const parts = [
+    pending ? `待审 ${pending}` : "",
+    requests ? `主动请求 ${requests}` : "",
+    auto ? `用户触发 ${auto}` : "",
+    adjustment ? `待跟进 ${adjustment}` : "",
+    stale ? `过期 ${stale}` : "",
+  ].filter(Boolean);
+  return h("span", {
+    class: `review-queue-badge ${pending ? "active" : adjustment ? "followup-only" : "stale-only"}`,
+    title: "人格调整审核与反馈跟进队列",
+    text: parts.join(" / "),
+  });
 }
 
 function renderReview() {
@@ -212,7 +294,7 @@ function renderReview() {
 function renderEmpty() {
   return h("section", { class: "empty" }, [
     h("h3", { text: "还没有可审查的记忆" }),
-    h("p", { text: "先让这个用户和人格聊几句，Archivist 会把重要内容写入分层记忆。" }),
+    h("p", { text: "先让这个用户和人格聊几句，记忆档案员会把重要内容写入分层记忆。" }),
   ]);
 }
 
@@ -245,7 +327,7 @@ function renderInsight(insight) {
     listLine("话题规则", guidance.topic_rules),
     listLine("不要做", guidance.do_not),
   ].filter(Boolean);
-  return lines.length ? renderLines(lines) : h("p", { class: "muted", text: "暂无画像。聊天几轮后 Mirror 会逐步形成。" });
+  return lines.length ? renderLines(lines) : h("p", { class: "muted", text: "暂无画像。聊天几轮后用户画像器会逐步形成。" });
 }
 
 function renderConversationSummaries(items) {
@@ -273,15 +355,24 @@ function renderMemoryList(items) {
 }
 
 function renderRevisionPanel() {
+  const persona = currentPersona() || {};
+  const cleanableStale = Number(persona.cleanable_stale_revision_count || 0);
   return h("div", { class: "revision-panel" }, [
     h("div", { class: "inline-actions" }, [
       h("button", {
         type: "button",
         class: "ghost",
         text: state.generatingRevision ? "生成中" : "生成建议",
-        onclick: generateRevision,
+        onclick: () => generateRevision(),
         disabled: state.generatingRevision ? "disabled" : null,
       }),
+      cleanableStale ? h("button", {
+        type: "button",
+        class: "ghost",
+        text: state.cleaningStaleRevisions ? "清理中" : `清理可关闭的过期建议 (${cleanableStale})`,
+        onclick: () => dismissStaleRevisions(),
+        disabled: state.cleaningStaleRevisions ? "disabled" : null,
+      }) : null,
     ]),
     state.revisions.length
       ? h("div", { class: "revision-list" }, state.revisions.map(renderRevisionItem))
@@ -311,11 +402,16 @@ function renderRevisionItem(item) {
     h("summary", {}, [
       h("strong", { text: `#${item.id} ${item.status}` }),
       h("small", { text: revisionVersionText(item) }),
-      h("span", { text: `${revisionOriginLabel(item)} · ${notes[0] || item.reason || "Sculptor suggestion"}` }),
+      h("span", { text: `${revisionOriginLabel(item)} · ${notes[0] || item.reason || "人格调整建议"}` }),
     ]),
     h("section", { class: "revision-body" }, [
       h("h4", { text: suggestion.name || "未命名" }),
-      item.stale ? h("p", { class: "stale-notice", text: `${item.stale_reason || "这条建议已经过期。"} 请重新生成后审核。` }) : null,
+      item.stale ? h("p", {
+        class: "stale-notice",
+        text: item.protected_by_active_request
+          ? `${item.stale_reason || "这条建议已经过期。"} 它仍关联用户主动请求，请等待用户重新提交或撤回。`
+          : `${item.stale_reason || "这条建议已经过期。"} 可忽略，或由上方按钮批量清理。`,
+      }) : null,
       renderEvidenceOverview(item.evidence_summary || {}, item.base_version),
       item.trigger_message_id ? growthLine("触发消息", `message #${item.trigger_message_id}`) : null,
       triggerUids.length ? growthLine("触发记忆", triggerUids) : null,
@@ -347,14 +443,16 @@ function revisionVersionText(item) {
 }
 
 function revisionOriginLabel(item) {
-  return item.origin === "explicit_feedback" ? "自动候选" : "手动生成";
+  if (item.origin === "profile_request") return "资料页主动提交";
+  if (item.origin === "explicit_feedback") return item.trigger_message_id ? "聊天中提出" : "旧版主动提交";
+  return "手动生成";
 }
 
 function renderRevisionDecision(item) {
   if (!item.decided_at && !item.decided_by_user_id && !item.decision_note) return null;
   const metadata = [
     item.status === "applied" ? "已应用" : "已忽略",
-    item.decided_by_user_id ? `admin #${item.decided_by_user_id}` : "",
+    item.decided_by_user_id ? `管理员 #${item.decided_by_user_id}` : "",
     item.decided_at ? formatTs(item.decided_at) : "",
   ].filter(Boolean).join(" / ");
   return h("section", { class: "revision-decision-record" }, [
@@ -411,6 +509,8 @@ function renderTraceItem(trace) {
     renderPromptBlock("分层记忆", context.layered_prompt),
     renderPromptBlock("Semantic RAG", context.semantic_memory_prompt),
     renderPromptBlock("旧记忆召回", context.legacy_memory_prompt),
+    renderPromptBlock("探索与防重复策略", context.discovery_prompt),
+    renderPromptBlock("资料按需使用与日期环境", context.profile_usage_prompt || context.calendar_prompt),
     trace.error_text ? h("p", { class: "error", text: trace.error_text }) : null,
   ]);
 }
@@ -454,7 +554,7 @@ async function patchMemory(uid, patch) {
   render();
 }
 
-async function generateRevision() {
+async function generateRevision(reason = "管理台手动发起人格调整复核") {
   if (!state.selectedPersonaId) return;
   state.error = "";
   state.generatingRevision = true;
@@ -462,9 +562,9 @@ async function generateRevision() {
   try {
     await api(`/api/admin/persona-revisions?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}`, {
       method: "POST",
-      body: JSON.stringify({ reason: "Manual admin review from memory console" }),
+      body: JSON.stringify({ reason }),
     });
-    await loadReview();
+    await loadPersonas();
   } catch (err) {
     state.error = err.message;
   }
@@ -493,10 +593,27 @@ async function dismissRevision(id, note = "") {
       method: "POST",
       body: JSON.stringify({ note: note.trim() }),
     });
-    await loadReview();
+    await loadPersonas();
   } catch (err) {
     state.error = err.message;
   }
+  render();
+}
+
+async function dismissStaleRevisions() {
+  if (!state.selectedPersonaId) return;
+  state.error = "";
+  state.cleaningStaleRevisions = true;
+  render();
+  try {
+    await api(`/api/admin/persona-revisions/stale/dismiss?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}`, {
+      method: "POST",
+    });
+    await loadPersonas();
+  } catch (err) {
+    state.error = err.message;
+  }
+  state.cleaningStaleRevisions = false;
   render();
 }
 
@@ -517,7 +634,7 @@ function renderInsight(insight) {
     h("div", { class: "inline-actions" }, [
       h("button", { type: "button", class: "ghost", text: "编辑画像", onclick: () => { state.editingInsight = true; render(); } }),
     ]),
-    lines.length ? renderLines(lines) : h("p", { class: "muted", text: "暂无画像。聊天几轮后 Mirror 会逐步形成。" }),
+    lines.length ? renderLines(lines) : h("p", { class: "muted", text: "暂无画像。聊天几轮后用户画像器会逐步形成。" }),
   ]);
 }
 
@@ -604,26 +721,26 @@ async function saveInsight(payload) {
 function renderReview() {
   const review = state.review;
   return h("div", { class: "review-grid" }, [
-    card("Persona Growth", renderGrowthPanel(), "wide"),
-    card("State Variables", renderStateList(review.state || [])),
-    card("LLM Calls", renderLlmCalls(), "wide"),
-    card("LLM Routes", renderLlmRoutes(), "wide"),
-    card("Memory Eval", renderEvalPanel(), "wide"),
-    card("User Model", renderInsight(review.insight || {})),
-    card("Stable Summaries", renderLines((review.summaries || []).map((item) => item.text))),
-    card("Conversation Summary", renderConversationSummaries(review.conversation_summaries || []), "wide"),
-    card("Memory Judge", renderJudgements(review.judgements || []), "wide"),
-    card("Memory Conflicts", renderConflicts(review.conflicts || []), "wide"),
-    card("Persona Revisions", renderRevisionPanel(), "wide"),
-    card("Context Traces", renderTraceList(state.traces || []), "wide"),
-    card("Current Facts", renderMemoryList(review.facts || []), "wide"),
-    card("Current Relations", renderMemoryList(review.relations || []), "wide"),
+    card("人格成长", renderGrowthPanel(), "wide"),
+    card("状态变量", renderStateList(review.state || [])),
+    card("模型调用记录", renderLlmCalls(), "wide"),
+    card("模型路由", renderLlmRoutes(), "wide"),
+    card("记忆评测", renderEvalPanel(), "wide"),
+    card("用户画像", renderInsight(review.insight || {})),
+    card("稳定摘要", renderLines((review.summaries || []).map((item) => item.text))),
+    card("会话摘要", renderConversationSummaries(review.conversation_summaries || []), "wide"),
+    card("记忆审校", renderJudgements(review.judgements || []), "wide"),
+    card("记忆冲突", renderConflicts(review.conflicts || []), "wide"),
+    card("人格调整建议", renderRevisionPanel(), "wide"),
+    card("上下文追踪", renderTraceList(state.traces || []), "wide"),
+    card("当前事实", renderMemoryList(review.facts || []), "wide"),
+    card("当前关系", renderMemoryList(review.relations || []), "wide"),
   ]);
 }
 
 function renderLlmCalls() {
   const calls = state.llmCalls || [];
-  if (!calls.length) return h("p", { class: "muted", text: "No LLM calls logged yet." });
+  if (!calls.length) return h("p", { class: "muted", text: "暂无模型调用记录。" });
   return h("div", { class: "llm-call-list" }, calls.map((item) => h("article", { class: `llm-call ${item.status}` }, [
     h("div", { class: "memory-title" }, [
       h("strong", { text: `${item.task} / ${item.status}` }),
@@ -642,7 +759,7 @@ function renderLlmRoutes() {
     const fallback = state.llmRoutes?.default || {};
     return h("div", { class: "llm-route-list" }, [
       renderLlmRoute("default", fallback),
-      h("p", { class: "muted", text: "No task routes configured yet." }),
+      h("p", { class: "muted", text: "暂无单独配置的任务路由。" }),
     ]);
   }
   return h("div", { class: "llm-route-list" }, entries.map(([task, config]) => renderLlmRoute(task, config)));
@@ -668,6 +785,16 @@ function renderGrowthPanel() {
     h("section", { class: "growth-section" }, [
       h("h4", { text: "推动人格变化的记忆" }),
       memories.length ? renderGrowthMemoryList(memories) : h("p", { class: "muted", text: "暂无明确人格反馈、边界或关系期待记忆。" }),
+    ]),
+    h("section", { class: "growth-section" }, [
+      h("h4", { text: "用户主动提交的相处偏好" }),
+      (growth.preference_requests || []).length
+        ? renderGrowthRequestHistory(growth.preference_requests, Number(persona.version || 0))
+        : h("p", { class: "muted", text: "用户尚未从资料页直接提交相处偏好。" }),
+    ]),
+    h("section", { class: "growth-section" }, [
+      h("h4", { text: "用户对已确认变化的反馈" }),
+      (growth.user_feedback || []).length ? renderGrowthFeedbackHistory(growth.user_feedback) : h("p", { class: "muted", text: "用户尚未反馈已确认变化是否更合适。" }),
     ]),
     h("section", { class: "growth-section" }, [
       h("h4", { text: "版本历史" }),
@@ -708,6 +835,88 @@ function renderGrowthMemoryList(items) {
   }));
 }
 
+function renderGrowthFeedbackHistory(items) {
+  return h("div", { class: "growth-feedback-list" }, items.map(renderGrowthFeedbackItem));
+}
+
+function renderGrowthRequestHistory(items, currentVersion) {
+  return h("div", { class: "growth-request-list" }, items.map((item) => {
+    const pending = item.suggestion_status === "pending";
+    const stale = pending && Number(item.base_version || 0) !== Number(currentVersion || 0);
+    const status = Number(item.withdrawn_at || 0)
+      ? "用户已撤回"
+      : item.suggestion_status === "applied"
+      ? "已形成变化"
+      : item.suggestion_status === "dismissed"
+        ? "本次未采纳"
+        : stale
+          ? "需重新确认"
+          : "待审核";
+    return h("article", { class: `growth-request-item ${item.suggestion_status || "recorded"} ${stale ? "stale" : ""}`.trim() }, [
+      h("div", { class: "growth-request-head" }, [
+        h("strong", { text: `请求 #${item.id}` }),
+        h("small", { class: pending && !stale ? "request-state" : "", text: status }),
+      ]),
+      h("p", { text: item.request_text || "" }),
+      h("small", { text: item.created_at ? formatTs(item.created_at) : "" }),
+      item.suggestion_id ? revisionLinkLine(item.suggestion_id) : null,
+    ]);
+  }));
+}
+
+function renderGrowthFeedbackItem(item) {
+  const needsFollowup = item.reaction === "needs_adjustment" && !Number(item.resolved_at || 0);
+  const note = needsFollowup
+    ? h("textarea", {
+        class: "revision-decision-input",
+        rows: "2",
+        maxlength: "1000",
+        placeholder: "记录如何跟进了这次反馈（可选）",
+      })
+    : null;
+  const resolutionMeta = item.resolved_at
+    ? ["已跟进", item.resolved_by_user_id ? `管理员 #${item.resolved_by_user_id}` : "", formatTs(item.resolved_at)].filter(Boolean).join(" / ")
+    : "";
+  return h("article", { class: `growth-feedback-item ${item.reaction || ""} ${needsFollowup ? "open" : "resolved"}`.trim() }, [
+    h("div", { class: "growth-feedback-head" }, [
+      h("strong", { text: `v${item.reviewed_version} · ${item.reaction === "helpful" ? "这样更合适" : "还想调整"}` }),
+      needsFollowup ? h("small", { class: "followup-state", text: "待跟进" }) : h("small", { text: item.updated_at ? formatTs(item.updated_at) : "" }),
+    ]),
+    resolutionMeta ? h("small", { text: resolutionMeta }) : null,
+    item.detail_text ? h("p", { class: "growth-feedback-detail", text: `用户补充：${item.detail_text}` }) : null,
+    item.resolution_note ? h("p", { text: item.resolution_note }) : null,
+    note,
+    note ? h("div", { class: "inline-actions" }, [
+      h("button", {
+        type: "button",
+        class: "ghost",
+        text: "据此生成建议",
+        onclick: () => generateRevision(`跟进用户对已确认变化 v${item.reviewed_version} 的反馈：${item.detail_text || "用户标记仍需调整相处方式"}`),
+      }),
+      h("button", {
+        type: "button",
+        class: "ghost",
+        text: "标记已跟进",
+        onclick: () => resolveGrowthFeedback(item.reviewed_version, note.value),
+      }),
+    ]) : null,
+  ]);
+}
+
+async function resolveGrowthFeedback(reviewedVersion, note = "") {
+  state.error = "";
+  try {
+    await api(`/api/admin/persona-growth/feedback/resolve?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}`, {
+      method: "POST",
+      body: JSON.stringify({ reviewed_version: reviewedVersion, note: note.trim() }),
+    });
+    await loadPersonas();
+  } catch (err) {
+    state.error = err.message;
+  }
+  render();
+}
+
 function renderVersionList(items) {
   const versions = new Map(items.map((item) => [Number(item.version), item]));
   return h("div", { class: "version-list" }, items.map((item) => {
@@ -739,7 +948,7 @@ function versionTypeLabel(item) {
   const types = {
     initial_forge: "初始创建",
     user_profile_update: "用户编辑资料",
-    sculptor_review: "Sculptor 审核应用",
+    sculptor_review: "审核应用的人格调整",
   };
   return types[item.change_type] || item.reason || "历史版本";
 }
@@ -816,22 +1025,24 @@ function renderEvalPanel() {
   const failed = (result.cases || []).filter((item) => item.required && !item.passed && !item.skipped);
   return h("div", { class: "eval-panel" }, [
     h("div", { class: "inline-actions" }, [
-      h("button", { type: "button", text: state.runningEval ? "Running..." : "Run Core Eval", disabled: state.runningEval ? "disabled" : null, onclick: runMemoryEval }),
-      h("button", { type: "button", class: "ghost", text: "Run Chat Eval", disabled: state.runningEval ? "disabled" : null, onclick: runChatContextEval }),
-      h("button", { type: "button", class: "ghost", text: "Run Resolve Eval", disabled: state.runningEval ? "disabled" : null, onclick: runStateResolutionEval }),
-      h("button", { type: "button", class: "ghost", text: "Run Expiry Eval", disabled: state.runningEval ? "disabled" : null, onclick: runStateExpiryEval }),
-      h("button", { type: "button", class: "ghost", text: "Run Policy Eval", disabled: state.runningEval ? "disabled" : null, onclick: runMemoryPolicyEval }),
-      h("button", { type: "button", class: "ghost", text: "Run Live Eval", disabled: state.runningEval ? "disabled" : null, onclick: runLiveAnswerEval }),
-      h("button", { type: "button", class: "ghost", text: "Seed Data", onclick: seedMemoryEval }),
-      h("button", { type: "button", class: "ghost", text: "Run + Semantic", disabled: state.runningEval ? "disabled" : null, onclick: () => runMemoryEval(true) }),
+      h("button", { type: "button", text: state.runningEval ? "运行中..." : "运行核心评测", disabled: state.runningEval ? "disabled" : null, onclick: runMemoryEval }),
+      h("button", { type: "button", class: "ghost", text: "聊天上下文评测", disabled: state.runningEval ? "disabled" : null, onclick: runChatContextEval }),
+      h("button", { type: "button", class: "ghost", text: "资料上下文评测", disabled: state.runningEval ? "disabled" : null, onclick: runProfileContextEval }),
+      h("button", { type: "button", class: "ghost", text: "状态解决评测", disabled: state.runningEval ? "disabled" : null, onclick: runStateResolutionEval }),
+      h("button", { type: "button", class: "ghost", text: "状态过期评测", disabled: state.runningEval ? "disabled" : null, onclick: runStateExpiryEval }),
+      h("button", { type: "button", class: "ghost", text: "策略评测", disabled: state.runningEval ? "disabled" : null, onclick: runMemoryPolicyEval }),
+      h("button", { type: "button", class: "ghost", text: "实时回答评测", disabled: state.runningEval ? "disabled" : null, onclick: runLiveAnswerEval }),
+      h("button", { type: "button", class: "ghost", text: "资料实时评测", disabled: state.runningEval ? "disabled" : null, onclick: runProfileLiveAnswerEval }),
+      h("button", { type: "button", class: "ghost", text: "生成测试数据", onclick: seedMemoryEval }),
+      h("button", { type: "button", class: "ghost", text: "运行语义召回评测", disabled: state.runningEval ? "disabled" : null, onclick: () => runMemoryEval(true) }),
     ]),
     latest ? h("div", { class: `eval-result ${latest.status}` }, [
       h("strong", { text: `${latest.suite_name}: ${latest.status}` }),
       h("small", { text: `score ${Number(latest.score || 0).toFixed(2)} / run #${latest.id}` }),
       h("small", { text: `passed ${result.passed || 0}/${result.total || 0}, semantic ${result.semantic_status || "skipped"}` }),
-    ]) : h("p", { class: "muted", text: "No memory evaluation runs yet." }),
+    ]) : h("p", { class: "muted", text: "尚未运行记忆评测。" }),
     result.reply ? h("details", { class: "eval-reply" }, [
-      h("summary", { text: "Latest live reply" }),
+      h("summary", { text: "最近一次实时回答" }),
       h("pre", { text: result.reply }),
     ]) : null,
     failed.length ? h("div", { class: "eval-failures" }, failed.map((item) => h("details", {}, [
@@ -848,6 +1059,36 @@ async function seedMemoryEval() {
     const users = await api("/api/admin/users");
     state.users = users.users;
     state.selectedUserId = data.seed.user_id;
+    await loadPersonas();
+  } catch (err) {
+    state.error = err.message;
+  }
+  render();
+}
+
+async function seedGrowthDemo() {
+  state.error = "";
+  try {
+    const data = await api("/api/admin/demos/persona-growth/seed", { method: "POST", body: JSON.stringify({}) });
+    state.growthDemo = data.demo;
+    state.selectedUserId = data.demo.user_id;
+    await loadPersonas();
+  } catch (err) {
+    state.error = err.message;
+  }
+  render();
+}
+
+async function clearGrowthDemo() {
+  state.error = "";
+  try {
+    await api("/api/admin/demos/persona-growth", { method: "DELETE" });
+    state.growthDemo = null;
+    const users = await api("/api/admin/users");
+    state.users = users.users;
+    state.selectedUserId = state.users.some((item) => Number(item.id) === Number(state.user?.id))
+      ? state.user.id
+      : state.users[0]?.id || null;
     await loadPersonas();
   } catch (err) {
     state.error = err.message;
@@ -901,6 +1142,46 @@ async function runLiveAnswerEval() {
   render();
   try {
     const data = await api("/api/admin/evaluations/live-answer/run", {
+      method: "POST",
+      body: JSON.stringify({ reset_seed: true, include_semantic: false }),
+    });
+    const users = await api("/api/admin/users");
+    state.users = users.users;
+    state.selectedUserId = data.run.seed.user_id;
+    await loadPersonas();
+  } catch (err) {
+    state.error = err.message;
+  }
+  state.runningEval = false;
+  render();
+}
+
+async function runProfileContextEval() {
+  state.error = "";
+  state.runningEval = true;
+  render();
+  try {
+    const data = await api("/api/admin/evaluations/profile-context/run", {
+      method: "POST",
+      body: JSON.stringify({ reset_seed: true, include_semantic: false }),
+    });
+    const users = await api("/api/admin/users");
+    state.users = users.users;
+    state.selectedUserId = data.run.seed.user_id;
+    await loadPersonas();
+  } catch (err) {
+    state.error = err.message;
+  }
+  state.runningEval = false;
+  render();
+}
+
+async function runProfileLiveAnswerEval() {
+  state.error = "";
+  state.runningEval = true;
+  render();
+  try {
+    const data = await api("/api/admin/evaluations/profile-live-answer/run", {
       method: "POST",
       body: JSON.stringify({ reset_seed: true, include_semantic: false }),
     });
@@ -976,12 +1257,12 @@ async function runMemoryPolicyEval() {
 }
 
 function renderJudgements(items) {
-  if (!items.length) return h("p", { class: "muted", text: "No open memory judgements." });
+  if (!items.length) return h("p", { class: "muted", text: "暂无待处理的记忆审校。" });
   return h("div", { class: "judgement-list" }, items.map(renderJudgementItem));
 }
 
 function renderConflicts(items) {
-  if (!items.length) return h("p", { class: "muted", text: "No open memory conflicts." });
+  if (!items.length) return h("p", { class: "muted", text: "暂无待处理的记忆冲突。" });
   return h("div", { class: "conflict-list" }, items.map(renderConflictItem));
 }
 
@@ -1003,8 +1284,8 @@ function renderConflictItem(item) {
     ]),
     item.reason ? h("small", { text: item.reason }) : null,
     h("div", { class: "memory-actions" }, [
-      h("button", { type: "button", class: "ghost", text: "Resolved", onclick: () => setConflictStatus(item.id, "resolved") }),
-      h("button", { type: "button", class: "ghost", text: "Dismiss", onclick: () => setConflictStatus(item.id, "dismissed") }),
+      h("button", { type: "button", class: "ghost", text: "标记已解决", onclick: () => setConflictStatus(item.id, "resolved") }),
+      h("button", { type: "button", class: "ghost", text: "忽略", onclick: () => setConflictStatus(item.id, "dismissed") }),
     ]),
   ]);
 }
@@ -1035,8 +1316,8 @@ function renderJudgementItem(item) {
     flags.length ? h("small", { text: `flags: ${flags.join(", ")}` }) : null,
     reasons.length ? h("ul", { class: "plain-list" }, reasons.map((reason) => h("li", { text: reason }))) : null,
     h("div", { class: "memory-actions" }, [
-      h("button", { type: "button", class: "ghost", text: "Accepted", onclick: () => setJudgementStatus(item.id, "accepted") }),
-      h("button", { type: "button", class: "ghost", text: "Dismiss", onclick: () => setJudgementStatus(item.id, "dismissed") }),
+      h("button", { type: "button", class: "ghost", text: "接受", onclick: () => setJudgementStatus(item.id, "accepted") }),
+      h("button", { type: "button", class: "ghost", text: "忽略", onclick: () => setJudgementStatus(item.id, "dismissed") }),
     ]),
   ]);
 }
@@ -1058,7 +1339,7 @@ async function setJudgementStatus(id, status) {
 async function refresh() {
   state.error = "";
   try {
-    await loadReview();
+    await loadPersonas();
   } catch (err) {
     state.error = err.message;
   }

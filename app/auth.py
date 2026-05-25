@@ -253,11 +253,15 @@ def _token_from_header(authorization: str | None) -> str | None:
     return token.strip()
 
 
+def request_session_token(session_token: str | None, authorization: str | None) -> str | None:
+    return _token_from_header(authorization) or session_token
+
+
 def current_user(
     session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE),
     authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    token = session_token or _token_from_header(authorization)
+    token = request_session_token(session_token, authorization)
     if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="not authenticated")
 

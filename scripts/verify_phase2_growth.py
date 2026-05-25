@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -144,6 +145,14 @@ def verify_growth_chain(server, sculptor, user_id: int) -> None:
     assert growth["latest_reviewed_change"]["version"] == 2
     assert growth["latest_reviewed_change"]["unseen"] is True
     assert growth["latest_reviewed_change"]["highlights"] == ["回应方式更贴近你的偏好"]
+    assert growth["reviewed_changes"] == [
+        {
+            "version": 2,
+            "created_at": growth["latest_reviewed_change"]["created_at"],
+            "highlights": ["回应方式更贴近你的偏好"],
+            "feedback": None,
+        }
+    ]
     adaptation = next(item for item in growth["signals"] if item["kind"] == "adaptation")
     assert "回应方式更贴近你的偏好" in adaptation["text"]
     assert "减少长段回复" not in adaptation["text"]
@@ -154,6 +163,145 @@ def verify_growth_chain(server, sculptor, user_id: int) -> None:
     assert card["growth_notice"] is None
     growth = server.persona_growth(persona_id, {"id": user_id})["growth"]
     assert growth["latest_reviewed_change"]["unseen"] is False
+    assert growth["latest_reviewed_change"]["feedback"] is None
+    feedback = server.set_persona_growth_feedback(
+        persona_id,
+        server.PersonaGrowthFeedbackRequest(reaction="helpful"),
+        {"id": user_id},
+    )["feedback"]
+    assert feedback["reviewed_version"] == 2 and feedback["reaction"] == "helpful"
+    growth = server.persona_growth(persona_id, {"id": user_id})["growth"]
+    assert growth["latest_reviewed_change"]["feedback"]["reaction"] == "helpful"
+    assert growth["reviewed_changes"][0]["feedback"]["reaction"] == "helpful"
+    server.set_persona_growth_feedback(
+        persona_id,
+        server.PersonaGrowthFeedbackRequest(reaction="needs_adjustment", detail="还是太爱追问，希望留一点空间"),
+        {"id": user_id},
+    )
+    admin_growth = server.admin_persona_growth({"id": user_id}, user_id, persona_id)
+    assert len(admin_growth["user_feedback"]) == 1
+    assert admin_growth["user_feedback"][0]["reviewed_version"] == 2
+    assert admin_growth["user_feedback"][0]["reaction"] == "needs_adjustment"
+    assert admin_growth["user_feedback"][0]["detail_text"] == "还是太爱追问，希望留一点空间"
+    growth = server.persona_growth(persona_id, {"id": user_id})["growth"]
+    assert growth["latest_reviewed_change"]["feedback"]["detail_text"] == "还是太爱追问，希望留一点空间"
+    assert growth["latest_reviewed_change"]["feedback"]["followup_status"] == "waiting"
+    assert growth["reviewed_changes"][0]["feedback"] == {
+        "reaction": "needs_adjustment",
+        "followup_status": "waiting",
+    }
+    feedback_queue = next(item for item in server.admin_personas({"id": user_id}, user_id)["personas"] if int(item["id"]) == persona_id)
+    assert int(feedback_queue["adjustment_feedback_count"]) == 1
+    user_feedback_queue = next(item for item in server.admin_users({"id": user_id})["users"] if int(item["id"]) == user_id)
+    assert int(user_feedback_queue["adjustment_feedback_count"]) == 1
+    resolved = server.admin_resolve_persona_growth_feedback(
+        server.PersonaGrowthFeedbackResolutionRequest(reviewed_version=2, note="已记录，下次调整减少追问"),
+        {"id": user_id},
+        user_id,
+        persona_id,
+    )["feedback"]
+    assert int(resolved["resolved_at"]) > 0 and int(resolved["resolved_by_user_id"]) == user_id
+    assert resolved["resolution_note"] == "已记录，下次调整减少追问"
+    growth = server.persona_growth(persona_id, {"id": user_id})["growth"]
+    public_followup = growth["latest_reviewed_change"]["feedback"]
+    assert public_followup["followup_status"] == "completed"
+    assert int(public_followup["followed_up_at"]) == int(resolved["resolved_at"])
+    assert "已记录，下次调整减少追问" not in json.dumps(growth, ensure_ascii=False)
+    assert growth["reviewed_changes"][0]["feedback"] == {
+        "reaction": "needs_adjustment",
+        "followup_status": "completed",
+        "followed_up_at": int(resolved["resolved_at"]),
+    }
+    feedback_queue = next(item for item in server.admin_personas({"id": user_id}, user_id)["personas"] if int(item["id"]) == persona_id)
+    assert int(feedback_queue["adjustment_feedback_count"]) == 0
+    server.set_persona_growth_feedback(
+        persona_id,
+        server.PersonaGrowthFeedbackRequest(reaction="needs_adjustment", detail="追问还是多了些"),
+        {"id": user_id},
+    )
+    growth = server.persona_growth(persona_id, {"id": user_id})["growth"]
+    assert growth["latest_reviewed_change"]["feedback"]["followup_status"] == "waiting"
+    assert "followed_up_at" not in growth["latest_reviewed_change"]["feedback"]
+    reopened = server.admin_persona_growth({"id": user_id}, user_id, persona_id)["user_feedback"][0]
+    request = server.submit_persona_preference_request(
+        persona_id,
+        server.PersonaPreferenceRequest(detail="难过的时候先陪我，不要马上分析原因"),
+        {"id": user_id},
+    )["request"]
+    assert request["status"] == "waiting_review"
+    assert request["id"] > 0
+    growth = server.persona_growth(persona_id, {"id": user_id})["growth"]
+    assert growth["preference_requests"][0]["detail"] == "难过的时候先陪我，不要马上分析原因"
+    assert growth["preference_requests"][0]["status"] == "waiting_review"
+    admin_growth = server.admin_persona_growth({"id": user_id}, user_id, persona_id)
+    assert admin_growth["preference_requests"][0]["request_text"] == "难过的时候先陪我，不要马上分析原因"
+    assert admin_growth["preference_requests"][0]["suggestion_status"] == "pending"
+    with database.get_db() as db:
+        direct_fact = db.execute(
+            """
+            SELECT text, priority
+            FROM memory_facts
+            WHERE user_id = ? AND persona_id = ? AND text LIKE '用户主动提出的相处偏好：%'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (user_id, persona_id),
+        ).fetchone()
+        queued = db.execute(
+            """
+            SELECT id, status, origin, base_version
+            FROM persona_revision_suggestions
+            WHERE user_id = ? AND persona_id = ? AND origin = 'profile_request'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (user_id, persona_id),
+        ).fetchone()
+    assert "难过的时候先陪我" in direct_fact["text"] and direct_fact["priority"] == "high"
+    assert queued["status"] == "pending" and queued["origin"] == "profile_request"
+    assert int(queued["base_version"]) == 2
+    request_queue = next(item for item in server.admin_personas({"id": user_id}, user_id)["personas"] if int(item["id"]) == persona_id)
+    assert int(request_queue["pending_preference_request_count"]) == 1
+    user_request_queue = next(item for item in server.admin_users({"id": user_id})["users"] if int(item["id"]) == user_id)
+    assert int(user_request_queue["pending_preference_request_count"]) == 1
+    revised = server.submit_persona_preference_request(
+        persona_id,
+        server.PersonaPreferenceRequest(detail="难过的时候只陪着我，不要分析也不要追问"),
+        {"id": user_id},
+    )
+    assert revised["updated"] is True and revised["request"]["id"] == request["id"]
+    growth = server.persona_growth(persona_id, {"id": user_id})["growth"]
+    assert growth["preference_requests"][0]["detail"] == "难过的时候只陪着我，不要分析也不要追问"
+    assert len(growth["preference_requests"]) == 1
+    with database.get_db() as db:
+        direct_facts = db.execute(
+            """
+            SELECT text
+            FROM memory_facts
+            WHERE user_id = ? AND persona_id = ? AND text LIKE '用户主动提出的相处偏好：%'
+            """,
+            (user_id, persona_id),
+        ).fetchall()
+    assert len(direct_facts) == 1
+    assert "不要分析也不要追问" in direct_facts[0]["text"]
+    withdrawn = server.withdraw_persona_preference_request(persona_id, request["id"], {"id": user_id})["request"]
+    assert withdrawn["status"] == "withdrawn"
+    growth = server.persona_growth(persona_id, {"id": user_id})["growth"]
+    assert growth["preference_requests"][0]["status"] == "withdrawn"
+    with database.get_db() as db:
+        archived_fact = db.execute(
+            """
+            SELECT archived, valid_to
+            FROM memory_facts
+            WHERE user_id = ? AND persona_id = ? AND text LIKE '用户主动提出的相处偏好：%'
+            """,
+            (user_id, persona_id),
+        ).fetchone()
+    assert int(archived_fact["archived"]) == 1 and int(archived_fact["valid_to"]) > 0
+    request_queue = next(item for item in server.admin_personas({"id": user_id}, user_id)["personas"] if int(item["id"]) == persona_id)
+    assert int(request_queue["pending_preference_request_count"]) == 0
+    assert int(reopened["resolved_at"]) == 0 and reopened["resolution_note"] == ""
+    assert reopened["detail_text"] == "追问还是多了些"
+    feedback_queue = next(item for item in server.admin_personas({"id": user_id}, user_id)["personas"] if int(item["id"]) == persona_id)
+    assert int(feedback_queue["adjustment_feedback_count"]) == 1
 
     original_llm = sculptor._llm_suggestion
     sculptor._llm_suggestion = lambda current, context, reason: {
@@ -238,6 +386,16 @@ def verify_chat_feedback_queues_candidate(server, sculptor, chat, archivist, use
         )
         assert manual["origin"] == "manual"
         assert len([item for item in sculptor.list_revision_suggestions(user_id, persona_id) if item["status"] == "pending"]) == 2
+        queue = next(item for item in server.admin_personas({"id": user_id}, user_id)["personas"] if int(item["id"]) == persona_id)
+        assert int(queue["pending_revision_count"]) == 2
+        assert int(queue["pending_auto_revision_count"]) == 1
+        assert int(queue["stale_revision_count"]) == 0
+        assert int(queue["adjustment_feedback_count"]) == 0
+        user_queue = next(item for item in server.admin_users({"id": user_id})["users"] if int(item["id"]) == user_id)
+        assert int(user_queue["pending_revision_count"]) == 2
+        assert int(user_queue["pending_auto_revision_count"]) == 1
+        assert int(user_queue["stale_revision_count"]) == 1
+        assert int(user_queue["adjustment_feedback_count"]) == 1
 
         sculptor.apply_revision_suggestion(user_id, int(candidate["id"]))
         chat.db_chat(
@@ -248,6 +406,11 @@ def verify_chat_feedback_queues_candidate(server, sculptor, chat, archivist, use
         )
         revisions = sculptor.list_revision_suggestions(user_id, persona_id)
         assert next(item for item in revisions if item["id"] == manual["id"])["stale"]
+        queue = next(item for item in server.admin_personas({"id": user_id}, user_id)["personas"] if int(item["id"]) == persona_id)
+        assert int(queue["pending_revision_count"]) == 1
+        assert int(queue["pending_auto_revision_count"]) == 1
+        assert int(queue["stale_revision_count"]) == 1
+        assert int(queue["adjustment_feedback_count"]) == 0
         dismissed = sculptor.dismiss_revision_suggestion(
             user_id,
             int(manual["id"]),
@@ -257,6 +420,16 @@ def verify_chat_feedback_queues_candidate(server, sculptor, chat, archivist, use
         assert dismissed["status"] == "dismissed"
         assert dismissed["decision_note"] == "已由更贴近原始反馈的自动候选覆盖"
         assert int(dismissed["decided_by_user_id"]) == user_id and int(dismissed["decided_at"]) > 0
+        queue = next(item for item in server.admin_personas({"id": user_id}, user_id)["personas"] if int(item["id"]) == persona_id)
+        assert int(queue["pending_revision_count"]) == 1
+        assert int(queue["pending_auto_revision_count"]) == 1
+        assert int(queue["stale_revision_count"]) == 0
+        assert int(queue["adjustment_feedback_count"]) == 0
+        user_queue = next(item for item in server.admin_users({"id": user_id})["users"] if int(item["id"]) == user_id)
+        assert int(user_queue["pending_revision_count"]) == 1
+        assert int(user_queue["pending_auto_revision_count"]) == 1
+        assert int(user_queue["stale_revision_count"]) == 1
+        assert int(user_queue["adjustment_feedback_count"]) == 1
         next_pending = [item for item in revisions if item["status"] == "pending" and not item["stale"]]
         assert len(next_pending) == 1
         assert int(next_pending[0]["base_version"]) == int(candidate["base_version"]) + 1
@@ -269,18 +442,227 @@ def verify_chat_feedback_queues_candidate(server, sculptor, chat, archivist, use
         archivist.should_use_llm_for_extraction = original_extraction_policy
 
 
+def verify_applied_preference_request_receipt(server, sculptor, user_id: int) -> None:
+    original_forge = server.forge_persona
+    server.forge_persona = lambda **kwargs: {**forged_persona(), "name": "微澜"}
+    try:
+        persona = server.create_persona(server.PersonaCreateRequest(description="gentle"), {"id": user_id})["persona"]
+    finally:
+        server.forge_persona = original_forge
+    persona_id = int(persona["id"])
+    request = server.submit_persona_preference_request(
+        persona_id,
+        server.PersonaPreferenceRequest(detail="安慰我时说简短一点，先听我说完"),
+        {"id": user_id},
+    )["request"]
+    admin_growth = server.admin_persona_growth({"id": user_id}, user_id, persona_id)
+    suggestion_id = int(admin_growth["preference_requests"][0]["suggestion_id"])
+    sculptor.apply_revision_suggestion(
+        user_id,
+        suggestion_id,
+        reviewer_user_id=user_id,
+        decision_note="内部审核备注不得出现在普通端结果回执",
+    )
+    growth = server.persona_growth(persona_id, {"id": user_id})["growth"]
+    receipt = next(item for item in growth["preference_requests"] if int(item["id"]) == int(request["id"]))
+    assert receipt["status"] == "confirmed"
+    assert receipt["result"]["version"] == 2
+    assert receipt["result"]["highlights"] == ["回应方式更贴近你的偏好"]
+    assert "内部审核备注" not in json.dumps(receipt, ensure_ascii=False)
+
+
+def verify_stale_preference_request_retry(server, sculptor, user_id: int) -> None:
+    original_forge = server.forge_persona
+    server.forge_persona = lambda **kwargs: {**forged_persona(), "name": "待续"}
+    try:
+        persona = server.create_persona(server.PersonaCreateRequest(description="retry"), {"id": user_id})["persona"]
+    finally:
+        server.forge_persona = original_forge
+    persona_id = int(persona["id"])
+    request = server.submit_persona_preference_request(
+        persona_id,
+        server.PersonaPreferenceRequest(detail="我安静的时候先陪我待一会儿，不要立刻追问"),
+        {"id": user_id},
+    )["request"]
+    original_suggestion_id = int(
+        server.admin_persona_growth({"id": user_id}, user_id, persona_id)["preference_requests"][0]["suggestion_id"]
+    )
+    card = next(item for item in server.personas({"id": user_id})["personas"] if int(item["id"]) == persona_id)
+    assert card["growth_action"] is None
+    server.update_persona(
+        persona_id,
+        server.PersonaUpdateRequest(summary="最近更愿意慢慢交流"),
+        {"id": user_id},
+    )
+    stale_item = server.persona_growth(persona_id, {"id": user_id})["growth"]["preference_requests"][0]
+    assert stale_item["status"] == "needs_review_again"
+    assert stale_item["can_retry"] is True and stale_item["can_withdraw"] is True
+    card = next(item for item in server.personas({"id": user_id})["personas"] if int(item["id"]) == persona_id)
+    assert card["growth_action"] == {
+        "kind": "preference_retry",
+        "title": "有偏好需要重新确认",
+        "count": 1,
+    }
+    queue = next(item for item in server.admin_personas({"id": user_id}, user_id)["personas"] if int(item["id"]) == persona_id)
+    assert int(queue["stale_revision_count"]) == 1
+    assert int(queue["cleanable_stale_revision_count"]) == 0
+    protected = next(
+        item for item in server.admin_persona_revisions({"id": user_id}, user_id, persona_id)["suggestions"]
+        if int(item["id"]) == original_suggestion_id
+    )
+    assert protected["protected_by_active_request"] is True
+    skipped = server.admin_dismiss_stale_persona_revisions({"id": user_id}, user_id, persona_id)
+    assert skipped["dismissed_count"] == 0
+    assert next(
+        item for item in sculptor.list_revision_suggestions(user_id, persona_id)
+        if int(item["id"]) == original_suggestion_id
+    )["status"] == "pending"
+
+    retried = server.retry_persona_preference_request(persona_id, request["id"], {"id": user_id})["request"]
+    assert retried["id"] == request["id"] and retried["status"] == "waiting_review"
+    growth = server.persona_growth(persona_id, {"id": user_id})["growth"]
+    refreshed = next(item for item in growth["preference_requests"] if int(item["id"]) == int(request["id"]))
+    assert refreshed["status"] == "waiting_review" and refreshed["can_retry"] is False
+    card = next(item for item in server.personas({"id": user_id})["personas"] if int(item["id"]) == persona_id)
+    assert card["growth_action"] is None
+    admin_request = server.admin_persona_growth({"id": user_id}, user_id, persona_id)["preference_requests"][0]
+    active_suggestion_id = int(admin_request["suggestion_id"])
+    assert active_suggestion_id != original_suggestion_id
+    revisions = sculptor.list_revision_suggestions(user_id, persona_id)
+    original = next(item for item in revisions if int(item["id"]) == original_suggestion_id)
+    active = next(item for item in revisions if int(item["id"]) == active_suggestion_id)
+    assert original["status"] == "pending" and original["stale"] is True
+    assert active["status"] == "pending" and active["stale"] is False and int(active["base_version"]) == 2
+    queue = next(item for item in server.admin_personas({"id": user_id}, user_id)["personas"] if int(item["id"]) == persona_id)
+    assert int(queue["stale_revision_count"]) == 1
+    assert int(queue["cleanable_stale_revision_count"]) == 1
+    old_in_admin = next(
+        item for item in server.admin_persona_revisions({"id": user_id}, user_id, persona_id)["suggestions"]
+        if int(item["id"]) == original_suggestion_id
+    )
+    assert old_in_admin["protected_by_active_request"] is False
+    cleaned = server.admin_dismiss_stale_persona_revisions({"id": user_id}, user_id, persona_id)
+    assert cleaned["dismissed_count"] == 1
+    assert cleaned["suggestions"][0]["decision_note"] == "人格版本已更新，批量关闭不再可执行的过期建议"
+    revisions = sculptor.list_revision_suggestions(user_id, persona_id)
+    original = next(item for item in revisions if int(item["id"]) == original_suggestion_id)
+    active = next(item for item in revisions if int(item["id"]) == active_suggestion_id)
+    assert original["status"] == "dismissed"
+    assert active["status"] == "pending" and active["stale"] is False
+    with database.get_db() as db:
+        facts = db.execute(
+            """
+            SELECT id
+            FROM memory_facts
+            WHERE user_id = ? AND persona_id = ? AND type = 'persona_feedback'
+              AND text LIKE '用户主动提出的相处偏好：%'
+            """,
+            (user_id, persona_id),
+        ).fetchall()
+    assert len(facts) == 1
+
+
+def verify_growth_demo_sandbox(server, growth_demo, admin_id: int) -> None:
+    demo = server.admin_seed_growth_demo({"id": admin_id})["demo"]
+    demo_user_id = int(demo["user_id"])
+    persona_id = int(demo["persona_id"])
+    assert demo["username"] == growth_demo.DEMO_USERNAME
+    assert demo["password"] == growth_demo.DEMO_PASSWORD
+
+    persona = next(item for item in server.admin_personas({"id": admin_id}, demo_user_id)["personas"] if int(item["id"]) == persona_id)
+    assert persona["name"] == "栖夏" and int(persona["version"]) == 2
+    assert int(persona["pending_revision_count"]) == 1
+    assert int(persona["pending_auto_revision_count"]) == 1
+    assert int(persona["pending_preference_request_count"]) == 1
+    assert int(persona["adjustment_feedback_count"]) == 1
+
+    growth = server.persona_growth(persona_id, {"id": demo_user_id})["growth"]
+    assert growth["latest_reviewed_change"]["version"] == 2
+    assert growth["latest_reviewed_change"]["feedback"]["reaction"] == "needs_adjustment"
+    assert "不要立刻分析" in growth["latest_reviewed_change"]["feedback"]["detail_text"]
+    assert growth["latest_reviewed_change"]["feedback"]["followup_status"] == "waiting"
+    assert growth["reviewed_changes"][0]["version"] == 2
+    assert growth["reviewed_changes"][0]["feedback"] == {
+        "reaction": "needs_adjustment",
+        "followup_status": "waiting",
+    }
+    assert growth["preference_requests"][0]["status"] == "waiting_review"
+    assert growth["preference_requests"][0]["can_withdraw"] is True
+    assert "不要马上替我分析" in growth["preference_requests"][0]["detail"]
+    admin_growth = server.admin_persona_growth({"id": admin_id}, demo_user_id, persona_id)
+    assert admin_growth["preference_requests"][0]["suggestion_status"] == "pending"
+    assert "不要马上替我分析" in admin_growth["preference_requests"][0]["request_text"]
+    card = next(item for item in server.personas({"id": demo_user_id})["personas"] if int(item["id"]) == persona_id)
+    assert card["growth_notice"]["version"] == 2
+
+    cleared = server.admin_clear_growth_demo({"id": admin_id})["demo"]
+    assert cleared["removed"] is True
+    assert not any(item["username"] == growth_demo.DEMO_USERNAME for item in server.admin_users({"id": admin_id})["users"])
+
+
+def verify_sparse_profile_discovery_policy(mirror, chat, user_id: int) -> None:
+    mirror.update_user_insight(
+        user_id,
+        profile_summary="用户明确说过喜欢饭团。",
+        interaction_style=[],
+        emotional_patterns=[],
+        inferred_profile={},
+        topic_model={"likes": ["饭团"], "dislikes": [], "avoid_topics": [], "safe_topics": ["饭团"]},
+        guidance={"tone_rules": [], "topic_rules": [], "support_rules": [], "do_not": []},
+    )
+    prompt = mirror.discovery_prompt(user_id)
+    assert "not a default conversational hook" in prompt
+    assert "profile is currently sparse" in prompt
+    assert "learning a different dimension" in prompt
+    assert "direct or somewhat personal" in prompt and "easy to decline" in prompt
+    assert "Do not push after hesitation or refusal" in prompt
+    guarded = mirror.discovery_prompt(
+        user_id,
+        recent_assistant_messages=["你说喜欢饭团，那晚饭还会想吃饭团吗？"],
+        current_user_text="我今天有点累。",
+    )
+    assert '["饭团"]' in guarded
+    assert "Do not bring these topics back in this reply" in guarded
+    relevant = mirror.discovery_prompt(
+        user_id,
+        recent_assistant_messages=["你说喜欢饭团。"],
+        current_user_text="我现在想吃饭团。",
+    )
+    assert "Do not bring these topics back in this reply" not in relevant
+    requested_profile = chat._profile_usage_prompt(
+        "今天是个特别的日子，你看看我的信息",
+        current_time=datetime(2026, 5, 25, 13, 0, tzinfo=timezone.utc),
+    )
+    assert "current_local_date: 2026-05-25" in requested_profile
+    assert "This turn invites checking the saved user profile" in requested_profile
+    assert "Do not add unrequested memories" in requested_profile
+    assert "Today is the user's birthday" not in requested_profile
+    ordinary_turn = chat._profile_usage_prompt(
+        "今天有点累。",
+        current_time=datetime(2026, 5, 26, 13, 0, tzinfo=timezone.utc),
+    )
+    assert "This turn does not explicitly invite profile lookup" in ordinary_turn
+    assert "birthday" not in ordinary_turn.lower()
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         database.DB_PATH = Path(tmp) / "phase2.db"
         import app.sculptor as sculptor
         import app.archivist as archivist
         import app.db_chat as chat
+        import app.growth_demo as growth_demo
+        import app.mirror as mirror
         import app.server as server
 
         database.init_db()
         user_id = seed_user()
         verify_growth_chain(server, sculptor, user_id)
         verify_chat_feedback_queues_candidate(server, sculptor, chat, archivist, user_id)
+        verify_applied_preference_request_receipt(server, sculptor, user_id)
+        verify_stale_preference_request_retry(server, sculptor, user_id)
+        verify_growth_demo_sandbox(server, growth_demo, user_id)
+        verify_sparse_profile_discovery_policy(mirror, chat, user_id)
     print("Phase 2 persona growth verification passed")
 
 

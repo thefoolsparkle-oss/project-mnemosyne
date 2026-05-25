@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import tempfile
 import sys
+from http.cookies import SimpleCookie
 from pathlib import Path
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -185,9 +186,46 @@ def verify_chat_failure_and_idempotency(chat, server, user_id: int, persona_id: 
     assert pending.get("pending") is True and model_calls["count"] == 0
 
 
+def verify_tab_scoped_login(server, auth) -> None:
+    auth.create_user("cookie_user", "password-cookie", "普通页")
+    auth.create_user("tab_user", "password-tab", "独立页")
+
+    cookie_response = Response()
+    server.login(server.LoginRequest(username="cookie_user", password="password-cookie"), cookie_response)
+    cookie = SimpleCookie()
+    cookie.load(cookie_response.headers["set-cookie"])
+    cookie_token = cookie[auth.SESSION_COOKIE].value
+
+    tab_response = Response()
+    isolated = server.login(
+        server.LoginRequest(username="tab_user", password="password-tab", tab_session=True),
+        tab_response,
+    )
+    tab_token = isolated["tab_session_token"]
+    assert "set-cookie" not in tab_response.headers
+    assert auth.current_user(session_token=cookie_token, authorization=f"Bearer {tab_token}")["username"] == "tab_user"
+    assert auth.current_user(session_token=cookie_token, authorization=None)["username"] == "cookie_user"
+
+    guest_response = Response()
+    isolated_guest = server.guest_login(guest_response, tab_session=True)
+    guest_token = isolated_guest["tab_session_token"]
+    assert isolated_guest["user"]["is_guest"] is True
+    assert "set-cookie" not in guest_response.headers
+    assert bool(auth.current_user(session_token=cookie_token, authorization=f"Bearer {guest_token}")["is_guest"]) is True
+
+    server.logout(Response(), cookie_token, f"Bearer {tab_token}")
+    try:
+        auth.current_user(session_token=None, authorization=f"Bearer {tab_token}")
+        raise AssertionError("tab-scoped logout should delete only the bearer session")
+    except HTTPException as exc:
+        assert exc.status_code == 401
+    assert auth.current_user(session_token=cookie_token, authorization=None)["username"] == "cookie_user"
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         database.DB_PATH = Path(tmp) / "phase1.db"
+        import app.auth as auth
         import app.db_chat as chat
         import app.persona_forge as forge
         import app.server as server
@@ -197,6 +235,7 @@ def main() -> None:
         verify_relationship_authority(forge)
         verify_naming_and_restore(server, user_id)
         verify_chat_failure_and_idempotency(chat, server, user_id, persona_id)
+        verify_tab_scoped_login(server, auth)
     print("Phase 1 ordinary-user flow verification passed")
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 
 from .archivist import extract_and_store, recall_memories
 from .conversation_memory import conversation_summary_prompt, refresh_conversation_summary
@@ -11,7 +12,7 @@ from .layered_memory import layered_memory_prompt, recall_layered_memory, state_
 from .llm_client import LLMProviderError, call_llm_api
 from .memory_rag import semantic_memory_prompt, semantic_memory_recall
 from .memory_policy import policy_snapshot, should_refresh_summary, should_use_semantic_recall
-from .mirror import insight_prompt, update_interaction_insight
+from .mirror import discovery_prompt, insight_prompt, update_interaction_insight
 from .sculptor import maybe_queue_revision_from_feedback
 
 
@@ -370,6 +371,18 @@ def db_chat(
     layered_context = _best_effort("LayeredPrompt", lambda: layered_memory_prompt(layered), "Layered memory: unavailable.")
     semantic_context = _best_effort("SemanticPrompt", lambda: semantic_memory_prompt(semantic_memories), "Semantic memory: unavailable.")
     legacy_context = _best_effort("LegacyMemoryPrompt", lambda: _memory_prompt(recalled_memories), "Relevant long-term memory: unavailable.")
+    discovery_context = _best_effort(
+        "DiscoveryPrompt",
+        lambda: discovery_prompt(
+            user_id,
+            recent_assistant_messages=[
+                str(item.get("content") or "") for item in history if item.get("role") == "assistant"
+            ],
+            current_user_text=message,
+        ),
+        "Conversation discovery policy: unavailable.",
+    )
+    profile_usage_context = _profile_usage_prompt(message)
     runtime_persona_context = _persona_runtime_prompt(persona)
     profile_context = _safe_context(profile_context)
     insight_context = _safe_context(insight_context)
@@ -379,6 +392,8 @@ def db_chat(
     layered_context = _safe_context(layered_context)
     semantic_context = _safe_context(semantic_context)
     legacy_context = _safe_context(legacy_context)
+    discovery_context = _safe_context(discovery_context)
+    profile_usage_context = _safe_context(profile_usage_context)
     runtime_persona_context = _safe_context(runtime_persona_context)
     profile_context = _replace_stale_persona_names(profile_context, str(persona.get("name") or ""), stale_persona_names)
     insight_context = _replace_stale_persona_names(insight_context, str(persona.get("name") or ""), stale_persona_names)
@@ -388,6 +403,8 @@ def db_chat(
     layered_context = _replace_stale_persona_names(layered_context, str(persona.get("name") or ""), stale_persona_names)
     semantic_context = _replace_stale_persona_names(semantic_context, str(persona.get("name") or ""), stale_persona_names)
     legacy_context = _replace_stale_persona_names(legacy_context, str(persona.get("name") or ""), stale_persona_names)
+    discovery_context = _replace_stale_persona_names(discovery_context, str(persona.get("name") or ""), stale_persona_names)
+    profile_usage_context = _replace_stale_persona_names(profile_usage_context, str(persona.get("name") or ""), stale_persona_names)
     stored_memories = scrub_identity_obj(stored_memories)
     semantic_memories = scrub_identity_obj(semantic_memories)
     recalled_memories = scrub_identity_obj(recalled_memories)
@@ -406,6 +423,8 @@ def db_chat(
         {"role": "system", "content": semantic_context},
         {"role": "system", "content": legacy_context},
         *history,
+        {"role": "system", "content": discovery_context},
+        {"role": "system", "content": profile_usage_context},
         {"role": "system", "content": _final_persona_lock(persona)},
         {"role": "user", "content": message},
     ]
@@ -426,6 +445,8 @@ def db_chat(
             "layered_prompt": layered_context,
             "semantic_memory_prompt": semantic_context,
             "legacy_memory_prompt": legacy_context,
+            "discovery_prompt": discovery_context,
+            "profile_usage_prompt": profile_usage_context,
             "runtime_persona_prompt": runtime_persona_context,
             "stored_memories": stored_memories,
             "semantic_memories": semantic_memories,
@@ -900,6 +921,32 @@ def _profile_prompt(profile: dict) -> str:
         f"- preferences: {json.dumps(preferences_obj, ensure_ascii=False)}\n"
         "Use this as background only. Do not recite it unless relevant."
     )
+
+
+def _profile_usage_prompt(user_text: str, *, current_time: datetime | None = None) -> str:
+    now = current_time or datetime.now().astimezone()
+    lookup_cues = (
+        "你看我信息", "看我信息", "看看我信息", "看我资料", "查资料",
+        "个人资料", "个人信息", "我的资料", "我的信息",
+        "你知道我", "你记得我", "你了解我", "你记不记得我",
+        "今天是什么日子", "今天是个特别", "今天是个特殊", "特别的日子", "特殊的日子",
+        "今天是几号", "今天几号", "今天是525", "生日",
+    )
+    needs_lookup = any(cue in str(user_text or "") for cue in lookup_cues)
+    lines = [
+        "Saved user profile usage policy:",
+        f"- current_local_date: {now.date().isoformat()}",
+        f"- local_timezone: {now.tzname() or 'local server timezone'}",
+        "- Saved profile fields above are reliable user-provided background facts, not themes to mention proactively.",
+        "- Do not volunteer a saved fact, occasion, preference, or personal detail merely to perform familiarity or intimacy.",
+        "- When the current question asks what you know about the user, asks you to check their information, or offers a clue resolvable from profile fields and the date, use the relevant fact to answer directly and briefly.",
+    ]
+    if needs_lookup:
+        lines.append("- This turn invites checking the saved user profile if it resolves the user's question. Use only the relevant fact and do not turn it into a recurring topic afterward.")
+        lines.append("- For a profile lookup request, answer only the requested saved fields or the one fact needed to resolve the clue. Do not add unrequested memories, interests, occasions, or intimacy performances.")
+    else:
+        lines.append("- This turn does not explicitly invite profile lookup. Keep saved profile facts in the background unless strictly required to answer.")
+    return "\n".join(lines)
 
 
 def _memory_prompt(memories: list[dict]) -> str:

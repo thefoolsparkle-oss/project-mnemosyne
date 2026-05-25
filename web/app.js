@@ -1,4 +1,6 @@
 const app = document.getElementById("app");
+const TAB_SESSION_MODE_KEY = "mnemosyne:tab-session-mode";
+const TAB_SESSION_TOKEN_KEY = "mnemosyne:tab-session-token";
 
 const text = {
   appName: "忆界树",
@@ -59,11 +61,58 @@ let state = {
   sending: false,
 };
 
+function tabSessionMode() {
+  try {
+    return sessionStorage.getItem(TAB_SESSION_MODE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function tabSessionToken() {
+  try {
+    return sessionStorage.getItem(TAB_SESSION_TOKEN_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function prepareAuthMode(isolated) {
+  try {
+    if (isolated) {
+      sessionStorage.setItem(TAB_SESSION_MODE_KEY, "1");
+      sessionStorage.removeItem(TAB_SESSION_TOKEN_KEY);
+    } else {
+      sessionStorage.removeItem(TAB_SESSION_MODE_KEY);
+      sessionStorage.removeItem(TAB_SESSION_TOKEN_KEY);
+    }
+  } catch {
+    // Session storage may be unavailable in restricted browser modes.
+  }
+}
+
+function acceptAuthSession(data, isolated) {
+  prepareAuthMode(isolated);
+  if (!isolated) return;
+  if (!data.tab_session_token) {
+    throw new Error("服务端尚未加载独立登录功能，请重启程序后再试。");
+  }
+  try {
+    sessionStorage.setItem(TAB_SESSION_TOKEN_KEY, data.tab_session_token);
+  } catch {
+    throw new Error("浏览器无法保存本页登录状态，请取消独立登录后重试。");
+  }
+}
+
 async function api(path, options = {}) {
+  const isolated = tabSessionMode();
+  const token = tabSessionToken();
+  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  if (isolated && token) headers.Authorization = `Bearer ${token}`;
   const res = await fetch(path, {
-    credentials: "same-origin",
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     ...options,
+    credentials: isolated ? "omit" : "same-origin",
+    headers,
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -75,9 +124,14 @@ async function api(path, options = {}) {
 async function uploadAvatarFile(file) {
   const form = new FormData();
   form.append("file", file);
+  const isolated = tabSessionMode();
+  const token = tabSessionToken();
+  const headers = {};
+  if (isolated && token) headers.Authorization = `Bearer ${token}`;
   const res = await fetch("/api/uploads/avatar", {
     method: "POST",
-    credentials: "same-origin",
+    credentials: isolated ? "omit" : "same-origin",
+    headers,
     body: form,
   });
   const data = await res.json().catch(() => ({}));
@@ -118,6 +172,8 @@ async function bootstrap() {
 function renderAuth(mode) {
   const isRegister = mode === "register";
   const form = h("form", { class: "auth-card" });
+  const isolatedLogin = h("input", { type: "checkbox" });
+  isolatedLogin.checked = tabSessionMode();
   form.append(
     h("p", { class: "eyebrow", text: "Project Mnemosyne" }),
     h("h1", { text: isRegister ? text.register : text.login }),
@@ -136,6 +192,13 @@ function renderAuth(mode) {
   if (isRegister) {
     form.append(h("label", {}, [text.nickname, h("input", { name: "nickname", autocomplete: "nickname" })]));
   }
+  form.append(h("label", { class: "auth-session-option" }, [
+    isolatedLogin,
+    h("span", {}, [
+      h("strong", { text: "此标签页独立登录" }),
+      h("small", { text: "同一浏览器同时测试多个账号时使用" }),
+    ]),
+  ]));
   form.append(
     h("button", { type: "submit", text: isRegister ? text.register : text.login }),
     h("button", {
@@ -151,7 +214,10 @@ function renderAuth(mode) {
       onclick: async () => {
         error.textContent = "";
         try {
-          const data = await api("/api/auth/guest", { method: "POST" });
+          const isolated = isolatedLogin.checked;
+          prepareAuthMode(isolated);
+          const data = await api(`/api/auth/guest?tab_session=${isolated ? "true" : "false"}`, { method: "POST" });
+          acceptAuthSession(data, isolated);
           state.user = data.user;
           state.profile = data.profile;
           await loadMainData({ openLatest: true });
@@ -171,10 +237,14 @@ function renderAuth(mode) {
     error.textContent = "";
     const body = Object.fromEntries(new FormData(form).entries());
     try {
+      const isolated = isolatedLogin.checked;
+      prepareAuthMode(isolated);
+      body.tab_session = isolated;
       const data = await api(isRegister ? "/api/auth/register" : "/api/auth/login", {
         method: "POST",
         body: JSON.stringify(body),
       });
+      acceptAuthSession(data, isolated);
       state.user = data.user;
       state.profile = data.profile;
       await loadMainData({ openLatest: true });
@@ -291,12 +361,28 @@ async function openPersonaPanel() {
   }
 }
 
+async function openPersonaGrowthNotice(event, persona = state.activePersona) {
+  event?.preventDefault();
+  event?.stopPropagation();
+  if (persona) state.activePersona = persona;
+  await openPersonaPanel();
+}
+
 function clearGrowthNotice(personaId) {
   state.personas = state.personas.map((persona) => (
     Number(persona.id) === Number(personaId) ? { ...persona, growth_notice: null } : persona
   ));
   if (Number(state.activePersona?.id) === Number(personaId)) {
     state.activePersona = { ...state.activePersona, growth_notice: null };
+  }
+}
+
+function clearGrowthAction(personaId) {
+  state.personas = state.personas.map((persona) => (
+    Number(persona.id) === Number(personaId) ? { ...persona, growth_action: null } : persona
+  ));
+  if (Number(state.activePersona?.id) === Number(personaId)) {
+    state.activePersona = { ...state.activePersona, growth_action: null };
   }
 }
 
@@ -419,6 +505,7 @@ function renderSidebar() {
           },
         })
       : null,
+    h("button", { type: "button", class: "ghost full", text: "切换账号（仅本页）", onclick: switchAccountInThisTab }),
     h("button", { type: "button", class: "ghost full", text: text.logout, onclick: logout }),
   ]);
 }
@@ -569,8 +656,10 @@ function renderGuestConvertBox(profile) {
               username: username.value,
               password: password.value,
               nickname: nickname.value,
+              tab_session: tabSessionMode(),
             }),
           });
+          if (tabSessionMode()) acceptAuthSession(data, true);
           state.user = data.user;
           state.profile = data.profile;
           state.profileOpen = false;
@@ -942,10 +1031,19 @@ function renderHomePersonaCard(entry) {
   const persona = entry.persona;
   const conversation = entry.conversation;
   const archivedConversation = entry.archivedConversation;
-  return h("button", {
-    type: "button",
+  const openCard = () => conversation ? openConversationItem(conversation) : openPersonaItem(persona);
+  return h("article", {
     class: "home-persona-card",
-    onclick: () => conversation ? openConversationItem(conversation) : openPersonaItem(persona),
+    role: "button",
+    tabindex: "0",
+    onclick: openCard,
+    onkeydown: (event) => {
+      if (event.target !== event.currentTarget) return;
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openCard();
+      }
+    },
   }, [
     avatar(persona.name, persona.avatar_url),
     h("span", { class: "home-card-copy" }, [
@@ -962,19 +1060,48 @@ function renderHomePersonaCard(entry) {
           ? h("small", { text: `历史：${conversationPreview(archivedConversation)}` })
           : renderInlinePersonaMeta(persona) || h("small", { text: persona.summary || "点开说第一句" }),
     ]),
-    renderPersonaAlerts(entry),
+    renderPersonaAlerts(entry, false, persona),
   ]);
 }
 
-function renderPersonaAlerts(entry, compact = false) {
+function renderPersonaAlerts(entry, compact = false, growthActionPersona = null) {
   const notices = [];
   if (entry.unreadCount) notices.push(renderUnreadBadge(entry.unreadCount));
   if (entry.persona?.growth_notice) {
-    notices.push(h("span", {
-      class: `growth-notice-badge ${compact ? "compact" : ""}`.trim(),
-      title: "查看资料中的相处痕迹",
-      text: compact ? "变化" : "有变化",
-    }));
+    notices.push(
+      growthActionPersona
+        ? h("button", {
+            type: "button",
+            class: `growth-notice-badge action ${compact ? "compact" : ""}`.trim(),
+            title: "直接查看相处痕迹",
+            "aria-label": "直接查看相处痕迹",
+            text: compact ? "变化" : "查看变化",
+            onclick: (event) => openPersonaGrowthNotice(event, growthActionPersona),
+          })
+        : h("span", {
+            class: `growth-notice-badge ${compact ? "compact" : ""}`.trim(),
+            title: "查看资料中的相处痕迹",
+            text: compact ? "变化" : "有变化",
+          })
+    );
+  }
+  if (entry.persona?.growth_action?.kind === "preference_retry") {
+    notices.push(
+      growthActionPersona
+        ? h("button", {
+            type: "button",
+            class: `preference-action-badge action ${compact ? "compact" : ""}`.trim(),
+            title: "打开相处痕迹重新确认偏好",
+            "aria-label": "打开相处痕迹重新确认偏好",
+            text: compact ? "待确认" : "偏好需确认",
+            onclick: (event) => openPersonaGrowthNotice(event, growthActionPersona),
+          })
+        : h("span", {
+            class: `preference-action-badge ${compact ? "compact" : ""}`.trim(),
+            title: "到相处痕迹中重新确认偏好",
+            text: compact ? "待确认" : "偏好需确认",
+          })
+    );
   }
   return notices.length ? h("span", { class: "persona-alert-stack" }, notices) : null;
 }
@@ -1234,6 +1361,9 @@ function renderPersonaGrowth(persona) {
   const growth = state.personaGrowth[personaId];
   const loading = Number(state.loadingGrowthPersonaId) === personaId && !growth;
   const signals = Array.isArray(growth?.signals) ? growth.signals : [];
+  const latestChange = growth?.latest_reviewed_change;
+  const reviewedChanges = Array.isArray(growth?.reviewed_changes) ? growth.reviewed_changes : [];
+  const preferenceRequests = Array.isArray(growth?.preference_requests) ? growth.preference_requests : [];
   return h("section", { class: "persona-growth-glimpse" }, [
     h("div", { class: "persona-growth-head" }, [
       h("strong", { text: "相处痕迹" }),
@@ -1249,11 +1379,234 @@ function renderPersonaGrowth(persona) {
         h("p", { text: signal.text || "" }),
       ])))
       : null,
+    latestChange ? renderGrowthFeedback(personaId, latestChange, growth?.feedback_error) : null,
+    renderPreferenceRequest(personaId, preferenceRequests, growth?.request_notice, growth?.request_error),
+    reviewedChanges.length ? renderReviewedChangeHistory(reviewedChanges) : null,
     h("p", {
       class: "persona-growth-hint",
       text: "想调整相处方式，可以在聊天里直接说“回复短一点”或“少追问”；明确的偏好会被记录下来。",
     }),
   ]);
+}
+
+function renderPreferenceRequest(personaId, requests, notice = "", errorText = "") {
+  const editable = requests.find((request) => request.status === "waiting_review" && request.can_withdraw);
+  const input = h("textarea", {
+    rows: "2",
+    maxlength: "500",
+    placeholder: "例如：难过时先陪我一会儿，不要马上分析原因",
+  }, editable?.detail || "");
+  const statusText = {
+    waiting_review: "等待确认",
+    confirmed: "已形成变化",
+    not_applied: "本次未形成变化",
+    needs_review_again: "需要重新确认",
+    withdrawn: "已撤回",
+    recorded: "已记下",
+  };
+  return h("section", { class: "persona-growth-request" }, [
+    h("strong", { text: "直接告诉 TA 怎么陪你" }),
+    h("p", { text: "你写下的相处偏好会进入确认流程，不会立刻改变人格。" }),
+    input,
+    h("button", {
+      type: "button",
+      class: "ghost compact",
+      text: editable ? "更新待确认偏好" : "提交相处偏好",
+      onclick: () => submitPreferenceRequest(personaId, input.value),
+    }),
+    notice ? h("small", { text: notice }) : null,
+    errorText ? h("small", { class: "error", text: errorText }) : null,
+    requests.length ? h("details", { class: "persona-growth-request-history" }, [
+      h("summary", { text: `我提交过的偏好（${requests.length}）` }),
+      h("div", {}, requests.map((request) => h("article", {}, [
+        h("div", {}, [
+          h("small", { text: formatListTime(request.updated_at || request.created_at) }),
+          h("span", { text: statusText[request.status] || statusText.recorded }),
+        ]),
+        h("p", { text: request.detail }),
+        request.result ? h("section", { class: "persona-growth-request-result" }, [
+          h("strong", { text: `已在 v${request.result.version} 形成变化` }),
+          h("p", { text: (request.result.highlights || []).join("；") || "相处方式完成了一次轻微调整" }),
+        ]) : null,
+        request.can_retry ? h("button", {
+          type: "button",
+          class: "ghost compact",
+          text: "按当前版本重新提交",
+          onclick: () => retryPreferenceRequest(personaId, request.id),
+        }) : null,
+        request.can_withdraw ? h("button", {
+          type: "button",
+          class: "ghost compact",
+          text: "撤回请求",
+          onclick: () => withdrawPreferenceRequest(personaId, request.id),
+        }) : null,
+      ]))),
+    ]) : null,
+  ]);
+}
+
+function renderReviewedChangeHistory(changes) {
+  return h("details", { class: "persona-growth-history" }, [
+    h("summary", { text: `已确认变化记录（${changes.length}）` }),
+    h("div", { class: "persona-growth-history-list" }, changes.map((change) => h("article", { class: "persona-growth-history-item" }, [
+      h("div", { class: "persona-growth-history-head" }, [
+        h("strong", { text: `v${change.version}` }),
+        change.created_at ? h("small", { text: formatListTime(change.created_at) }) : null,
+      ]),
+      h("p", { text: (change.highlights || []).join("；") || "相处方式完成了一次轻微调整" }),
+      change.feedback?.reaction
+        ? h("small", {
+            text: change.feedback.reaction === "helpful"
+              ? "你的反馈：这样更合适"
+              : `你的反馈：还想调整 · ${change.feedback.followup_status === "completed"
+                ? `已完成跟进${change.feedback.followed_up_at ? `（${formatListTime(change.feedback.followed_up_at)}）` : ""}`
+                : "等待跟进"}`,
+          })
+        : null,
+    ]))),
+  ]);
+}
+
+async function submitPreferenceRequest(personaId, detail) {
+  const value = String(detail || "").trim();
+  const growth = state.personaGrowth[personaId] || {};
+  if (!value) {
+    state.personaGrowth[personaId] = { ...growth, request_error: "请先写下希望调整的相处方式。" };
+    renderShell();
+    return;
+  }
+  try {
+    await api(`/api/personas/${personaId}/growth/requests`, {
+      method: "POST",
+      body: JSON.stringify({ detail: value }),
+    });
+    const data = await api(`/api/personas/${personaId}/growth`);
+    state.personaGrowth[personaId] = {
+      ...data.growth,
+      request_notice: "已记下，会先经过确认，再体现在相处变化里。",
+      request_error: "",
+    };
+  } catch (err) {
+    state.personaGrowth[personaId] = { ...growth, request_error: err.message, request_notice: "" };
+  }
+  renderShell();
+}
+
+async function withdrawPreferenceRequest(personaId, requestId) {
+  const growth = state.personaGrowth[personaId] || {};
+  try {
+    await api(`/api/personas/${personaId}/growth/requests/${requestId}/withdraw`, { method: "POST" });
+    const data = await api(`/api/personas/${personaId}/growth`);
+    state.personaGrowth[personaId] = {
+      ...data.growth,
+      request_notice: "已撤回，这条偏好不会进入本次人格变化。",
+      request_error: "",
+    };
+    clearGrowthAction(personaId);
+  } catch (err) {
+    state.personaGrowth[personaId] = { ...growth, request_error: err.message, request_notice: "" };
+  }
+  renderShell();
+}
+
+async function retryPreferenceRequest(personaId, requestId) {
+  const growth = state.personaGrowth[personaId] || {};
+  try {
+    await api(`/api/personas/${personaId}/growth/requests/${requestId}/retry`, { method: "POST" });
+    const data = await api(`/api/personas/${personaId}/growth`);
+    state.personaGrowth[personaId] = {
+      ...data.growth,
+      request_notice: "已按当前人格版本重新提交，等待确认。",
+      request_error: "",
+    };
+    clearGrowthAction(personaId);
+  } catch (err) {
+    state.personaGrowth[personaId] = { ...growth, request_error: err.message, request_notice: "" };
+  }
+  renderShell();
+}
+
+function renderGrowthFeedback(personaId, latestChange, errorText = "") {
+  const reaction = latestChange.feedback?.reaction || "";
+  const followupCompleted = reaction === "needs_adjustment"
+    && latestChange.feedback?.followup_status === "completed";
+  const detailInput = reaction === "needs_adjustment"
+    ? h("textarea", {
+        rows: "2",
+        maxlength: "500",
+        placeholder: "例如：还是太爱追问，或者安慰时说得太满了",
+      }, latestChange.feedback?.detail_text || "")
+    : null;
+  const message = reaction === "helpful"
+    ? "已记下：这次变化更适合你。"
+    : reaction === "needs_adjustment"
+      ? followupCompleted
+        ? `这条反馈已于 ${formatListTime(latestChange.feedback.followed_up_at)} 完成跟进。后续形成新的变化时，会显示在记录中；继续补充会重新进入跟进。`
+        : latestChange.feedback?.detail_text
+          ? "补充已保存，等待跟进处理。"
+          : "已记下，等待跟进。可以补充哪里还不合适，也可以直接在聊天中说明。"
+      : "";
+  return h("section", { class: "persona-growth-feedback" }, [
+    h("p", { text: "这次确认后的变化，感觉怎么样？" }),
+    h("div", { class: "persona-growth-feedback-actions" }, [
+      h("button", {
+        type: "button",
+        class: `ghost compact ${reaction === "helpful" ? "selected" : ""}`.trim(),
+        text: "这样更合适",
+        onclick: () => submitGrowthFeedback(personaId, "helpful"),
+      }),
+      h("button", {
+        type: "button",
+        class: `ghost compact ${reaction === "needs_adjustment" ? "selected" : ""}`.trim(),
+        text: "还想调整",
+        onclick: reaction === "needs_adjustment" ? null : () => submitGrowthFeedback(personaId, "needs_adjustment"),
+      }),
+    ]),
+    detailInput ? h("label", { class: "persona-growth-feedback-detail" }, [
+      h("span", { text: "具体想调整什么（可选）" }),
+      detailInput,
+      h("button", {
+        type: "button",
+        class: "ghost compact",
+        text: followupCompleted ? "补充并重新提交" : "保存补充",
+        onclick: () => submitGrowthFeedback(personaId, "needs_adjustment", detailInput.value),
+      }),
+    ]) : null,
+    message ? h("small", { text: message }) : null,
+    errorText ? h("small", { class: "error", text: errorText }) : null,
+  ]);
+}
+
+async function submitGrowthFeedback(personaId, reaction, detail = "") {
+  const growth = state.personaGrowth[personaId];
+  if (!growth?.latest_reviewed_change) return;
+  try {
+    const data = await api(`/api/personas/${personaId}/growth/feedback`, {
+      method: "POST",
+      body: JSON.stringify({ reaction, detail }),
+    });
+    state.personaGrowth[personaId] = {
+      ...growth,
+      feedback_error: "",
+      latest_reviewed_change: { ...growth.latest_reviewed_change, feedback: data.feedback },
+      reviewed_changes: (growth.reviewed_changes || []).map((change) => (
+        Number(change.version) === Number(data.feedback.reviewed_version)
+          ? {
+              ...change,
+              feedback: data.feedback.reaction === "needs_adjustment"
+                ? {
+                    reaction: data.feedback.reaction,
+                    followup_status: data.feedback.followup_status || "waiting",
+                  }
+                : { reaction: data.feedback.reaction },
+            }
+          : change
+      )),
+    };
+  } catch (err) {
+    state.personaGrowth[personaId] = { ...growth, feedback_error: err.message };
+  }
+  renderShell();
 }
 
 function detailLine(label, value) {
@@ -1881,7 +2234,18 @@ function renderPersonaStatusLine(persona, align = "") {
   const version = persona?.version ? `v${persona.version}` : "v1";
   return h("div", { class: `persona-status-line ${align}`.trim() }, [
     h("span", { class: "status-pill relation", text: relation }),
-    persona?.growth_notice ? h("span", { class: "status-pill growth", text: "相处有变化 · 点头像查看" }) : null,
+    persona?.growth_notice ? h("button", {
+      type: "button",
+      class: "status-pill growth action",
+      text: "相处有变化 · 查看",
+      onclick: (event) => openPersonaGrowthNotice(event, persona),
+    }) : null,
+    persona?.growth_action?.kind === "preference_retry" ? h("button", {
+      type: "button",
+      class: "status-pill preference-action action",
+      text: "偏好需重新确认 · 查看",
+      onclick: (event) => openPersonaGrowthNotice(event, persona),
+    }) : null,
     h("span", { class: "status-pill", text: style }),
     h("span", { class: "status-pill quiet", text: version }),
   ]);
@@ -2193,7 +2557,23 @@ function groupHint(key) {
 }
 
 async function logout() {
+  const isolated = tabSessionMode();
   await api("/api/auth/logout", { method: "POST" }).catch(() => {});
+  prepareAuthMode(isolated);
+  resetClientState();
+  renderAuth("login");
+}
+
+async function switchAccountInThisTab() {
+  if (tabSessionMode() && tabSessionToken()) {
+    await api("/api/auth/logout", { method: "POST" }).catch(() => {});
+  }
+  prepareAuthMode(true);
+  resetClientState();
+  renderAuth("login");
+}
+
+function resetClientState() {
   state = {
     user: null,
     profile: null,
@@ -2219,7 +2599,6 @@ async function logout() {
     focusComposer: false,
     sending: false,
   };
-  renderAuth("login");
 }
 
 function scrollChat() {

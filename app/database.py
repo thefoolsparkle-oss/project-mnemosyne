@@ -134,6 +134,36 @@ def init_db() -> None:
                 FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS persona_growth_feedback (
+                user_id INTEGER NOT NULL,
+                persona_id INTEGER NOT NULL,
+                reviewed_version INTEGER NOT NULL,
+                reaction TEXT NOT NULL CHECK(reaction IN ('helpful', 'needs_adjustment')),
+                detail_text TEXT NOT NULL DEFAULT '',
+                resolved_at INTEGER NOT NULL DEFAULT 0,
+                resolved_by_user_id INTEGER,
+                resolution_note TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (user_id, persona_id, reviewed_version),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS persona_growth_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                persona_id INTEGER NOT NULL,
+                request_text TEXT NOT NULL,
+                suggestion_id INTEGER,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                withdrawn_at INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE CASCADE,
+                FOREIGN KEY (suggestion_id) REFERENCES persona_revision_suggestions(id) ON DELETE SET NULL
+            );
+
             CREATE TABLE IF NOT EXISTS conversations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -505,6 +535,10 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_personas_user_id ON personas(user_id);
             CREATE INDEX IF NOT EXISTS idx_persona_growth_views_user
                 ON persona_growth_views(user_id, persona_id);
+            CREATE INDEX IF NOT EXISTS idx_persona_growth_feedback_scope
+                ON persona_growth_feedback(user_id, persona_id, reviewed_version);
+            CREATE INDEX IF NOT EXISTS idx_persona_growth_requests_scope
+                ON persona_growth_requests(user_id, persona_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id);
             CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
             CREATE INDEX IF NOT EXISTS idx_message_expressions_message_id ON message_expressions(message_id);
@@ -566,6 +600,12 @@ def init_db() -> None:
         _ensure_column(db, "persona_revision_suggestions", "decided_at", "INTEGER")
         _ensure_column(db, "persona_revision_suggestions", "decided_by_user_id", "INTEGER")
         _ensure_column(db, "persona_revision_suggestions", "decision_note", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(db, "persona_growth_feedback", "resolved_at", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(db, "persona_growth_feedback", "resolved_by_user_id", "INTEGER")
+        _ensure_column(db, "persona_growth_feedback", "resolution_note", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(db, "persona_growth_feedback", "detail_text", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(db, "persona_growth_requests", "updated_at", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(db, "persona_growth_requests", "withdrawn_at", "INTEGER NOT NULL DEFAULT 0")
         db.execute(
             """
             UPDATE persona_versions

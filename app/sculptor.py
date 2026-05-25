@@ -89,7 +89,7 @@ def generate_revision_suggestion(
     source_context = scrub_identity_obj(_source_context(
         user_id,
         persona_id,
-        strong_feedback_only=origin_value == "explicit_feedback",
+        strong_feedback_only=origin_value in {"explicit_feedback", "profile_request"},
     ))
     suggestion = (
         _llm_suggestion(persona, source_context, reason) if use_llm else None
