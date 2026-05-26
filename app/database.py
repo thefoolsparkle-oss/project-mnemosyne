@@ -156,9 +156,15 @@ def init_db() -> None:
                 persona_id INTEGER NOT NULL,
                 request_text TEXT NOT NULL,
                 suggestion_id INTEGER,
+                memory_uids_json TEXT NOT NULL DEFAULT '[]',
+                request_origin TEXT NOT NULL DEFAULT 'direct_entry',
+                source_reviewed_version INTEGER,
+                source_message_id INTEGER,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL DEFAULT 0,
                 withdrawn_at INTEGER NOT NULL DEFAULT 0,
+                deactivation_actor TEXT NOT NULL DEFAULT '',
+                deactivation_reason TEXT NOT NULL DEFAULT '',
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
                 FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE CASCADE,
                 FOREIGN KEY (suggestion_id) REFERENCES persona_revision_suggestions(id) ON DELETE SET NULL
@@ -256,6 +262,8 @@ def init_db() -> None:
                 profile_summary TEXT NOT NULL DEFAULT '',
                 interaction_style TEXT NOT NULL DEFAULT '',
                 emotional_patterns_json TEXT NOT NULL DEFAULT '[]',
+                discovery_dimensions_json TEXT NOT NULL DEFAULT '{}',
+                curiosity_feedback_json TEXT NOT NULL DEFAULT '{}',
                 updated_at INTEGER NOT NULL,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             );
@@ -439,6 +447,7 @@ def init_db() -> None:
                 applied_version INTEGER,
                 decided_at INTEGER,
                 decided_by_user_id INTEGER,
+                decision_actor TEXT NOT NULL DEFAULT 'admin',
                 decision_note TEXT NOT NULL DEFAULT '',
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
                 FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE CASCADE,
@@ -599,6 +608,7 @@ def init_db() -> None:
         _ensure_column(db, "persona_revision_suggestions", "applied_version", "INTEGER")
         _ensure_column(db, "persona_revision_suggestions", "decided_at", "INTEGER")
         _ensure_column(db, "persona_revision_suggestions", "decided_by_user_id", "INTEGER")
+        _ensure_column(db, "persona_revision_suggestions", "decision_actor", "TEXT NOT NULL DEFAULT 'admin'")
         _ensure_column(db, "persona_revision_suggestions", "decision_note", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(db, "persona_growth_feedback", "resolved_at", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(db, "persona_growth_feedback", "resolved_by_user_id", "INTEGER")
@@ -606,6 +616,23 @@ def init_db() -> None:
         _ensure_column(db, "persona_growth_feedback", "detail_text", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(db, "persona_growth_requests", "updated_at", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(db, "persona_growth_requests", "withdrawn_at", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(db, "persona_growth_requests", "memory_uids_json", "TEXT NOT NULL DEFAULT '[]'")
+        _ensure_column(db, "persona_growth_requests", "request_origin", "TEXT NOT NULL DEFAULT 'direct_entry'")
+        _ensure_column(db, "persona_growth_requests", "source_reviewed_version", "INTEGER")
+        _ensure_column(db, "persona_growth_requests", "source_message_id", "INTEGER")
+        _ensure_column(db, "persona_growth_requests", "deactivation_actor", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(db, "persona_growth_requests", "deactivation_reason", "TEXT NOT NULL DEFAULT ''")
+        ts = now_ts()
+        db.execute(
+            """
+            UPDATE persona_revision_suggestions
+            SET status = 'dismissed', decided_at = ?, decision_actor = 'adaptive_runtime',
+                decision_note = '已切换为运行时自动适配：用户相处偏好直接进入聊天指导，不再等待人工审核。',
+                updated_at = ?
+            WHERE origin = 'profile_request' AND status = 'pending'
+            """,
+            (ts, ts),
+        )
         db.execute(
             """
             UPDATE persona_versions
@@ -625,6 +652,8 @@ def init_db() -> None:
         _ensure_column(db, "user_insights", "inferred_profile_json", "TEXT NOT NULL DEFAULT '{}'")
         _ensure_column(db, "user_insights", "topic_model_json", "TEXT NOT NULL DEFAULT '{}'")
         _ensure_column(db, "user_insights", "guidance_json", "TEXT NOT NULL DEFAULT '{}'")
+        _ensure_column(db, "user_insights", "discovery_dimensions_json", "TEXT NOT NULL DEFAULT '{}'")
+        _ensure_column(db, "user_insights", "curiosity_feedback_json", "TEXT NOT NULL DEFAULT '{}'")
         db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_state_unique_scope ON memory_state(user_id, persona_scope, key)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_memory_links_user ON memory_links(user_id)")
         db.execute(

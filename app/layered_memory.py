@@ -158,6 +158,7 @@ def upsert_fact(
     ts = now_ts()
 
     existing = _find_similar_fact(user_id, persona_id, memory_type, text)
+    superseded_conflict: dict[str, Any] | None = None
     with get_db() as db:
         if existing:
             db.execute(
@@ -194,17 +195,18 @@ def upsert_fact(
             )
             _insert_link(db, user_id, uid, supersedes_uid, "supersedes", ts)
             _insert_link(db, user_id, supersedes_uid, uid, "superseded_by", ts)
-            record_conflict(
-                user_id=user_id,
-                persona_id=persona_id,
-                conflict_type=f"{memory_type}_superseded",
-                current_uid=uid,
-                previous_uid=supersedes_uid,
-                current_text=text,
-                previous_text=previous_text,
-                resolution="prefer_current",
-                reason=f"New {memory_type} replaced older current value.",
-            )
+            superseded_conflict = {
+                "user_id": user_id,
+                "persona_id": persona_id,
+                "conflict_type": f"{memory_type}_superseded",
+                "current_uid": uid,
+                "previous_uid": supersedes_uid,
+                "current_text": text,
+                "previous_text": previous_text,
+                "resolution": "prefer_current",
+                "reason": f"New {memory_type} replaced older current value.",
+                "status": "resolved" if memory_type == "identity" else "open",
+            }
 
         db.execute(
             """
@@ -234,7 +236,11 @@ def upsert_fact(
                 locked,
             ),
         )
+        if memory_type == "preference":
+            _supersede_opposite_preference_facts(db, user_id, persona_id, uid, text, ts)
         _link_sources(db, user_id, uid, event_uid, episode_uid, ts)
+    if superseded_conflict:
+        record_conflict(**superseded_conflict)
     return {"uid": uid, "layer": "L2", "type": memory_type, "text": text, "updated": False}
 
 
@@ -263,6 +269,7 @@ def upsert_relation(
     ts = now_ts()
 
     existing = _find_similar_relation(user_id, persona_id, predicate, obj, text)
+    superseded_conflict: dict[str, Any] | None = None
     with get_db() as db:
         if existing:
             db.execute(
@@ -299,17 +306,18 @@ def upsert_relation(
             )
             _insert_link(db, user_id, uid, supersedes_uid, "supersedes", ts)
             _insert_link(db, user_id, supersedes_uid, uid, "superseded_by", ts)
-            record_conflict(
-                user_id=user_id,
-                persona_id=persona_id,
-                conflict_type=f"{predicate}_superseded",
-                current_uid=uid,
-                previous_uid=supersedes_uid,
-                current_text=text,
-                previous_text=previous_text,
-                resolution="prefer_current",
-                reason=f"New {predicate} replaced older current value.",
-            )
+            superseded_conflict = {
+                "user_id": user_id,
+                "persona_id": persona_id,
+                "conflict_type": f"{predicate}_superseded",
+                "current_uid": uid,
+                "previous_uid": supersedes_uid,
+                "current_text": text,
+                "previous_text": previous_text,
+                "resolution": "prefer_current",
+                "reason": f"New {predicate} replaced older current value.",
+                "status": "resolved" if predicate == "preferred_address" else "open",
+            }
 
         db.execute(
             """
@@ -343,7 +351,11 @@ def upsert_relation(
                 locked,
             ),
         )
+        if predicate == "preference":
+            _supersede_opposite_preference_relations(db, user_id, persona_id, uid, obj, text, ts)
         _link_sources(db, user_id, uid, event_uid, episode_uid, ts)
+    if superseded_conflict:
+        record_conflict(**superseded_conflict)
     if predicate == "preference":
         detect_preference_conflicts(
             user_id=user_id,
@@ -408,6 +420,7 @@ def refresh_memory_state(
 
     preferred = [r for r in relations if r.get("predicate") == "preferred_address"]
     boundaries = [r for r in relations if r.get("predicate") == "boundary"]
+    address_boundaries = [r for r in boundaries if str(r.get("text") or "").startswith("不要称呼用户为")]
     preferences = [r for r in relations if r.get("predicate") == "preference"]
     latest_preferences = _latest_preferences_by_object(preferences)
     feedback = [item for item in [*facts, *relations] if item.get("type") == "persona_feedback"]
@@ -415,7 +428,7 @@ def refresh_memory_state(
 
     state = {
         "preferred_address": preferred[0].get("object") if preferred else None,
-        "forbidden_addresses": _unique([r.get("object") for r in boundaries if r.get("object")]),
+        "forbidden_addresses": _unique([r.get("object") for r in address_boundaries if r.get("object")]),
         "likes": _unique([r.get("object") for r in latest_preferences if _preference_polarity(str(r.get("text"))) == "like"]),
         "dislikes": _unique([r.get("object") for r in latest_preferences if _preference_polarity(str(r.get("text"))) == "dislike"]),
         "interaction_style": _unique([item.get("text") for item in feedback if item.get("text")]),
@@ -679,6 +692,8 @@ def _upsert_state(db, user_id: int, persona_id: int | None, key: str, value: Any
 def _build_user_summary(facts: list[dict], relations: list[dict]) -> str:
     preferred = [r for r in relations if r.get("predicate") == "preferred_address"]
     boundaries = [r for r in relations if r.get("predicate") == "boundary"]
+    address_boundaries = [r for r in boundaries if str(r.get("text") or "").startswith("不要称呼用户为")]
+    topic_boundaries = [r for r in boundaries if str(r.get("text") or "").startswith("不要主动提")]
     preferences = _latest_preferences_by_object([r for r in relations if r.get("predicate") == "preference"])
     likes = [r for r in preferences if _preference_polarity(str(r.get("text"))) == "like"]
     dislikes = [r for r in preferences if _preference_polarity(str(r.get("text"))) == "dislike"]
@@ -686,9 +701,12 @@ def _build_user_summary(facts: list[dict], relations: list[dict]) -> str:
     lines = []
     if preferred:
         lines.append(f"用户当前希望被称为{preferred[0].get('object')}。")
-    if boundaries:
-        names = "、".join(str(r.get("object")) for r in boundaries[:8])
+    if address_boundaries:
+        names = "、".join(str(r.get("object")) for r in address_boundaries[:8])
         lines.append(f"不要称呼用户为：{names}。")
+    if topic_boundaries:
+        topics = "、".join(str(r.get("object")) for r in topic_boundaries[:8])
+        lines.append(f"不要主动提及：{topics}。")
     if likes:
         names = "、".join(str(r.get("object")) for r in likes[:8])
         lines.append(f"用户喜欢：{names}。")
@@ -791,7 +809,22 @@ def _find_similar_fact(user_id: int, persona_id: int | None, memory_type: str, t
             """,
             (user_id, persona_id, memory_type),
         ).fetchall()
-    return _find_similar(rows, text)
+    if memory_type != "preference":
+        return _find_similar(rows, text)
+    current_object = _object_from_memory(memory_type, text)
+    current_polarity = _preference_polarity(text)
+    for row in rows:
+        item = dict_from_row(row) or {}
+        prior_text = str(item.get("text") or "")
+        if (
+            _object_from_memory(memory_type, prior_text) == current_object
+            and current_polarity
+            and _preference_polarity(prior_text) != current_polarity
+        ):
+            continue
+        if prior_text == text or SequenceMatcher(None, prior_text, text).ratio() >= 0.9:
+            return item
+    return None
 
 
 def _find_similar_relation(user_id: int, persona_id: int | None, predicate: str, obj: str, text: str) -> dict | None:
@@ -890,7 +923,9 @@ def _object_from_memory(memory_type: str, text: str) -> str:
     patterns = [
         r"用户希望被称为(.+)",
         r"不要称呼用户为(.+)",
+        r"不要主动提(.+)",
         r"用户喜欢(.+)",
+        r"用户不喜欢(.+)",
         r"用户讨厌(.+)",
     ]
     for pattern in patterns:
@@ -898,6 +933,59 @@ def _object_from_memory(memory_type: str, text: str) -> str:
         if match:
             return match.group(1).strip()
     return text[:120]
+
+
+def _supersede_opposite_preference_facts(db, user_id: int, persona_id: int | None, uid: str, text: str, ts: int) -> None:
+    current_object = _object_from_memory("preference", text)
+    polarity = _preference_polarity(text)
+    if not current_object or not polarity:
+        return
+    rows = db.execute(
+        """
+        SELECT uid, text
+        FROM memory_facts
+        WHERE user_id = ? AND (persona_id = ? OR persona_id IS NULL)
+          AND type = 'preference' AND uid != ? AND archived = 0 AND valid_to IS NULL
+        """,
+        (user_id, persona_id, uid),
+    ).fetchall()
+    for row in rows:
+        prior = dict_from_row(row) or {}
+        prior_text = str(prior.get("text") or "")
+        if _object_from_memory("preference", prior_text) != current_object:
+            continue
+        if _preference_polarity(prior_text) == polarity:
+            continue
+        db.execute(
+            "UPDATE memory_facts SET valid_to = ?, superseded_by_uid = ?, updated_at = ? WHERE uid = ?",
+            (ts, uid, ts, str(prior["uid"])),
+        )
+
+
+def _supersede_opposite_preference_relations(
+    db, user_id: int, persona_id: int | None, uid: str, obj: str, text: str, ts: int
+) -> None:
+    polarity = _preference_polarity(text)
+    if not obj or not polarity:
+        return
+    rows = db.execute(
+        """
+        SELECT uid, text
+        FROM memory_relations
+        WHERE user_id = ? AND (persona_id = ? OR persona_id IS NULL)
+          AND predicate = 'preference' AND object = ? AND uid != ?
+          AND archived = 0 AND valid_to IS NULL
+        """,
+        (user_id, persona_id, obj, uid),
+    ).fetchall()
+    for row in rows:
+        prior = dict_from_row(row) or {}
+        if _preference_polarity(str(prior.get("text") or "")) == polarity:
+            continue
+        db.execute(
+            "UPDATE memory_relations SET valid_to = ?, superseded_by_uid = ?, updated_at = ? WHERE uid = ?",
+            (ts, uid, ts, str(prior["uid"])),
+        )
 
 
 def _latest_preferences_by_object(preferences: list[dict]) -> list[dict]:

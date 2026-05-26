@@ -5,7 +5,7 @@ import sys
 from http.cookies import SimpleCookie
 from pathlib import Path
 
-from fastapi import HTTPException, Response
+from fastapi import BackgroundTasks, HTTPException, Response
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -186,6 +186,32 @@ def verify_chat_failure_and_idempotency(chat, server, user_id: int, persona_id: 
     assert pending.get("pending") is True and model_calls["count"] == 0
 
 
+def verify_chat_defers_summary_refresh(chat, server, user_id: int, persona_id: int) -> None:
+    disable_chat_side_effects(chat)
+    original_llm = chat.call_llm_api
+    original_summary_policy = chat.should_refresh_summary
+    original_refresh = server.refresh_conversation_summary
+    chat.call_llm_api = lambda *args, **kwargs: "这句先及时送达。"
+    chat.should_refresh_summary = lambda count: True
+    server.refresh_conversation_summary = lambda **kwargs: (_ for _ in ()).throw(
+        AssertionError("summary task should run only after the response is returned")
+    )
+    tasks = BackgroundTasks()
+    try:
+        result = server.chat(
+            server.ChatRequest(message="继续说吧", persona_id=persona_id, client_message_id="msg-summary-deferred"),
+            tasks,
+            {"id": user_id},
+        )
+        assert result["reply"] == "这句先及时送达。"
+        assert result["conversation_summary"]["scheduled"] is True
+        assert len(tasks.tasks) == 1
+    finally:
+        chat.call_llm_api = original_llm
+        chat.should_refresh_summary = original_summary_policy
+        server.refresh_conversation_summary = original_refresh
+
+
 def verify_tab_scoped_login(server, auth) -> None:
     auth.create_user("cookie_user", "password-cookie", "普通页")
     auth.create_user("tab_user", "password-tab", "独立页")
@@ -235,6 +261,7 @@ def main() -> None:
         verify_relationship_authority(forge)
         verify_naming_and_restore(server, user_id)
         verify_chat_failure_and_idempotency(chat, server, user_id, persona_id)
+        verify_chat_defers_summary_refresh(chat, server, user_id, persona_id)
         verify_tab_scoped_login(server, auth)
     print("Phase 1 ordinary-user flow verification passed")
 

@@ -16,6 +16,7 @@ def record_conflict(
     previous_text: str = "",
     resolution: str = "prefer_current",
     reason: str = "",
+    status: str = "open",
 ) -> dict[str, Any]:
     ts = now_ts()
     with get_db() as db:
@@ -26,18 +27,20 @@ def record_conflict(
                 current_uid, previous_uid, current_text, previous_text,
                 resolution, reason, created_at, updated_at
             )
-            VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(current_uid, previous_uid, conflict_type)
             DO UPDATE SET current_text = excluded.current_text,
                           previous_text = excluded.previous_text,
                           resolution = excluded.resolution,
                           reason = excluded.reason,
+                          status = excluded.status,
                           updated_at = excluded.updated_at
             """,
             (
                 user_id,
                 persona_id,
                 conflict_type,
+                status,
                 current_uid,
                 previous_uid,
                 current_text,
@@ -99,8 +102,9 @@ def detect_preference_conflicts(
                     previous_uid=str(item["uid"]),
                     current_text=current_text,
                     previous_text=str(item.get("text") or ""),
-                    resolution="needs_review",
-                    reason=f"Preference polarity changed for {current_object}.",
+                    resolution="prefer_current",
+                    reason=f"Explicit newer preference replaced older preference for {current_object}.",
+                    status="resolved",
                 )
             )
     return conflicts

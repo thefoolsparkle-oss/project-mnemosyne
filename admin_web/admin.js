@@ -19,7 +19,9 @@ let state = {
   growthDemo: null,
   runningEval: false,
   generatingRevision: false,
+  autoReviewingRevisions: false,
   cleaningStaleRevisions: false,
+  revisionNotice: "",
   editingInsight: false,
   error: "",
 };
@@ -175,6 +177,7 @@ function renderUserButton(user) {
     onclick: async () => {
       state.selectedUserId = user.id;
       state.error = "";
+      state.revisionNotice = "";
       try {
         await loadPersonas();
       } catch (err) {
@@ -216,7 +219,8 @@ function renderMain() {
 function renderGrowthDemoNotice(demo) {
   return h("section", { class: "growth-demo-notice" }, [
     h("strong", { text: "人格成长演示已载入" }),
-    h("p", { text: "当前选中的是可随时清除的演示账号。可以在管理台试待审、待跟进和版本对比，也可以在普通端登录体验“相处痕迹”。" }),
+    h("p", { text: "当前选中的是可随时清除的演示账号。历史中已有一条由自动审核代理落实的聊天要求；点击“代理审核低风险聊天要求”会关闭一条当前已满足的旧积压。资料页写下的相处偏好已改为即时指导，不再进入人工队列。" }),
+    h("p", { text: "也可以在普通端登录体验“相处痕迹”和主动偏好请求的公开状态。" }),
     h("p", { class: "demo-credentials", text: `普通端账号：${demo.username} / 密码：${demo.password}` }),
   ]);
 }
@@ -226,6 +230,7 @@ function renderPersonaSelect() {
     onchange: async (event) => {
       state.selectedPersonaId = event.target.value ? Number(event.target.value) : null;
       state.error = "";
+      state.revisionNotice = "";
       try {
         await loadReview();
       } catch (err) {
@@ -266,7 +271,7 @@ function renderRevisionQueueSummary() {
   const parts = [
     pending ? `待审 ${pending}` : "",
     requests ? `主动请求 ${requests}` : "",
-    auto ? `用户触发 ${auto}` : "",
+    auto ? `代理可审 ${auto}` : "",
     adjustment ? `待跟进 ${adjustment}` : "",
     stale ? `过期 ${stale}` : "",
   ].filter(Boolean);
@@ -318,11 +323,16 @@ function renderLines(lines) {
 function renderInsight(insight) {
   const topic = insight.topic_model || {};
   const guidance = insight.guidance || {};
+  const discovery = insight.discovery_dimensions || {};
+  const covered = discoveryCoverageLabels(discovery);
+  const curiosity = curiosityFeedbackLabel(insight.curiosity_feedback || {});
   const lines = [
     insight.profile_summary ? `画像：${insight.profile_summary}` : "",
     listLine("喜欢", topic.likes),
     listLine("不喜欢", topic.dislikes),
     listLine("避开话题", topic.avoid_topics),
+    listLine("探索覆盖", covered),
+    curiosity,
     listLine("语气规则", guidance.tone_rules),
     listLine("话题规则", guidance.topic_rules),
     listLine("不要做", guidance.do_not),
@@ -357,6 +367,9 @@ function renderMemoryList(items) {
 function renderRevisionPanel() {
   const persona = currentPersona() || {};
   const cleanableStale = Number(persona.cleanable_stale_revision_count || 0);
+  const hasReviewableChatFeedback = state.revisions.some((item) => (
+    item.status === "pending" && item.origin === "explicit_feedback" && !item.stale
+  ));
   return h("div", { class: "revision-panel" }, [
     h("div", { class: "inline-actions" }, [
       h("button", {
@@ -366,6 +379,13 @@ function renderRevisionPanel() {
         onclick: () => generateRevision(),
         disabled: state.generatingRevision ? "disabled" : null,
       }),
+      hasReviewableChatFeedback ? h("button", {
+        type: "button",
+        class: "ghost",
+        text: state.autoReviewingRevisions ? "代理审核中" : "代理审核低风险聊天要求",
+        onclick: () => autoReviewRevisions(),
+        disabled: state.autoReviewingRevisions ? "disabled" : null,
+      }) : null,
       cleanableStale ? h("button", {
         type: "button",
         class: "ghost",
@@ -374,6 +394,7 @@ function renderRevisionPanel() {
         disabled: state.cleaningStaleRevisions ? "disabled" : null,
       }) : null,
     ]),
+    state.revisionNotice ? h("p", { class: "muted", text: state.revisionNotice }) : null,
     state.revisions.length
       ? h("div", { class: "revision-list" }, state.revisions.map(renderRevisionItem))
       : h("p", { class: "muted", text: "暂无建议。可以先让人格多聊几轮，或者直接生成一个保守建议。" }),
@@ -400,7 +421,7 @@ function renderRevisionItem(item) {
   ].filter(Boolean);
   return h("details", { id: `revision-${item.id}`, class: `revision-item ${item.status} ${item.stale ? "stale" : ""}` }, [
     h("summary", {}, [
-      h("strong", { text: `#${item.id} ${item.status}` }),
+      h("strong", { text: `#${item.id} ${revisionStatusLabel(item.status)}` }),
       h("small", { text: revisionVersionText(item) }),
       h("span", { text: `${revisionOriginLabel(item)} · ${notes[0] || item.reason || "人格调整建议"}` }),
     ]),
@@ -442,17 +463,37 @@ function revisionVersionText(item) {
   return `v${item.base_version || "?"} -> 待审核`;
 }
 
+function revisionStatusLabel(status) {
+  const labels = {
+    pending: "待审核",
+    applied: "已应用",
+    dismissed: "已忽略",
+  };
+  return labels[status] || status || "未知状态";
+}
+
 function revisionOriginLabel(item) {
   if (item.origin === "profile_request") return "资料页主动提交";
+  if (item.origin === "explicit_core_update") return "聊天中明确设置";
+  if (item.origin === "guidance_reconcile") return "指导失效同步";
   if (item.origin === "explicit_feedback") return item.trigger_message_id ? "聊天中提出" : "旧版主动提交";
   return "手动生成";
 }
 
 function renderRevisionDecision(item) {
   if (!item.decided_at && !item.decided_by_user_id && !item.decision_note) return null;
+  const actor = item.decision_actor === "review_agent"
+    ? "自动审核代理"
+    : item.decision_actor === "adaptive_runtime"
+      ? "自动适配"
+    : item.decision_actor === "user"
+      ? "用户本人"
+      : item.decided_by_user_id
+        ? `管理员 #${item.decided_by_user_id}`
+        : "管理员";
   const metadata = [
     item.status === "applied" ? "已应用" : "已忽略",
-    item.decided_by_user_id ? `管理员 #${item.decided_by_user_id}` : "",
+    actor,
     item.decided_at ? formatTs(item.decided_at) : "",
   ].filter(Boolean).join(" / ");
   return h("section", { class: "revision-decision-record" }, [
@@ -509,7 +550,7 @@ function renderTraceItem(trace) {
     renderPromptBlock("分层记忆", context.layered_prompt),
     renderPromptBlock("Semantic RAG", context.semantic_memory_prompt),
     renderPromptBlock("旧记忆召回", context.legacy_memory_prompt),
-    renderPromptBlock("探索与防重复策略", context.discovery_prompt),
+    renderPromptBlock("探索、边界与防重复策略", context.discovery_prompt),
     renderPromptBlock("资料按需使用与日期环境", context.profile_usage_prompt || context.calendar_prompt),
     trace.error_text ? h("p", { class: "error", text: trace.error_text }) : null,
   ]);
@@ -557,6 +598,7 @@ async function patchMemory(uid, patch) {
 async function generateRevision(reason = "管理台手动发起人格调整复核") {
   if (!state.selectedPersonaId) return;
   state.error = "";
+  state.revisionNotice = "";
   state.generatingRevision = true;
   render();
   try {
@@ -574,6 +616,7 @@ async function generateRevision(reason = "管理台手动发起人格调整复�
 
 async function applyRevision(id, note = "") {
   state.error = "";
+  state.revisionNotice = "";
   try {
     await api(`/api/admin/persona-revisions/${id}/apply?target_user_id=${state.selectedUserId}`, {
       method: "POST",
@@ -586,8 +629,32 @@ async function applyRevision(id, note = "") {
   render();
 }
 
+async function autoReviewRevisions() {
+  if (!state.selectedPersonaId) return;
+  state.error = "";
+  state.revisionNotice = "";
+  state.autoReviewingRevisions = true;
+  render();
+  try {
+    const result = await api(`/api/admin/persona-revisions/auto-review?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}`, {
+      method: "POST",
+    });
+    state.revisionNotice = result.applied_count
+      ? `自动审核代理已应用 ${result.applied_count} 条低风险要求。`
+      : result.dismissed_count
+        ? `自动审核代理已关闭 ${result.dismissed_count} 条当前无需新增版本的要求。`
+        : "没有可自动落实的新变化；关系或核心设定类记录只作为边界审计保留。";
+    await loadPersonas();
+  } catch (err) {
+    state.error = err.message;
+  }
+  state.autoReviewingRevisions = false;
+  render();
+}
+
 async function dismissRevision(id, note = "") {
   state.error = "";
+  state.revisionNotice = "";
   try {
     await api(`/api/admin/persona-revisions/${id}/dismiss?target_user_id=${state.selectedUserId}`, {
       method: "POST",
@@ -603,6 +670,7 @@ async function dismissRevision(id, note = "") {
 async function dismissStaleRevisions() {
   if (!state.selectedPersonaId) return;
   state.error = "";
+  state.revisionNotice = "";
   state.cleaningStaleRevisions = true;
   render();
   try {
@@ -620,15 +688,19 @@ async function dismissStaleRevisions() {
 function renderInsight(insight) {
   const topic = insight.topic_model || {};
   const guidance = insight.guidance || {};
+  const covered = discoveryCoverageLabels(insight.discovery_dimensions || {});
+  const curiosity = curiosityFeedbackLabel(insight.curiosity_feedback || {});
   if (state.editingInsight) return renderInsightEditor(insight);
   const lines = [
-    insight.profile_summary ? `Profile: ${insight.profile_summary}` : "",
-    listLine("Likes", topic.likes),
-    listLine("Dislikes", topic.dislikes),
-    listLine("Avoid topics", topic.avoid_topics),
-    listLine("Tone rules", guidance.tone_rules),
-    listLine("Topic rules", guidance.topic_rules),
-    listLine("Do not", guidance.do_not),
+    insight.profile_summary ? `画像：${insight.profile_summary}` : "",
+    listLine("喜欢", topic.likes),
+    listLine("不喜欢", topic.dislikes),
+    listLine("避开话题", topic.avoid_topics),
+    listLine("探索覆盖", covered),
+    curiosity,
+    listLine("语气规则", guidance.tone_rules),
+    listLine("话题规则", guidance.topic_rules),
+    listLine("不要做", guidance.do_not),
   ].filter(Boolean);
   return h("div", { class: "insight-panel" }, [
     h("div", { class: "inline-actions" }, [
@@ -636,6 +708,31 @@ function renderInsight(insight) {
     ]),
     lines.length ? renderLines(lines) : h("p", { class: "muted", text: "暂无画像。聊天几轮后用户画像器会逐步形成。" }),
   ]);
+}
+
+function discoveryCoverageLabels(discovery) {
+  const labels = {
+    interests: "兴趣与喜好",
+    daily_rhythm: "日常节奏",
+    values: "价值与在意的事",
+    comfort_style: "安慰方式",
+    boundaries: "边界与雷区",
+    ambitions: "计划与期待",
+    relationship_style: "相处期待",
+  };
+  return Object.entries(labels)
+    .filter(([key]) => Number(discovery[key]?.observed_count || 0) > 0)
+    .map(([key, label]) => `${label} (${discovery[key].observed_count})`);
+}
+
+function curiosityFeedbackLabel(feedback) {
+  if (feedback.status === "cautious") {
+    return `探索提问：谨慎，用户明确表示不希望被追问（${Number(feedback.declined_count || 0)} 次）`;
+  }
+  if (feedback.status === "invited") {
+    return `探索提问：可自然询问，用户明确邀请了解（${Number(feedback.invited_count || 0)} 次）`;
+  }
+  return "";
 }
 
 function renderInsightEditor(insight) {
@@ -674,15 +771,15 @@ function renderInsightEditor(insight) {
       });
     },
   }, [
-    editorField("Profile summary", profile),
-    editorField("Likes", likes),
-    editorField("Dislikes", dislikes),
-    editorField("Avoid topics", avoid),
-    editorField("Safe topics", safe),
-    editorField("Tone rules", tone),
-    editorField("Topic rules", topicRules),
-    editorField("Support rules", support),
-    editorField("Do not", doNot),
+    editorField("画像摘要", profile),
+    editorField("喜欢", likes),
+    editorField("不喜欢", dislikes),
+    editorField("避开话题", avoid),
+    editorField("可自然回应的话题", safe),
+    editorField("语气规则", tone),
+    editorField("话题规则", topicRules),
+    editorField("支持方式", support),
+    editorField("不要做", doNot),
     h("div", { class: "inline-actions" }, [
       h("button", { type: "submit", text: "保存画像" }),
       h("button", { type: "button", class: "ghost", text: "取消", onclick: () => { state.editingInsight = false; render(); } }),
@@ -787,10 +884,10 @@ function renderGrowthPanel() {
       memories.length ? renderGrowthMemoryList(memories) : h("p", { class: "muted", text: "暂无明确人格反馈、边界或关系期待记忆。" }),
     ]),
     h("section", { class: "growth-section" }, [
-      h("h4", { text: "用户主动提交的相处偏好" }),
+      h("h4", { text: "当前回应指导记录" }),
       (growth.preference_requests || []).length
         ? renderGrowthRequestHistory(growth.preference_requests, Number(persona.version || 0))
-        : h("p", { class: "muted", text: "用户尚未从资料页直接提交相处偏好。" }),
+        : h("p", { class: "muted", text: "当前没有由用户设置或反馈形成的回应指导。" }),
     ]),
     h("section", { class: "growth-section" }, [
       h("h4", { text: "用户对已确认变化的反馈" }),
@@ -844,20 +941,31 @@ function renderGrowthRequestHistory(items, currentVersion) {
     const pending = item.suggestion_status === "pending";
     const stale = pending && Number(item.base_version || 0) !== Number(currentVersion || 0);
     const status = Number(item.withdrawn_at || 0)
-      ? "用户已撤回"
+      ? item.deactivation_actor === "adaptive_runtime"
+        ? "已由更新指导替代"
+        : item.deactivation_actor === "chat_runtime"
+          ? "已在聊天中停止"
+        : "用户已停止"
+      : !item.suggestion_id || item.suggestion_status === "dismissed"
+        ? "自动指导中"
       : item.suggestion_status === "applied"
-      ? "已形成变化"
-      : item.suggestion_status === "dismissed"
-        ? "本次未采纳"
+        ? "已形成变化"
         : stale
-          ? "需重新确认"
-          : "待审核";
+          ? "历史记录"
+          : "自动指导中";
     return h("article", { class: `growth-request-item ${item.suggestion_status || "recorded"} ${stale ? "stale" : ""}`.trim() }, [
       h("div", { class: "growth-request-head" }, [
-        h("strong", { text: `请求 #${item.id}` }),
+        h("strong", {
+          text: item.request_origin === "growth_feedback"
+            ? `反馈指导 #${item.id} · v${item.source_reviewed_version || "?"}`
+            : item.request_origin === "chat_feedback"
+              ? `聊天指导 #${item.id}`
+              : `主动偏好 #${item.id}`,
+        }),
         h("small", { class: pending && !stale ? "request-state" : "", text: status }),
       ]),
       h("p", { text: item.request_text || "" }),
+      item.deactivation_reason ? h("p", { class: "muted", text: item.deactivation_reason }) : null,
       h("small", { text: item.created_at ? formatTs(item.created_at) : "" }),
       item.suggestion_id ? revisionLinkLine(item.suggestion_id) : null,
     ]);

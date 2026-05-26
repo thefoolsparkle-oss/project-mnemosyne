@@ -13,7 +13,12 @@ from .llm_client import LLMProviderError, call_llm_api
 from .memory_rag import semantic_memory_prompt, semantic_memory_recall
 from .memory_policy import policy_snapshot, should_refresh_summary, should_use_semantic_recall
 from .mirror import discovery_prompt, insight_prompt, update_interaction_insight
-from .sculptor import maybe_queue_revision_from_feedback
+from .sculptor import (
+    maybe_apply_explicit_core_update_from_chat,
+    maybe_queue_revision_from_feedback,
+    maybe_reconcile_inactive_chat_guidance_style,
+)
+from .growth_guidance import cancel_guidance_from_chat, maybe_store_chat_guidance
 
 
 CHAT_RENDERING_RULES = """聊天输出规则：
@@ -23,10 +28,24 @@ CHAT_RENDERING_RULES = """聊天输出规则：
 - 除非当前人格资料的关系定位明确写着恋人，否则不能用恋人、女友、男友、老婆、老公等关系自称。
 - 不要写括号舞台动作、神态旁白或表演说明，例如“（托腮）”“(歪头看你)”“【笑】”。
 - 情绪和灵动感要融入自然语言、停顿、语气和用词里。
-- 未来表情、动作、贴纸会由程序层表达；当前只输出真正要说的话。
+- 只有在情绪承接确实需要一个很轻的非语言提示时，才可在回复末尾追加至多一个程序标签。允许的标签只有：
+  `[[expression:mood:微笑]]`、`[[expression:mood:轻笑]]`、`[[expression:mood:担心]]`、`[[expression:tone:轻声]]`、
+  `[[expression:tone:停顿]]`、`[[expression:gesture:点头]]`。普通问答不要添加，也不要在正文解释标签。
+- 表达标签必须稀少：上一条回复已经使用过非语言提示时，本轮不要再添加；近期展示过的同一标签不要重复使用。
+- 标签会由程序层单独显示；你输出的可读正文仍应只是真正要说的话。
 """
 
 STAGE_DIRECTION_RE = re.compile(r"[\uFF08\(\u3010\[]\s*([^\uFF08\uFF09\(\)\[\]\u3010\u3011]{1,120}?)\s*[\uFF09\)\u3011\]]\s*")
+STRUCTURED_EXPRESSION_RE = re.compile(
+    r"\[\[\s*expression\s*:\s*([a-zA-Z_-]+)\s*:\s*([^\]\r\n]{1,20})\s*\]\]",
+    re.IGNORECASE,
+)
+STRUCTURED_EXPRESSION_LABELS = {
+    "mood": {"微笑", "轻笑", "担心"},
+    "tone": {"轻声", "停顿"},
+    "gesture": {"点头"},
+}
+EXPRESSION_RECENT_WINDOW = 4
 STAGE_DIRECTION_WORDS = (
     "托腮",
     "歪头",
@@ -255,6 +274,7 @@ def db_chat(
     conversation_id: int | None = None,
     retry_user_message_id: int | None = None,
     client_message_id: str | None = None,
+    defer_summary_refresh: bool = False,
 ) -> dict:
     persona = get_persona_for_user(user_id, persona_id)
     client_message_id = str(client_message_id or "").strip()[:80]
@@ -348,10 +368,41 @@ def db_chat(
     if not retrying:
         _best_effort("Mirror", lambda: update_interaction_insight(user_id, message, stored_memories), {})
         _best_effort(
-            "SculptorQueue",
-            lambda: maybe_queue_revision_from_feedback(user_id, persona_id, user_message_id),
+            "GrowthGuidanceStop",
+            lambda: cancel_guidance_from_chat(user_id, persona_id, message, user_message_id),
+            [],
+        )
+        _best_effort(
+            "GrowthGuidance",
+            lambda: maybe_store_chat_guidance(user_id, persona_id, message, user_message_id, stored_memories),
             None,
         )
+        core_revision = _best_effort(
+            "SculptorCoreUpdate",
+            lambda: maybe_apply_explicit_core_update_from_chat(user_id, persona_id, message, user_message_id),
+            None,
+        )
+        if core_revision:
+            persona = get_persona_for_user(user_id, persona_id)
+        queued_revision = _best_effort(
+            "SculptorQueue",
+            lambda: maybe_queue_revision_from_feedback(
+                user_id,
+                persona_id,
+                user_message_id,
+                allow_handled_core=bool(core_revision),
+            ),
+            None,
+        )
+        if queued_revision and queued_revision.get("status") == "applied":
+            persona = get_persona_for_user(user_id, persona_id)
+        reconciled_revision = _best_effort(
+            "SculptorGuidanceReconcile",
+            lambda: maybe_reconcile_inactive_chat_guidance_style(user_id, persona_id),
+            None,
+        )
+        if reconciled_revision:
+            persona = get_persona_for_user(user_id, persona_id)
     recalled_memories = _best_effort("MemoryRecall", lambda: recall_memories(user_id, persona_id, message, limit=12), [])
     layered = _best_effort("LayeredMemory", lambda: recall_layered_memory(user_id, persona_id, message, limit=18), [])
     semantic_memories = (
@@ -382,6 +433,9 @@ def db_chat(
         ),
         "Conversation discovery policy: unavailable.",
     )
+    expression_policy = _recent_expression_policy(user_id, persona_id, int(conversation["id"]))
+    expression_policy_context = _expression_policy_prompt(expression_policy)
+    active_preference_context = _active_preference_prompt(user_id, persona_id)
     profile_usage_context = _profile_usage_prompt(message)
     runtime_persona_context = _persona_runtime_prompt(persona)
     profile_context = _safe_context(profile_context)
@@ -393,6 +447,8 @@ def db_chat(
     semantic_context = _safe_context(semantic_context)
     legacy_context = _safe_context(legacy_context)
     discovery_context = _safe_context(discovery_context)
+    expression_policy_context = _safe_context(expression_policy_context)
+    active_preference_context = _safe_context(active_preference_context)
     profile_usage_context = _safe_context(profile_usage_context)
     runtime_persona_context = _safe_context(runtime_persona_context)
     profile_context = _replace_stale_persona_names(profile_context, str(persona.get("name") or ""), stale_persona_names)
@@ -424,6 +480,8 @@ def db_chat(
         {"role": "system", "content": legacy_context},
         *history,
         {"role": "system", "content": discovery_context},
+        {"role": "system", "content": active_preference_context},
+        {"role": "system", "content": expression_policy_context},
         {"role": "system", "content": profile_usage_context},
         {"role": "system", "content": _final_persona_lock(persona)},
         {"role": "user", "content": message},
@@ -446,6 +504,9 @@ def db_chat(
             "semantic_memory_prompt": semantic_context,
             "legacy_memory_prompt": legacy_context,
             "discovery_prompt": discovery_context,
+            "active_preference_prompt": active_preference_context,
+            "expression_policy_prompt": expression_policy_context,
+            "expression_policy": expression_policy,
             "profile_usage_prompt": profile_usage_context,
             "runtime_persona_prompt": runtime_persona_context,
             "stored_memories": stored_memories,
@@ -470,7 +531,7 @@ def db_chat(
 
     presentation = _extract_reply_presentation(reply)
     reply = presentation["content"]
-    expressions = presentation["expressions"]
+    expressions = _apply_expression_policy(presentation["expressions"], expression_policy)
     ts = now_ts()
 
     with get_db() as db:
@@ -505,16 +566,19 @@ def db_chat(
     else:
         _finish_context_trace(trace_id, status="success", assistant_message_id=assistant_message_id)
     if should_refresh_summary(len(history) + 2):
-        try:
-            conversation_summary = refresh_conversation_summary(
-                user_id=user_id,
-                persona_id=persona_id,
-                conversation_id=int(conversation["id"]),
-                latest_message_id=assistant_message_id,
-            )
-        except Exception as exc:
-            print("[ConversationSummary] refresh failed:", exc)
-            conversation_summary = {}
+        if defer_summary_refresh:
+            conversation_summary = {"scheduled": True, "reason": "refresh after reply response"}
+        else:
+            try:
+                conversation_summary = refresh_conversation_summary(
+                    user_id=user_id,
+                    persona_id=persona_id,
+                    conversation_id=int(conversation["id"]),
+                    latest_message_id=assistant_message_id,
+                )
+            except Exception as exc:
+                print("[ConversationSummary] refresh failed:", exc)
+                conversation_summary = {}
     else:
         conversation_summary = {"skipped": True, "reason": "memory policy summary cadence"}
 
@@ -600,6 +664,7 @@ def _final_persona_lock(persona: dict) -> str:
         f"- Current relationship: {relationship or '未设定'}\n"
         f"- Current speaking style: {speaking_style or '自然、尊重用户节奏'}\n"
         f"- Current summary: {summary or '暂无'}\n"
+        "- The speaking style above is a baseline; for response style and support behavior, follow newer explicit active user preferences when they differ.\n"
         "- If older chat history, summaries, memories, or previous replies mention a different self-name or relationship, treat them as obsolete.\n"
         "- When asked who you are, answer using only the current name and current relationship above.\n"
     )
@@ -657,11 +722,31 @@ def _extract_reply_presentation(reply: str) -> dict:
         return {"content": original, "expressions": []}
     expressions: list[dict] = []
 
+    def replace_structured(match: re.Match[str]) -> str:
+        expression_type = match.group(1).strip().lower()
+        label = re.sub(r"\s+", "", match.group(2))
+        if (
+            not expressions
+            and label in STRUCTURED_EXPRESSION_LABELS.get(expression_type, set())
+        ):
+            expressions.append(
+                {
+                    "type": expression_type,
+                    "label": label,
+                    "source_text": match.group(0),
+                }
+            )
+        return ""
+
+    cleaned = STRUCTURED_EXPRESSION_RE.sub(replace_structured, original)
+    structured_expression = bool(expressions)
+
     def replace(match: re.Match[str]) -> str:
         inner = match.group(1).strip()
         if _looks_like_stage_direction(inner):
             label = _expression_label(inner)
-            if label and label not in {item["label"] for item in expressions} and len(expressions) < 3:
+            limit = 1 if structured_expression else 3
+            if label and label not in {item["label"] for item in expressions} and len(expressions) < limit:
                 expressions.append(
                     {
                         "type": _expression_type(label),
@@ -671,12 +756,103 @@ def _extract_reply_presentation(reply: str) -> dict:
                 )
         return ""
 
-    cleaned = STAGE_DIRECTION_RE.sub(replace, original)
+    cleaned = STAGE_DIRECTION_RE.sub(replace, cleaned)
     cleaned = _clean_identity_leaks(cleaned)
     cleaned = re.sub(r"^[\s，,。！？!?、]*[\uFF09\)\u3011\]]+\s*", "", cleaned)
     lines = [line.rstrip() for line in cleaned.splitlines()]
     cleaned = "\n".join(line for line in lines if line.strip()).strip()
     return {"content": cleaned or "我在。", "expressions": expressions}
+
+
+def _recent_expression_policy(user_id: int, persona_id: int, conversation_id: int) -> dict:
+    with get_db() as db:
+        message_rows = db.execute(
+            """
+            SELECT id
+            FROM messages
+            WHERE user_id = ? AND persona_id = ? AND conversation_id = ? AND role = 'assistant'
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (user_id, persona_id, conversation_id, EXPRESSION_RECENT_WINDOW),
+        ).fetchall()
+        message_ids = [int(row["id"]) for row in message_rows]
+        expression_rows = []
+        if message_ids:
+            placeholders = ", ".join("?" for _ in message_ids)
+            expression_rows = db.execute(
+                f"""
+                SELECT message_id, label
+                FROM message_expressions
+                WHERE user_id = ? AND persona_id = ? AND conversation_id = ?
+                  AND message_id IN ({placeholders})
+                ORDER BY id ASC
+                """,
+                (user_id, persona_id, conversation_id, *message_ids),
+            ).fetchall()
+    labels_by_message: dict[int, list[str]] = {message_id: [] for message_id in message_ids}
+    for row in expression_rows:
+        label = str(row["label"] or "").strip()
+        if label:
+            labels_by_message.setdefault(int(row["message_id"]), []).append(label)
+    recent_labels = list(
+        dict.fromkeys(label for message_id in message_ids for label in labels_by_message.get(message_id, []))
+    )
+    return {
+        "recent_assistant_messages_checked": len(message_ids),
+        "suppress_all": bool(message_ids and labels_by_message.get(message_ids[0])),
+        "recent_labels": recent_labels,
+    }
+
+
+def _active_preference_prompt(user_id: int, persona_id: int) -> str:
+    with get_db() as db:
+        rows = db.execute(
+            """
+            SELECT request_text
+            FROM persona_growth_requests
+            WHERE user_id = ? AND persona_id = ? AND withdrawn_at = 0
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 5
+            """,
+            (user_id, persona_id),
+        ).fetchall()
+    preferences = [
+        scrub_identity_text(str(row["request_text"] or "").strip())
+        for row in rows
+        if str(row["request_text"] or "").strip()
+    ]
+    if not preferences:
+        return "Active user companionship preferences: none explicitly recorded outside chat."
+    return (
+        "Active user companionship preferences. These were written by the user and apply immediately to how you reply:\n"
+        + "\n".join(f"- {item}" for item in preferences)
+        + "\n- These active preferences override older stored style or support guidance when they conflict; prefer the newest active wording.\n"
+        "- Follow these preferences naturally in the next reply. They adjust response style and support behavior, "
+        "not your name or relationship identity."
+    )
+
+
+def _expression_policy_prompt(policy: dict) -> str:
+    if policy.get("suppress_all"):
+        return (
+            "本轮轻表达节奏约束：上一条回复刚显示过非语言提示，"
+            "本轮不得输出 expression 标签，也不要用括号动作替代。"
+        )
+    recent_labels = [str(label) for label in policy.get("recent_labels") or [] if label]
+    if recent_labels:
+        return (
+            "本轮轻表达节奏约束：近期已经展示过这些标签："
+            f"{'、'.join(recent_labels)}。本轮不得重复这些标签；没有真正必要的新提示时不要添加标签。"
+        )
+    return "本轮轻表达节奏约束：近期没有已展示的提示；即便如此，也仅在确有必要时使用至多一个标签。"
+
+
+def _apply_expression_policy(expressions: list[dict], policy: dict) -> list[dict]:
+    if policy.get("suppress_all"):
+        return []
+    recent_labels = {str(label) for label in policy.get("recent_labels") or [] if label}
+    return [item for item in expressions if str(item.get("label") or "") not in recent_labels][:1]
 
 
 def _looks_like_stage_direction(text: str) -> bool:
@@ -716,7 +892,7 @@ def _clean_identity_leaks(text: str) -> str:
 
 def _expression_label(text: str) -> str:
     compact = re.sub(r"\s+", "", text)
-    for word in STAGE_DIRECTION_WORDS:
+    for word in sorted(STAGE_DIRECTION_WORDS, key=len, reverse=True):
         if word in compact:
             return word
     return compact[:12]

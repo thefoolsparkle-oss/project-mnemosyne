@@ -83,6 +83,17 @@ def seed_growth_demo_data(*, reset: bool = True) -> dict[str, Any]:
                 conversation_id, user_id, persona_id, ts - 260,
             ),
         )
+        demo_user_message_id = int(
+            db.execute(
+                """
+                SELECT id FROM messages
+                WHERE conversation_id = ? AND role = 'user'
+                ORDER BY id ASC
+                LIMIT 1
+                """,
+                (conversation_id,),
+            ).fetchone()["id"]
+        )
         db.execute(
             """
             INSERT INTO memory_facts (
@@ -111,16 +122,16 @@ def seed_growth_demo_data(*, reset: bool = True) -> dict[str, Any]:
         applied_cursor = db.execute(
             """
             INSERT INTO persona_revision_suggestions (
-                user_id, persona_id, status, base_version, origin, trigger_memory_uids_json,
+                user_id, persona_id, status, base_version, origin, trigger_message_id, trigger_memory_uids_json,
                 reason, suggestion_json, source_context_json, created_at, updated_at,
-                applied_at, applied_version, decided_at, decision_note
+                applied_at, applied_version, decided_at, decision_actor, decision_note
             )
-            VALUES (?, ?, 'applied', 1, 'explicit_feedback', ?,
+            VALUES (?, ?, 'applied', 1, 'explicit_feedback', ?, ?,
                     '演示：根据用户希望少追问的反馈进行轻微调整', ?, ?, ?, ?, ?, 2, ?,
-                    '演示数据：已审核应用。')
+                    'review_agent', '自动审核代理：用户在聊天中明确提出低风险相处要求，仅调整回应方式。')
             """,
             (
-                user_id, persona_id, json.dumps(["DEMO-GROWTH-FEEDBACK-1"], ensure_ascii=False),
+                user_id, persona_id, demo_user_message_id, json.dumps(["DEMO-GROWTH-FEEDBACK-1"], ensure_ascii=False),
                 json.dumps(applied, ensure_ascii=False), json.dumps(_source_context(), ensure_ascii=False),
                 ts - 600, ts - 520, ts - 500, ts - 500,
             ),
@@ -145,35 +156,44 @@ def seed_growth_demo_data(*, reset: bool = True) -> dict[str, Any]:
         db.execute(
             """
             INSERT INTO persona_growth_feedback (
-                user_id, persona_id, reviewed_version, reaction, detail_text, created_at, updated_at
+                user_id, persona_id, reviewed_version, reaction, detail_text,
+                resolved_at, resolution_note, created_at, updated_at
             )
-            VALUES (?, ?, 2, 'needs_adjustment', '还是有点像在替我做结论，希望只是陪着我，不要立刻分析。', ?, ?)
+            VALUES (?, ?, 2, 'needs_adjustment', '还是有点像在替我做结论，希望只是陪着我，不要立刻分析。',
+                    ?, '已自动加入当前回应指导', ?, ?)
             """,
-            (user_id, persona_id, ts - 240, ts - 240),
+            (user_id, persona_id, ts - 200, ts - 240, ts - 200),
         )
-        pending_cursor = db.execute(
+        db.execute(
             """
-            INSERT INTO persona_revision_suggestions (
-                user_id, persona_id, status, base_version, origin, trigger_memory_uids_json,
-                reason, suggestion_json, source_context_json, created_at, updated_at
+            INSERT INTO persona_growth_requests (
+                user_id, persona_id, request_text, suggestion_id, memory_uids_json,
+                request_origin, source_reviewed_version, created_at, updated_at
             )
-            VALUES (?, ?, 'pending', 2, 'profile_request', ?,
-                    '演示：继续减少追问与替用户总结', ?, ?, ?, ?)
+            VALUES (?, ?, '安慰我的时候先陪着我，不要马上替我分析或下结论。', NULL, ?,
+                    'growth_feedback', 2, ?, ?)
             """,
             (
                 user_id, persona_id, json.dumps(["DEMO-GROWTH-FEEDBACK-1"], ensure_ascii=False),
-                json.dumps(pending, ensure_ascii=False), json.dumps(_source_context(), ensure_ascii=False),
                 ts - 180, ts - 180,
             ),
         )
         db.execute(
             """
-            INSERT INTO persona_growth_requests (
-                user_id, persona_id, request_text, suggestion_id, created_at, updated_at
+            INSERT INTO persona_revision_suggestions (
+                user_id, persona_id, status, base_version, origin, trigger_message_id,
+                trigger_memory_uids_json, reason, suggestion_json, source_context_json,
+                created_at, updated_at
             )
-            VALUES (?, ?, '安慰我的时候先陪着我，不要马上替我分析或下结论。', ?, ?, ?)
+            VALUES (?, ?, 'pending', 2, 'explicit_feedback', ?, ?,
+                    '演示积压：迁移前重复形成的低风险聊天要求（当前已覆盖）', ?, ?, ?, ?)
             """,
-            (user_id, persona_id, int(pending_cursor.lastrowid), ts - 180, ts - 180),
+            (
+                user_id, persona_id, demo_user_message_id,
+                json.dumps(["DEMO-GROWTH-FEEDBACK-1"], ensure_ascii=False),
+                json.dumps(applied, ensure_ascii=False), json.dumps(_source_context(), ensure_ascii=False),
+                ts - 160, ts - 160,
+            ),
         )
 
     refresh_memory_state(user_id, persona_id)

@@ -10,6 +10,17 @@ from .llm_client import call_llm_api
 from .memory_policy import should_use_llm_for_mirror
 
 
+DISCOVERY_DIMENSIONS = {
+    "interests": "interests and tastes",
+    "daily_rhythm": "daily rhythm",
+    "values": "values and priorities",
+    "comfort_style": "comfort style",
+    "boundaries": "boundaries and annoyances",
+    "ambitions": "plans and ambitions",
+    "relationship_style": "relationship expectations",
+}
+
+
 MIRROR_SYSTEM = """You are Mirror, a user modeling agent for a long-term companion chat system.
 Build a practical, non-clinical user profile for conversation adaptation.
 Do not diagnose mental illness. Do not infer protected attributes.
@@ -41,15 +52,28 @@ def ensure_user_insight(user_id: int) -> dict:
     with get_db() as db:
         row = db.execute("SELECT * FROM user_insights WHERE user_id = ?", (user_id,)).fetchone()
         if row:
-            return _public_insight(dict_from_row(row) or {})
+            insight = _public_insight(dict_from_row(row) or {})
+            discovery_dimensions = _seed_discovery_dimensions(
+                insight.get("discovery_dimensions", {}),
+                _dimensions_from_insight(insight),
+                int(insight.get("updated_at") or ts),
+            )
+            if discovery_dimensions != insight.get("discovery_dimensions", {}):
+                db.execute(
+                    "UPDATE user_insights SET discovery_dimensions_json = ? WHERE user_id = ?",
+                    (json.dumps(discovery_dimensions, ensure_ascii=False), user_id),
+                )
+                insight["discovery_dimensions"] = discovery_dimensions
+            return insight
 
         db.execute(
             """
             INSERT INTO user_insights (
                 user_id, profile_summary, interaction_style, emotional_patterns_json,
-                inferred_profile_json, topic_model_json, guidance_json, updated_at
+                inferred_profile_json, topic_model_json, guidance_json,
+                discovery_dimensions_json, curiosity_feedback_json, updated_at
             )
-            VALUES (?, '', '', '[]', '{}', '{}', '{}', ?)
+            VALUES (?, '', '', '[]', '{}', '{}', '{}', '{}', '{}', ?)
             """,
             (user_id, ts),
         )
@@ -63,8 +87,15 @@ def update_interaction_insight(user_id: int, user_text: str, stored_memories: li
     modeled = _analyze_with_llm(current, user_text, stored_memories, memory_context) if should_use_llm_for_mirror(user_text, stored_memories) else None
     if not modeled:
         modeled = _analyze_with_rules(current, user_text, stored_memories, memory_context)
+    modeled = _overlay_explicit_topic_boundary_signals(modeled, user_text, memory_context)
     merged = _merge_insights(current, modeled)
     ts = now_ts()
+    discovery_dimensions = _merge_discovery_dimensions(
+        current.get("discovery_dimensions", {}),
+        _observed_discovery_dimensions(user_text, stored_memories),
+        ts,
+    )
+    curiosity_feedback = _update_curiosity_feedback(current.get("curiosity_feedback", {}), user_text, ts)
 
     with get_db() as db:
         db.execute(
@@ -72,7 +103,7 @@ def update_interaction_insight(user_id: int, user_text: str, stored_memories: li
             UPDATE user_insights
             SET profile_summary = ?, interaction_style = ?, emotional_patterns_json = ?,
                 inferred_profile_json = ?, topic_model_json = ?, guidance_json = ?,
-                updated_at = ?
+                discovery_dimensions_json = ?, curiosity_feedback_json = ?, updated_at = ?
             WHERE user_id = ?
             """,
             (
@@ -82,6 +113,8 @@ def update_interaction_insight(user_id: int, user_text: str, stored_memories: li
                 json.dumps(merged["inferred_profile"], ensure_ascii=False),
                 json.dumps(merged["topic_model"], ensure_ascii=False),
                 json.dumps(merged["guidance"], ensure_ascii=False),
+                json.dumps(discovery_dimensions, ensure_ascii=False),
+                json.dumps(curiosity_feedback, ensure_ascii=False),
                 ts,
                 user_id,
             ),
@@ -124,15 +157,20 @@ def update_user_insight(
         item for item in merged["topic_model"]["safe_topics"] if item not in merged["topic_model"]["avoid_topics"]
     ]
     merged = scrub_identity_obj(merged)
-
     ts = now_ts()
+    discovery_dimensions = _seed_discovery_dimensions(
+        current.get("discovery_dimensions", {}),
+        _dimensions_from_insight(merged),
+        ts,
+    )
+
     with get_db() as db:
         db.execute(
             """
             UPDATE user_insights
             SET profile_summary = ?, interaction_style = ?, emotional_patterns_json = ?,
                 inferred_profile_json = ?, topic_model_json = ?, guidance_json = ?,
-                updated_at = ?
+                discovery_dimensions_json = ?, updated_at = ?
             WHERE user_id = ?
             """,
             (
@@ -142,6 +180,7 @@ def update_user_insight(
                 json.dumps(merged["inferred_profile"] if isinstance(merged["inferred_profile"], dict) else {}, ensure_ascii=False),
                 json.dumps(merged["topic_model"], ensure_ascii=False),
                 json.dumps(merged["guidance"], ensure_ascii=False),
+                json.dumps(discovery_dimensions, ensure_ascii=False),
                 ts,
                 user_id,
             ),
@@ -176,6 +215,8 @@ def discovery_prompt(
 ) -> str:
     insight = ensure_user_insight(user_id)
     topic_model = insight.get("topic_model", {})
+    discovery_dimensions = insight.get("discovery_dimensions", {})
+    curiosity_feedback = insight.get("curiosity_feedback", {})
     known_topics = {
         *topic_model.get("likes", []),
         *topic_model.get("dislikes", []),
@@ -205,6 +246,34 @@ def discovery_prompt(
         )
     else:
         lines.append("- The profile has multiple signals, but keep discovering naturally instead of treating existing interests as a closed script.")
+    covered_dimensions = [
+        DISCOVERY_DIMENSIONS[key]
+        for key in DISCOVERY_DIMENSIONS
+        if int((discovery_dimensions.get(key) or {}).get("observed_count") or 0) > 0
+    ]
+    lightly_known_dimensions = [
+        DISCOVERY_DIMENSIONS[key]
+        for key in DISCOVERY_DIMENSIONS
+        if int((discovery_dimensions.get(key) or {}).get("observed_count") or 0) == 0
+    ]
+    if covered_dimensions:
+        lines.append(f"- Explicit user signals have already touched these areas: {json.dumps(covered_dimensions, ensure_ascii=False)}.")
+    if lightly_known_dimensions:
+        lines.append(
+            f"- Areas not yet clearly learned: {json.dumps(lightly_known_dimensions, ensure_ascii=False)}. "
+            "If a curious question fits naturally, prefer one of these instead of re-mining covered ground."
+        )
+        lines.append("- Discovery coverage is guidance, not a checklist: do not force a question just to fill an area.")
+    if curiosity_feedback.get("status") == "cautious":
+        lines.append(
+            "- The user has explicitly said they do not want exploratory or personal questions. "
+            "Do not initiate one now; stay with topics they choose until they clearly invite curiosity again."
+        )
+    elif curiosity_feedback.get("status") == "invited":
+        lines.append(
+            "- The user has explicitly welcomed natural curiosity. You may ask at most one optional question "
+            "when it fits; this invitation never overrides boundaries or hesitation."
+        )
     recent_text = "\n".join(str(item or "") for item in (recent_assistant_messages or [])[-4:])
     current_text = str(current_user_text or "")
     reusable_topics = [
@@ -276,8 +345,8 @@ def _analyze_with_rules(current: dict, user_text: str, stored_memories: list[dic
         emotional.append("When the user sounds stressed or low, stabilize first, then offer one small next step.")
         guidance["support_rules"].append("For stress or low mood, validate first and keep advice small.")
 
-    likes = _extract_topics(text, [r"(?:我|本人)?(?:很|最)?(?<!不)喜欢\s*([^\n\r，。！？,.!?]{1,40})"])
-    dislikes = _extract_topics(text, [r"(?:我|本人)?(?:很|最)?(?:不喜欢|讨厌)\s*([^\n\r，。！？,.!?]{1,40})"])
+    likes = _extract_topics(text, [r"(?:我|本人)?(?:现在又|现在|其实|已经|又)?(?:很|最)?(?<!不)喜欢\s*([^\n\r，。！？,.!?]{1,40})"])
+    dislikes = _extract_topics(text, [r"(?:我|本人)?(?:现在又|现在|其实|已经|又)?(?:很|最)?(?:不喜欢|讨厌)\s*([^\n\r，。！？,.!?]{1,40})"])
     for topic in likes:
         topic_model["likes"].append(topic)
         topic_model["safe_topics"].append(topic)
@@ -292,16 +361,23 @@ def _analyze_with_rules(current: dict, user_text: str, stored_memories: list[dic
         memory_type = memory.get("type")
         memory_text = str(memory.get("text") or "")
         if memory_type == "preference":
-            if "喜欢" in memory_text:
-                topic = _tail_after(memory_text, "喜欢")
-                _append_unique(topic_model["likes"], topic)
-                _append_unique(topic_model["safe_topics"], topic)
             if "讨厌" in memory_text or "不喜欢" in memory_text:
                 topic = _tail_after(memory_text, "讨厌") or _tail_after(memory_text, "不喜欢")
                 _append_unique(topic_model["dislikes"], topic)
                 _append_unique(topic_model["avoid_topics"], topic)
                 guidance["do_not"].append(f"Do not proactively bring up {topic}.")
-        if memory_type in {"persona_feedback", "boundary"} and memory_text:
+            elif "喜欢" in memory_text:
+                topic = _tail_after(memory_text, "喜欢")
+                _append_unique(topic_model["likes"], topic)
+                _append_unique(topic_model["safe_topics"], topic)
+        if memory_type == "boundary" and memory_text:
+            boundary_topic = _topic_from_boundary_memory(memory_text)
+            if boundary_topic:
+                _append_topic_boundary_guidance(topic_model, guidance, boundary_topic)
+            else:
+                style.append(memory_text)
+                guidance["do_not"].append(memory_text)
+        elif memory_type == "persona_feedback" and memory_text:
             style.append(memory_text)
             guidance["do_not"].append(memory_text)
 
@@ -312,6 +388,10 @@ def _analyze_with_rules(current: dict, user_text: str, stored_memories: list[dic
         _append_unique(topic_model["dislikes"], topic)
         _append_unique(topic_model["avoid_topics"], topic)
         guidance["do_not"].append(f"Do not proactively bring up {topic}.")
+    for memory_text in memory_context.get("boundaries", []):
+        boundary_topic = _topic_from_boundary_memory(str(memory_text))
+        if boundary_topic:
+            _append_topic_boundary_guidance(topic_model, guidance, boundary_topic)
 
     summary = ""
     if style or topic_model["likes"] or topic_model["dislikes"]:
@@ -348,10 +428,10 @@ def _memory_context(user_id: int, stored_memories: list[dict]) -> dict:
     for item in [*(dict_from_row(row) or {} for row in rows), *stored_memories]:
         text = str(item.get("text") or "")
         if item.get("type") == "preference":
-            if "喜欢" in text:
-                _append_unique(likes, _tail_after(text, "喜欢"))
             if "讨厌" in text or "不喜欢" in text:
                 _append_unique(dislikes, _tail_after(text, "讨厌") or _tail_after(text, "不喜欢"))
+            elif "喜欢" in text:
+                _append_unique(likes, _tail_after(text, "喜欢"))
         if item.get("type") == "boundary":
             _append_unique(boundaries, text)
         if item.get("type") == "persona_feedback":
@@ -372,6 +452,18 @@ def _merge_insights(current: dict, modeled: dict[str, Any]) -> dict[str, Any]:
         "avoid_topics": _merge_lists(current_topic.get("avoid_topics"), modeled_topic.get("avoid_topics")),
         "safe_topics": _merge_lists(current_topic.get("safe_topics"), modeled_topic.get("safe_topics")),
     }
+    modeled_likes = set(_as_list(modeled_topic.get("likes"))) - set(_as_list(modeled_topic.get("dislikes")))
+    modeled_dislikes = set(_as_list(modeled_topic.get("dislikes")))
+    protected_boundary_topics = set(_as_list(modeled.get("active_boundary_topics")))
+    released_topics = set(_as_list(modeled.get("released_topics")))
+    clearable_likes = modeled_likes - protected_boundary_topics
+    topic_model["dislikes"] = [item for item in topic_model["dislikes"] if item not in modeled_likes]
+    topic_model["avoid_topics"] = [
+        item for item in topic_model["avoid_topics"]
+        if item not in clearable_likes and item not in released_topics
+    ]
+    topic_model["likes"] = [item for item in topic_model["likes"] if item not in modeled_dislikes]
+    topic_model["safe_topics"] = [item for item in topic_model["safe_topics"] if item not in modeled_dislikes]
     for disliked in topic_model["dislikes"]:
         _append_unique(topic_model["avoid_topics"], disliked)
     topic_model["likes"] = [item for item in topic_model["likes"] if item not in topic_model["dislikes"]]
@@ -383,6 +475,26 @@ def _merge_insights(current: dict, modeled: dict[str, Any]) -> dict[str, Any]:
         "support_rules": _merge_lists(current_guidance.get("support_rules"), modeled_guidance.get("support_rules")),
         "do_not": _merge_lists(current_guidance.get("do_not"), modeled_guidance.get("do_not")),
     }
+    for liked in clearable_likes:
+        guidance["topic_rules"] = [
+            rule for rule in guidance["topic_rules"]
+            if not (liked in rule and any(marker in rule.lower() for marker in ("avoid", "do not", "不要", "避开")))
+        ]
+        guidance["do_not"] = [
+            rule for rule in guidance["do_not"]
+            if not (liked in rule and any(marker in rule.lower() for marker in ("avoid", "do not", "不要", "避开")))
+        ]
+    for released in released_topics:
+        if released in topic_model["dislikes"]:
+            continue
+        guidance["topic_rules"] = [
+            rule for rule in guidance["topic_rules"]
+            if not (released in rule and any(marker in rule.lower() for marker in ("avoid", "do not", "不要", "避开")))
+        ]
+        guidance["do_not"] = [
+            rule for rule in guidance["do_not"]
+            if not (released in rule and any(marker in rule.lower() for marker in ("avoid", "do not", "不要", "避开")))
+        ]
     for disliked in topic_model["dislikes"]:
         guidance["topic_rules"] = [
             rule
@@ -410,11 +522,81 @@ def _merge_insights(current: dict, modeled: dict[str, Any]) -> dict[str, Any]:
     })
 
 
+def _overlay_explicit_topic_boundary_signals(
+    modeled: dict[str, Any],
+    user_text: str,
+    memory_context: dict[str, Any],
+) -> dict[str, Any]:
+    updated = dict(modeled or {})
+    topic_model = _normalize_topic_model(updated.get("topic_model", {}))
+    guidance = _normalize_guidance(updated.get("guidance", {}))
+    active_topics = [
+        topic
+        for topic in (_topic_from_boundary_memory(text) for text in memory_context.get("boundaries", []))
+        if topic
+    ]
+    for topic in _explicit_topic_boundaries(user_text):
+        _append_unique(active_topics, topic)
+    for topic in active_topics:
+        _append_topic_boundary_guidance(topic_model, guidance, topic)
+    released_topics = _released_topic_boundaries(user_text)
+    if released_topics:
+        updated["released_topics"] = released_topics
+        active_topics = [topic for topic in active_topics if topic not in released_topics]
+    updated["active_boundary_topics"] = active_topics
+    updated["topic_model"] = topic_model
+    updated["guidance"] = guidance
+    return updated
+
+
+def _append_topic_boundary_guidance(topic_model: dict[str, list[str]], guidance: dict[str, list[str]], topic: str) -> None:
+    if not topic:
+        return
+    _append_unique(topic_model["avoid_topics"], topic)
+    _append_unique(guidance["do_not"], f"Do not proactively bring up {topic}.")
+    _append_unique(guidance["topic_rules"], f"Avoid steering the conversation toward {topic}.")
+
+
+def _explicit_topic_boundaries(text: str) -> list[str]:
+    return _extract_topics(
+        text,
+        [r"(?:不要|别)(?:再)?(?:主动)?(?:提|聊|提起|说起)\s*([^\n\r，。！？,.!?]{1,40})"],
+    )
+
+
+def _released_topic_boundaries(text: str) -> list[str]:
+    patterns = (
+        r"^(?:以后|现在)?(?:可以|能)(?:再|主动)?(?:聊|提|提起|说起)\s*([^\n\r，。！？,.!?]{1,40})$",
+        r"^([^\n\r，。！？,.!?]{1,40}?)(?:现在|以后)?(?:可以|能)(?:再|主动)?(?:聊|提|提起|说起)(?:了)?$",
+        r"^(?:不用|不必|无需)(?:再)?(?:避开|回避|避免提|避免聊)\s*([^\n\r，。！？,.!?]{1,40})$",
+        r"^([^\n\r，。！？,.!?]{1,40}?)(?:不用|不必|无需)(?:再)?(?:避开|回避|避免提|避免聊)(?:了)?$",
+    )
+    released: list[str] = []
+    for segment in re.split(r"[，,。！？!?；;\n]+", str(text or "")):
+        part = segment.strip()
+        if not part:
+            continue
+        for pattern in patterns:
+            match = re.search(pattern, part)
+            if match:
+                topic = _tail_after(f"喜欢{match.group(1)}", "喜欢")
+                _append_unique(released, topic)
+                break
+    return released
+
+
+def _topic_from_boundary_memory(text: str) -> str:
+    match = re.match(r"不要主动提(.+)", str(text or "").strip())
+    return _tail_after(f"喜欢{match.group(1)}", "喜欢") if match else ""
+
+
 def _public_insight(row: dict) -> dict:
     emotional_patterns = _json_value(row.get("emotional_patterns_json"), [])
     inferred_profile = _json_value(row.get("inferred_profile_json"), {})
     topic_model = _json_value(row.get("topic_model_json"), {})
     guidance = _json_value(row.get("guidance_json"), {})
+    discovery_dimensions = _json_value(row.get("discovery_dimensions_json"), {})
+    curiosity_feedback = _json_value(row.get("curiosity_feedback_json"), {})
     return {
         "user_id": row.get("user_id"),
         "profile_summary": scrub_identity_text(row.get("profile_summary") or ""),
@@ -423,6 +605,8 @@ def _public_insight(row: dict) -> dict:
         "inferred_profile": scrub_identity_obj(inferred_profile if isinstance(inferred_profile, dict) else {}),
         "topic_model": _normalize_topic_model(topic_model),
         "guidance": _normalize_guidance(guidance),
+        "discovery_dimensions": _normalize_discovery_dimensions(discovery_dimensions),
+        "curiosity_feedback": _normalize_curiosity_feedback(curiosity_feedback),
         "updated_at": row.get("updated_at"),
     }
 
@@ -447,6 +631,147 @@ def _normalize_guidance(value: Any) -> dict[str, list[str]]:
     }
 
 
+def _normalize_discovery_dimensions(value: Any) -> dict[str, dict[str, int]]:
+    value = value if isinstance(value, dict) else {}
+    normalized: dict[str, dict[str, int]] = {}
+    for key in DISCOVERY_DIMENSIONS:
+        item = value.get(key, {})
+        if not isinstance(item, dict):
+            continue
+        count = max(0, int(item.get("observed_count") or 0))
+        if count:
+            normalized[key] = {
+                "observed_count": count,
+                "last_observed_at": max(0, int(item.get("last_observed_at") or 0)),
+            }
+    return normalized
+
+
+def _normalize_curiosity_feedback(value: Any) -> dict[str, Any]:
+    value = value if isinstance(value, dict) else {}
+    status = str(value.get("status") or "neutral")
+    if status not in {"neutral", "cautious", "invited"}:
+        status = "neutral"
+    return {
+        "status": status,
+        "declined_count": max(0, int(value.get("declined_count") or 0)),
+        "invited_count": max(0, int(value.get("invited_count") or 0)),
+        "last_signal": str(value.get("last_signal") or ""),
+        "last_signal_at": max(0, int(value.get("last_signal_at") or 0)),
+    }
+
+
+def _update_curiosity_feedback(current: Any, user_text: str, ts: int) -> dict[str, Any]:
+    feedback = _normalize_curiosity_feedback(current)
+    signal = _curiosity_signal(user_text)
+    if not signal:
+        return feedback
+    if signal == "declined":
+        feedback["status"] = "cautious"
+        feedback["declined_count"] += 1
+    else:
+        feedback["status"] = "invited"
+        feedback["invited_count"] += 1
+    feedback["last_signal"] = signal
+    feedback["last_signal_at"] = ts
+    return feedback
+
+
+def _curiosity_signal(user_text: str) -> str:
+    text = str(user_text or "").strip()
+    declined_markers = (
+        "别问我这些",
+        "别再问我这些",
+        "不要问这种",
+        "不要问这类",
+        "别问这么私人",
+        "不要问这么私人",
+        "我不喜欢被问这些",
+        "我不想回答这类",
+        "不要总问我",
+        "别总问我",
+    )
+    invited_markers = (
+        "你可以问我",
+        "可以问我",
+        "想了解我就问",
+        "想知道什么可以问",
+        "可以多问我",
+        "多了解我一点",
+    )
+    if _has_any(text, declined_markers):
+        return "declined"
+    if _has_any(text, invited_markers):
+        return "invited"
+    return ""
+
+
+def _observed_discovery_dimensions(user_text: str, stored_memories: list[dict]) -> set[str]:
+    observed: set[str] = set()
+    text = str(user_text or "")
+    for memory in stored_memories:
+        memory_type = str(memory.get("type") or "")
+        memory_text = str(memory.get("text") or "")
+        if memory_type == "preference":
+            observed.add("interests")
+        elif memory_type == "plan":
+            observed.add("ambitions")
+        elif memory_type == "boundary":
+            observed.add("boundaries")
+        elif memory_type == "relationship":
+            observed.add("relationship_style")
+        elif memory_type == "emotional_pattern":
+            observed.add("comfort_style")
+        elif memory_type == "persona_feedback":
+            observed.add("relationship_style")
+            if _has_any(memory_text, ("安慰", "陪", "难过", "焦虑", "低落", "情绪", "压力")):
+                observed.add("comfort_style")
+    if _has_any(text, ("作息", "早睡", "晚睡", "熬夜", "上班", "下班", "上课", "周末", "每天", "平时")):
+        observed.add("daily_rhythm")
+    if _has_any(text, ("在意", "看重", "重要的是", "原则", "意义", "价值", "希望成为")):
+        observed.add("values")
+    if _has_any(text, ("安慰", "陪我", "难过时", "焦虑时", "低落时", "压力大的时候")):
+        observed.add("comfort_style")
+    return observed
+
+
+def _dimensions_from_insight(insight: dict[str, Any]) -> set[str]:
+    observed: set[str] = set()
+    topic_model = insight.get("topic_model", {}) if isinstance(insight.get("topic_model"), dict) else {}
+    if any(topic_model.get(key) for key in ("likes", "dislikes", "avoid_topics", "safe_topics")):
+        observed.add("interests")
+    if insight.get("interaction_style"):
+        observed.add("relationship_style")
+    if insight.get("emotional_patterns"):
+        observed.add("comfort_style")
+    return observed
+
+
+def _merge_discovery_dimensions(current: Any, observed: set[str], ts: int) -> dict[str, dict[str, int]]:
+    merged = _normalize_discovery_dimensions(current)
+    for key in observed:
+        if key not in DISCOVERY_DIMENSIONS:
+            continue
+        previous = merged.get(key, {})
+        merged[key] = {
+            "observed_count": int(previous.get("observed_count") or 0) + 1,
+            "last_observed_at": ts,
+        }
+    return merged
+
+
+def _seed_discovery_dimensions(current: Any, observed: set[str], ts: int) -> dict[str, dict[str, int]]:
+    merged = _normalize_discovery_dimensions(current)
+    for key in observed:
+        if key in DISCOVERY_DIMENSIONS and key not in merged:
+            merged[key] = {"observed_count": 1, "last_observed_at": ts}
+    return merged
+
+
+def _has_any(text: str, markers: tuple[str, ...]) -> bool:
+    return any(marker in text for marker in markers)
+
+
 def _extract_json(text: str) -> dict[str, Any]:
     text = text.strip()
     try:
@@ -468,7 +793,7 @@ def _extract_topics(text: str, patterns: list[str]) -> list[str]:
     topics = []
     for pattern in patterns:
         for match in re.finditer(pattern, text):
-            topic = match.group(1).strip()
+            topic = re.sub(r"(?:了|啦|呀|啊|吧)$", "", match.group(1).strip()).strip()
             if topic:
                 topics.append(topic)
     return topics
@@ -477,7 +802,8 @@ def _extract_topics(text: str, patterns: list[str]) -> list[str]:
 def _tail_after(text: str, marker: str) -> str:
     if marker not in text:
         return ""
-    return text.split(marker, 1)[1].strip(" ：:，。！？,.!?")
+    topic = text.split(marker, 1)[1].strip(" ：:，。！？,.!?")
+    return re.sub(r"(?:了|啦|呀|啊|吧)$", "", topic).strip() or topic
 
 
 def _json_value(raw: Any, default: Any) -> Any:

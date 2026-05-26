@@ -1384,34 +1384,39 @@ function renderPersonaGrowth(persona) {
     reviewedChanges.length ? renderReviewedChangeHistory(reviewedChanges) : null,
     h("p", {
       class: "persona-growth-hint",
-      text: "想调整相处方式，可以在聊天里直接说“回复短一点”或“少追问”；明确的偏好会被记录下来。",
+      text: "想调整相处方式，可以直接说“回复短一点”或“少追问”；明确说“以后你就是我的女朋友”或“我以后叫你小舟”也会直接更新并留记录。",
     }),
   ]);
 }
 
 function renderPreferenceRequest(personaId, requests, notice = "", errorText = "") {
-  const editable = requests.find((request) => request.status === "waiting_review" && request.can_withdraw);
+  const editable = requests.find((request) => (
+    request.status === "active_guidance" && request.can_withdraw && request.origin === "direct_entry"
+  ));
   const input = h("textarea", {
     rows: "2",
     maxlength: "500",
     placeholder: "例如：难过时先陪我一会儿，不要马上分析原因",
   }, editable?.detail || "");
   const statusText = {
-    waiting_review: "等待确认",
+    active_guidance: "当前生效",
+    waiting_review: "已转为自动适配",
     confirmed: "已形成变化",
     not_applied: "本次未形成变化",
-    needs_review_again: "需要重新确认",
+    needs_review_again: "已转为自动适配",
     withdrawn: "已撤回",
+    stopped_in_chat: "已在聊天中停止",
+    superseded: "已被更新偏好替代",
     recorded: "已记下",
   };
   return h("section", { class: "persona-growth-request" }, [
     h("strong", { text: "直接告诉 TA 怎么陪你" }),
-    h("p", { text: "你写下的相处偏好会进入确认流程，不会立刻改变人格。" }),
+    h("p", { text: "你写下的主动偏好会立即影响 TA 的回应方式；与变化反馈形成的补充指导可同时生效，也可分别停止。" }),
     input,
     h("button", {
       type: "button",
       class: "ghost compact",
-      text: editable ? "更新待确认偏好" : "提交相处偏好",
+      text: editable ? "更新当前偏好" : "让 TA 按这样回应",
       onclick: () => submitPreferenceRequest(personaId, input.value),
     }),
     notice ? h("small", { text: notice }) : null,
@@ -1422,8 +1427,14 @@ function renderPreferenceRequest(personaId, requests, notice = "", errorText = "
         h("div", {}, [
           h("small", { text: formatListTime(request.updated_at || request.created_at) }),
           h("span", { text: statusText[request.status] || statusText.recorded }),
+          request.origin === "growth_feedback"
+            ? h("span", { text: `来自 v${request.source_reviewed_version || "?"} 的调整反馈` })
+            : request.origin === "chat_feedback"
+              ? h("span", { text: "聊天中明确提出" })
+              : h("span", { text: "主动设置" }),
         ]),
         h("p", { text: request.detail }),
+        request.deactivation_reason ? h("small", { text: request.deactivation_reason }) : null,
         request.result ? h("section", { class: "persona-growth-request-result" }, [
           h("strong", { text: `已在 v${request.result.version} 形成变化` }),
           h("p", { text: (request.result.highlights || []).join("；") || "相处方式完成了一次轻微调整" }),
@@ -1431,13 +1442,13 @@ function renderPreferenceRequest(personaId, requests, notice = "", errorText = "
         request.can_retry ? h("button", {
           type: "button",
           class: "ghost compact",
-          text: "按当前版本重新提交",
+          text: "重新启用",
           onclick: () => retryPreferenceRequest(personaId, request.id),
         }) : null,
         request.can_withdraw ? h("button", {
           type: "button",
           class: "ghost compact",
-          text: "撤回请求",
+          text: "停止这条偏好",
           onclick: () => withdrawPreferenceRequest(personaId, request.id),
         }) : null,
       ]))),
@@ -1459,8 +1470,8 @@ function renderReviewedChangeHistory(changes) {
             text: change.feedback.reaction === "helpful"
               ? "你的反馈：这样更合适"
               : `你的反馈：还想调整 · ${change.feedback.followup_status === "completed"
-                ? `已完成跟进${change.feedback.followed_up_at ? `（${formatListTime(change.feedback.followed_up_at)}）` : ""}`
-                : "等待跟进"}`,
+                ? `已自动采用${change.feedback.followed_up_at ? `（${formatListTime(change.feedback.followed_up_at)}）` : ""}`
+                : "写下具体方式即可自动调整"}`,
           })
         : null,
     ]))),
@@ -1483,7 +1494,7 @@ async function submitPreferenceRequest(personaId, detail) {
     const data = await api(`/api/personas/${personaId}/growth`);
     state.personaGrowth[personaId] = {
       ...data.growth,
-      request_notice: "已记下，会先经过确认，再体现在相处变化里。",
+      request_notice: "已生效，TA 接下来的回应会参考这条偏好。",
       request_error: "",
     };
   } catch (err) {
@@ -1499,7 +1510,7 @@ async function withdrawPreferenceRequest(personaId, requestId) {
     const data = await api(`/api/personas/${personaId}/growth`);
     state.personaGrowth[personaId] = {
       ...data.growth,
-      request_notice: "已撤回，这条偏好不会进入本次人格变化。",
+      request_notice: "已停止，接下来的回应不再使用这条偏好。",
       request_error: "",
     };
     clearGrowthAction(personaId);
@@ -1516,7 +1527,7 @@ async function retryPreferenceRequest(personaId, requestId) {
     const data = await api(`/api/personas/${personaId}/growth`);
     state.personaGrowth[personaId] = {
       ...data.growth,
-      request_notice: "已按当前人格版本重新提交，等待确认。",
+      request_notice: "已重新启用，TA 接下来的回应会参考这条偏好。",
       request_error: "",
     };
     clearGrowthAction(personaId);
@@ -1541,10 +1552,10 @@ function renderGrowthFeedback(personaId, latestChange, errorText = "") {
     ? "已记下：这次变化更适合你。"
     : reaction === "needs_adjustment"
       ? followupCompleted
-        ? `这条反馈已于 ${formatListTime(latestChange.feedback.followed_up_at)} 完成跟进。后续形成新的变化时，会显示在记录中；继续补充会重新进入跟进。`
+        ? `这条反馈已于 ${formatListTime(latestChange.feedback.followed_up_at)} 自动加入当前回应方式；继续补充会即时更新。`
         : latestChange.feedback?.detail_text
-          ? "补充已保存，等待跟进处理。"
-          : "已记下，等待跟进。可以补充哪里还不合适，也可以直接在聊天中说明。"
+          ? "补充已自动加入当前回应方式。"
+          : "已记下。写出具体想法后，会自动调整接下来的回应方式。"
       : "";
   return h("section", { class: "persona-growth-feedback" }, [
     h("p", { text: "这次确认后的变化，感觉怎么样？" }),

@@ -160,7 +160,7 @@ def run_memory_evaluation(*, reset_seed: bool = True, include_semantic: bool = F
 
     review = memory_review(user_id, persona_id, include_history=True)
     state = {item["key"]: item.get("value") for item in review.get("state", [])}
-    conflicts = list_conflicts(user_id, persona_id, status="open", limit=20)
+    conflicts = list_conflicts(user_id, persona_id, status=None, limit=20)
 
     _case(cases, "state.preferred_address", state.get("preferred_address") == "阿月", "阿月", state.get("preferred_address"))
     _case(cases, "state.forbidden_addresses", "主人" in (state.get("forbidden_addresses") or []), "包含 主人", state.get("forbidden_addresses"))
@@ -186,7 +186,13 @@ def run_memory_evaluation(*, reset_seed: bool = True, include_semantic: bool = F
     _case(cases, "prompt.state", "阿月" in state_text and "原神" in state_text, "状态 prompt 包含阿月和原神", state_text)
     _case(cases, "prompt.layered", "主人" in layered_text or "阿月" in layered_text, "分层 prompt 包含关键称呼信息", layered_text[:600])
     _case(cases, "summary.generated", bool(review.get("summaries")) and "阿月" in summary_text, "生成稳定摘要", summary_text[:600])
-    _case(cases, "conflict.preference", any(item.get("conflict_type") == "preference_polarity" for item in conflicts), "生成 preference_polarity 冲突", conflicts)
+    _case(
+        cases,
+        "conflict.preference",
+        any(item.get("conflict_type") == "preference_polarity" and item.get("status") == "resolved" for item in conflicts),
+        "生成并自动解决 preference_polarity 冲突",
+        conflicts,
+    )
 
     semantic_status = "skipped"
     if include_semantic:

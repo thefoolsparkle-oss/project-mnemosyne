@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import Cookie, Depends, FastAPI, File, Header, HTTPException, Response, UploadFile
+from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, File, Header, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -31,6 +31,7 @@ from .archivist import recall_memories
 from .config import load_config
 from .database import dict_from_row, get_db, init_db, now_ts
 from .db_chat import db_chat, normalize_existing_assistant_messages
+from .conversation_memory import refresh_conversation_summary
 from .identity import is_identity_polluted_boundary, scrub_identity_text
 from .layered_memory import (
     apply_memory_decay,
@@ -60,11 +61,13 @@ from .memory_policy import policy_snapshot
 from .mirror import get_user_insight, update_user_insight
 from .persona_forge import build_prompt, forge_persona
 from .growth_demo import clear_growth_demo_data, seed_growth_demo_data
+from .growth_guidance import deactivate_guidance, supersede_conflicting_guidance
 from .sculptor import (
     apply_revision_suggestion,
     dismiss_revision_suggestion,
     generate_revision_suggestion,
     list_revision_suggestions,
+    maybe_auto_review_revision,
 )
 
 
@@ -83,6 +86,24 @@ try:
     normalize_existing_assistant_messages()
 except Exception as exc:
     print("[MessagePresentation] legacy normalization skipped:", exc)
+try:
+    with get_db() as db:
+        pending_chat_revisions = db.execute(
+            """
+            SELECT persona_revision_suggestions.id, persona_revision_suggestions.user_id
+            FROM persona_revision_suggestions
+            JOIN personas ON personas.id = persona_revision_suggestions.persona_id
+            WHERE persona_revision_suggestions.status = 'pending'
+              AND persona_revision_suggestions.origin = 'explicit_feedback'
+              AND persona_revision_suggestions.base_version = personas.version
+              AND personas.status = 'active'
+            ORDER BY persona_revision_suggestions.id ASC
+            """
+        ).fetchall()
+    for pending_revision in pending_chat_revisions:
+        maybe_auto_review_revision(int(pending_revision["user_id"]), int(pending_revision["id"]))
+except Exception as exc:
+    print("[AdaptiveRuntime] pending chat preference reconciliation skipped:", exc)
 
 app = FastAPI(title="忆界树 / Project Mnemosyne")
 
@@ -693,7 +714,7 @@ def admin_users(admin: dict = Depends(current_admin)):
                          AND personas.status = 'active'
                          AND persona_revision_suggestions.status = 'pending'
                          AND persona_revision_suggestions.base_version = personas.version
-                         AND persona_revision_suggestions.origin IN ('explicit_feedback', 'profile_request')
+                         AND persona_revision_suggestions.origin = 'explicit_feedback'
                    ) AS pending_auto_revision_count,
                    (
                        SELECT COUNT(*)
@@ -716,6 +737,7 @@ def admin_users(admin: dict = Depends(current_admin)):
                          AND personas.user_id = users.id
                          AND personas.status = 'active'
                          AND persona_growth_feedback.reaction = 'needs_adjustment'
+                         AND persona_growth_feedback.detail_text <> ''
                          AND persona_growth_feedback.resolved_at = 0
                          AND persona_growth_feedback.reviewed_version = (
                              SELECT COALESCE(MAX(persona_versions.version), 0)
@@ -774,7 +796,7 @@ def admin_personas(admin: dict = Depends(current_admin), target_user_id: int | N
                          AND personas.status = 'active'
                          AND persona_revision_suggestions.status = 'pending'
                          AND persona_revision_suggestions.base_version = personas.version
-                         AND persona_revision_suggestions.origin IN ('explicit_feedback', 'profile_request')
+                         AND persona_revision_suggestions.origin = 'explicit_feedback'
                    ) AS pending_auto_revision_count,
                    (
                        SELECT COUNT(*)
@@ -813,6 +835,7 @@ def admin_personas(admin: dict = Depends(current_admin), target_user_id: int | N
                          AND persona_growth_feedback.persona_id = personas.id
                          AND personas.status = 'active'
                          AND persona_growth_feedback.reaction = 'needs_adjustment'
+                         AND persona_growth_feedback.detail_text <> ''
                          AND persona_growth_feedback.resolved_at = 0
                          AND persona_growth_feedback.reviewed_version = (
                              SELECT COALESCE(MAX(persona_versions.version), 0)
@@ -969,6 +992,10 @@ def admin_persona_growth(
             SELECT persona_growth_requests.id, persona_growth_requests.request_text,
                    persona_growth_requests.created_at, persona_growth_requests.updated_at,
                    persona_growth_requests.withdrawn_at,
+                   persona_growth_requests.request_origin,
+                   persona_growth_requests.source_reviewed_version,
+                   persona_growth_requests.deactivation_actor,
+                   persona_growth_requests.deactivation_reason,
                    persona_revision_suggestions.id AS suggestion_id,
                    persona_revision_suggestions.status AS suggestion_status,
                    persona_revision_suggestions.origin AS suggestion_origin,
@@ -1050,6 +1077,48 @@ def admin_generate_persona_revision(
         return {"suggestion": generate_revision_suggestion(owner_id, persona_id, req.reason)}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/admin/persona-revisions/auto-review")
+def admin_auto_review_persona_revisions(
+    admin: dict = Depends(current_admin),
+    target_user_id: int | None = None,
+    persona_id: int | None = None,
+):
+    owner_id = _admin_target_user_id(admin, target_user_id)
+    if persona_id is None:
+        raise HTTPException(status_code=400, detail="persona_id is required")
+    _assert_persona_owner(owner_id, persona_id)
+    with get_db() as db:
+        rows = db.execute(
+            """
+            SELECT persona_revision_suggestions.id
+            FROM persona_revision_suggestions
+            JOIN personas ON personas.id = persona_revision_suggestions.persona_id
+            WHERE persona_revision_suggestions.user_id = ? AND persona_revision_suggestions.persona_id = ?
+              AND personas.user_id = ? AND personas.status = 'active'
+              AND persona_revision_suggestions.status = 'pending'
+              AND persona_revision_suggestions.origin = 'explicit_feedback'
+              AND persona_revision_suggestions.base_version = personas.version
+            ORDER BY persona_revision_suggestions.id ASC
+            """,
+            (owner_id, persona_id, owner_id),
+        ).fetchall()
+    applied = []
+    dismissed = []
+    for row in rows:
+        decision = maybe_auto_review_revision(owner_id, int(row["id"]))
+        if decision and decision.get("status") == "dismissed":
+            dismissed.append(decision)
+        elif decision:
+            applied.append(decision)
+    return {
+        "attempted_count": len(rows),
+        "applied_count": len(applied),
+        "dismissed_count": len(dismissed),
+        "applied": applied,
+        "dismissed": dismissed,
+    }
 
 
 @app.post("/api/admin/persona-revisions/{suggestion_id}/apply")
@@ -1349,6 +1418,10 @@ def persona_growth(persona_id: int, user: dict = Depends(current_user)):
             SELECT persona_growth_requests.id, persona_growth_requests.request_text,
                    persona_growth_requests.created_at, persona_growth_requests.updated_at,
                    persona_growth_requests.withdrawn_at,
+                   persona_growth_requests.request_origin,
+                   persona_growth_requests.source_reviewed_version,
+                   persona_growth_requests.deactivation_actor,
+                   persona_growth_requests.deactivation_reason,
                    persona_growth_requests.suggestion_id,
                    persona_revision_suggestions.status AS suggestion_status,
                    persona_revision_suggestions.origin AS suggestion_origin,
@@ -1414,17 +1487,14 @@ def persona_growth(persona_id: int, user: dict = Depends(current_user)):
         suggestion_status = str(item.get("suggestion_status") or "")
         public_status = "recorded"
         if int(item.get("withdrawn_at") or 0):
-            public_status = "withdrawn"
-        elif suggestion_status == "applied":
-            public_status = "confirmed"
-        elif suggestion_status == "dismissed":
-            public_status = "not_applied"
-        elif suggestion_status == "pending":
-            public_status = (
-                "waiting_review"
-                if int(item.get("base_version") or 0) == int(persona["version"])
-                else "needs_review_again"
-            )
+            if item.get("deactivation_actor") == "adaptive_runtime":
+                public_status = "superseded"
+            elif item.get("deactivation_actor") == "chat_runtime":
+                public_status = "stopped_in_chat"
+            else:
+                public_status = "withdrawn"
+        else:
+            public_status = "active_guidance"
         preference_requests.append(
             {
                 "id": int(item["id"]),
@@ -1432,18 +1502,13 @@ def persona_growth(persona_id: int, user: dict = Depends(current_user)):
                 "created_at": int(item["created_at"]),
                 "updated_at": int(item.get("updated_at") or item["created_at"]),
                 "status": public_status,
+                "origin": item.get("request_origin") or "direct_entry",
+                "source_reviewed_version": item.get("source_reviewed_version"),
+                "deactivation_reason": item.get("deactivation_reason") or "",
                 "applied_version": item.get("applied_version"),
                 "result": item.get("public_result"),
-                "can_withdraw": (
-                    suggestion_status == "pending"
-                    and item.get("suggestion_origin") == "profile_request"
-                ),
-                "can_retry": (
-                    suggestion_status == "pending"
-                    and item.get("suggestion_origin") == "profile_request"
-                    and int(item.get("base_version") or 0) != int(persona["version"])
-                    and not int(item.get("withdrawn_at") or 0)
-                ),
+                "can_withdraw": not int(item.get("withdrawn_at") or 0),
+                "can_retry": False,
             }
         )
     signals: list[dict[str, Any]] = []
@@ -1513,6 +1578,17 @@ def submit_persona_preference_request(
     detail_text = scrub_identity_text(req.detail.strip())[:500]
     if not detail_text:
         raise HTTPException(status_code=400, detail="请写下希望调整的相处方式")
+    return _store_persona_preference_guidance(persona_id, detail_text, user)
+
+
+def _store_persona_preference_guidance(
+    persona_id: int,
+    detail_text: str,
+    user: dict,
+    *,
+    request_origin: str = "direct_entry",
+    source_reviewed_version: int | None = None,
+):
     user_id = int(user["id"])
     with get_db() as db:
         persona = db.execute(
@@ -1523,26 +1599,40 @@ def submit_persona_preference_request(
             raise HTTPException(status_code=404, detail="persona not found")
         existing_request = dict_from_row(db.execute(
             """
-            SELECT persona_growth_requests.id, persona_revision_suggestions.trigger_memory_uids_json
+            SELECT persona_growth_requests.id, persona_growth_requests.created_at,
+                   persona_growth_requests.memory_uids_json,
+                   persona_revision_suggestions.id AS suggestion_id,
+                   persona_revision_suggestions.status AS suggestion_status,
+                   persona_revision_suggestions.trigger_memory_uids_json
             FROM persona_growth_requests
-            JOIN persona_revision_suggestions
+            LEFT JOIN persona_revision_suggestions
               ON persona_revision_suggestions.id = persona_growth_requests.suggestion_id
             WHERE persona_growth_requests.user_id = ? AND persona_growth_requests.persona_id = ?
               AND persona_growth_requests.withdrawn_at = 0
-              AND persona_revision_suggestions.status = 'pending'
-              AND persona_revision_suggestions.origin = 'profile_request'
-              AND persona_revision_suggestions.base_version = ?
+              AND persona_growth_requests.request_origin = ?
+              AND (
+                  (? IS NULL AND persona_growth_requests.source_reviewed_version IS NULL)
+                  OR persona_growth_requests.source_reviewed_version = ?
+              )
             ORDER BY persona_growth_requests.id DESC
             LIMIT 1
             """,
-            (user_id, persona_id, int(persona["version"])),
+            (user_id, persona_id, request_origin, source_reviewed_version, source_reviewed_version),
         ).fetchone())
-    request_memory_text = f"用户主动提出的相处偏好：{detail_text}"
+    request_memory_text = (
+        f"用户对已确认变化提出的补充偏好：{detail_text}"
+        if request_origin == "growth_feedback"
+        else f"用户主动提出的相处偏好：{detail_text}"
+    )
     memory_uids: list[str] = []
     if existing_request:
         try:
             memory_uids = [
-                str(uid) for uid in json.loads(existing_request.get("trigger_memory_uids_json") or "[]")
+                str(uid) for uid in json.loads(
+                    existing_request.get("memory_uids_json")
+                    or existing_request.get("trigger_memory_uids_json")
+                    or "[]"
+                )
                 if uid
             ]
         except Exception:
@@ -1566,8 +1656,15 @@ def submit_persona_preference_request(
                         priority = 'high', locked = 1, updated_at = ?
                     WHERE uid = ? AND user_id = ? AND persona_id = ? AND type = 'persona_feedback'
                     """,
-                    (request_memory_text, request_memory_text[:120], ts, uid, user_id, persona_id),
+                        (request_memory_text, request_memory_text[:120], ts, uid, user_id, persona_id),
                 )
+        if existing_request.get("suggestion_status") == "pending" and existing_request.get("suggestion_id"):
+            dismiss_revision_suggestion(
+                user_id,
+                int(existing_request["suggestion_id"]),
+                decision_actor="adaptive_runtime",
+                decision_note="已切换为运行时自动适配：用户相处偏好直接进入聊天指导，不再等待人工审核。",
+            )
     if not memory_uids:
         stored = store_layered_memories(
             user_id=user_id,
@@ -1590,60 +1687,54 @@ def submit_persona_preference_request(
             for item in stored
             if item.get("uid") and item.get("layer") in {"L2", "L3"}
         ]
-    try:
-        suggestion = generate_revision_suggestion(
-            user_id,
-            persona_id,
-            "用户从资料页主动提交了相处方式调整请求",
-            use_llm=False,
-            origin="profile_request",
-            trigger_memory_uids=memory_uids,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
     ts = now_ts()
     with get_db() as db:
-        existing_request = db.execute(
-            """
-            SELECT id, created_at
-            FROM persona_growth_requests
-            WHERE user_id = ? AND persona_id = ? AND suggestion_id = ? AND withdrawn_at = 0
-            ORDER BY id DESC
-            LIMIT 1
-            """,
-            (user_id, persona_id, int(suggestion["id"])),
-        ).fetchone()
         if existing_request:
             request_id = int(existing_request["id"])
             created_at = int(existing_request["created_at"])
             db.execute(
-                "UPDATE persona_growth_requests SET request_text = ?, updated_at = ? WHERE id = ?",
-                (detail_text, ts, request_id),
+                "UPDATE persona_growth_requests SET request_text = ?, memory_uids_json = ?, updated_at = ? WHERE id = ?",
+                (detail_text, json.dumps(memory_uids, ensure_ascii=False), ts, request_id),
             )
             updated = True
         else:
             cursor = db.execute(
                 """
                 INSERT INTO persona_growth_requests (
-                    user_id, persona_id, request_text, suggestion_id, created_at, updated_at
+                    user_id, persona_id, request_text, suggestion_id, memory_uids_json,
+                    request_origin, source_reviewed_version, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)
                 """,
-                (user_id, persona_id, detail_text, int(suggestion["id"]), ts, ts),
+                (
+                    user_id, persona_id, detail_text, json.dumps(memory_uids, ensure_ascii=False),
+                    request_origin, source_reviewed_version, ts, ts,
+                ),
             )
             request_id = int(cursor.lastrowid)
             created_at = ts
             updated = False
+    superseded_request_ids = supersede_conflicting_guidance(
+        user_id,
+        persona_id,
+        detail_text,
+        exclude_request_id=request_id,
+    )
+    refresh_memory_state(user_id, persona_id)
+    refresh_memory_summaries(user_id, persona_id)
     return {
         "request": {
             "id": request_id,
             "detail": detail_text,
             "created_at": created_at,
             "updated_at": ts,
-            "status": "waiting_review",
+            "status": "active_guidance",
+            "origin": request_origin,
+            "source_reviewed_version": source_reviewed_version,
             "applied_version": None,
         },
         "updated": updated,
+        "superseded_request_ids": superseded_request_ids,
     }
 
 
@@ -1678,44 +1769,11 @@ def retry_persona_preference_request(
         raise HTTPException(status_code=404, detail="request not found")
     if int(row.get("withdrawn_at") or 0):
         raise HTTPException(status_code=400, detail="已撤回的偏好不能重新提交")
-    if row.get("suggestion_status") != "pending" or row.get("suggestion_origin") != "profile_request":
-        raise HTTPException(status_code=400, detail="只有仍待确认的主动偏好可以重新提交")
-    if int(row.get("base_version") or 0) == int(row.get("persona_version") or 0):
-        raise HTTPException(status_code=400, detail="这条偏好已经在当前版本等待确认")
-    try:
-        memory_uids = [
-            str(uid) for uid in json.loads(row.get("trigger_memory_uids_json") or "[]")
-            if uid
-        ]
-    except Exception:
-        memory_uids = []
-    try:
-        suggestion = generate_revision_suggestion(
-            user_id,
-            persona_id,
-            "用户重新提交了仍需确认的相处方式调整请求",
-            use_llm=False,
-            origin="profile_request",
-            trigger_memory_uids=memory_uids,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    ts = now_ts()
-    with get_db() as db:
-        db.execute(
-            "UPDATE persona_growth_requests SET suggestion_id = ?, updated_at = ? WHERE id = ?",
-            (int(suggestion["id"]), ts, request_id),
-        )
-    return {
-        "request": {
-            "id": request_id,
-            "detail": row["request_text"],
-            "created_at": int(row["created_at"]),
-            "updated_at": ts,
-            "status": "waiting_review",
-            "applied_version": None,
-        }
-    }
+    return submit_persona_preference_request(
+        persona_id,
+        PersonaPreferenceRequest(detail=str(row["request_text"] or "")),
+        user,
+    )
 
 
 @app.post("/api/personas/{persona_id}/growth/requests/{request_id}/withdraw")
@@ -1730,6 +1788,7 @@ def withdraw_persona_preference_request(
             """
             SELECT persona_growth_requests.*, persona_revision_suggestions.status AS suggestion_status,
                    persona_revision_suggestions.origin AS suggestion_origin,
+                   persona_growth_requests.memory_uids_json,
                    persona_revision_suggestions.trigger_memory_uids_json
             FROM persona_growth_requests
             LEFT JOIN persona_revision_suggestions
@@ -1743,36 +1802,24 @@ def withdraw_persona_preference_request(
         raise HTTPException(status_code=404, detail="request not found")
     if int(row.get("withdrawn_at") or 0):
         return {"request": {"id": request_id, "status": "withdrawn"}}
-    if row.get("suggestion_status") != "pending" or row.get("suggestion_origin") != "profile_request":
-        raise HTTPException(status_code=400, detail="只有仍在等待确认的主动偏好可以撤回")
-    dismiss_revision_suggestion(
-        user_id,
-        int(row["suggestion_id"]),
-        decision_note="用户在确认前撤回了主动相处偏好请求",
-    )
-    ts = now_ts()
-    try:
-        memory_uids = [
-            str(uid) for uid in json.loads(row.get("trigger_memory_uids_json") or "[]")
-            if uid
-        ]
-    except Exception:
-        memory_uids = []
-    with get_db() as db:
-        db.execute(
-            "UPDATE persona_growth_requests SET withdrawn_at = ?, updated_at = ? WHERE id = ?",
-            (ts, ts, request_id),
+    if row.get("suggestion_status") == "pending" and row.get("suggestion_id"):
+        dismiss_revision_suggestion(
+            user_id,
+            int(row["suggestion_id"]),
+            decision_actor="user",
+            decision_note="用户停止了这条自动相处指导",
         )
-        for uid in memory_uids:
-            for table in ("memory_facts", "memory_relations"):
-                db.execute(
-                    f"""
-                    UPDATE {table}
-                    SET archived = 1, valid_to = COALESCE(valid_to, ?), updated_at = ?
-                    WHERE uid = ? AND user_id = ? AND persona_id = ? AND type = 'persona_feedback'
-                    """,
-                    (ts, ts, uid, user_id, persona_id),
-                )
+    ts = now_ts()
+    if not row.get("memory_uids_json") and row.get("trigger_memory_uids_json"):
+        row["memory_uids_json"] = row["trigger_memory_uids_json"]
+    deactivate_guidance(
+        user_id,
+        persona_id,
+        row,
+        actor="user",
+        reason="用户停止了这条相处指导",
+        ts=ts,
+    )
     refresh_memory_state(user_id, persona_id)
     refresh_memory_summaries(user_id, persona_id)
     return {"request": {"id": request_id, "status": "withdrawn", "updated_at": ts}}
@@ -1832,6 +1879,33 @@ def set_persona_growth_feedback(
             """,
             (user_id, persona_id, reviewed_version),
         ).fetchone())
+    if reaction == "needs_adjustment" and detail_text:
+        _store_persona_preference_guidance(
+            persona_id,
+            detail_text,
+            user,
+            request_origin="growth_feedback",
+            source_reviewed_version=reviewed_version,
+        )
+        ts = now_ts()
+        with get_db() as db:
+            db.execute(
+                """
+                UPDATE persona_growth_feedback
+                SET resolved_at = ?, resolved_by_user_id = NULL,
+                    resolution_note = '已自动加入当前回应指导', updated_at = ?
+                WHERE user_id = ? AND persona_id = ? AND reviewed_version = ?
+                """,
+                (ts, ts, user_id, persona_id, reviewed_version),
+            )
+            feedback = dict_from_row(db.execute(
+                """
+                SELECT reviewed_version, reaction, detail_text, resolved_at, created_at, updated_at
+                FROM persona_growth_feedback
+                WHERE user_id = ? AND persona_id = ? AND reviewed_version = ?
+                """,
+                (user_id, persona_id, reviewed_version),
+            ).fetchone())
     return {"feedback": _public_growth_feedback(feedback, include_detail=True, include_version=True)}
 
 
@@ -2338,16 +2412,29 @@ def update_conversation(conversation_id: int, req: ConversationUpdateRequest, us
 
 
 @app.post("/api/chat")
-def chat(req: ChatRequest, user: dict = Depends(current_user)):
+def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: dict = Depends(current_user)):
     try:
-        return db_chat(
+        result = db_chat(
             user_id=int(user["id"]),
             persona_id=int(req.persona_id),
             conversation_id=req.conversation_id,
             message=req.message,
             retry_user_message_id=req.retry_user_message_id,
             client_message_id=req.client_message_id,
+            defer_summary_refresh=True,
         )
+        if (
+            result.get("assistant_message_id")
+            and (result.get("conversation_summary") or {}).get("scheduled")
+        ):
+            background_tasks.add_task(
+                refresh_conversation_summary,
+                user_id=int(user["id"]),
+                persona_id=int(req.persona_id),
+                conversation_id=int(result["conversation_id"]),
+                latest_message_id=int(result["assistant_message_id"]),
+            )
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except LLMProviderError as exc:
@@ -2428,7 +2515,7 @@ def _persona_list_item(persona: dict) -> dict:
     latest_version = int(result.pop("latest_reviewed_version", 0) or 0)
     latest_at = int(result.pop("latest_reviewed_at", 0) or 0)
     seen_version = int(result.pop("seen_reviewed_version", 0) or 0)
-    retry_request_count = int(result.pop("retry_preference_request_count", 0) or 0)
+    result.pop("retry_preference_request_count", None)
     result["growth_notice"] = (
         {
             "kind": "adaptation",
@@ -2439,15 +2526,7 @@ def _persona_list_item(persona: dict) -> dict:
         if latest_version > seen_version
         else None
     )
-    result["growth_action"] = (
-        {
-            "kind": "preference_retry",
-            "title": "有偏好需要重新确认",
-            "count": retry_request_count,
-        }
-        if retry_request_count
-        else None
-    )
+    result["growth_action"] = None
     return result
 
 
