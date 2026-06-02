@@ -45,17 +45,24 @@ let state = {
   loadingGrowthPersonaId: null,
   conversations: [],
   archivedConversations: [],
+  groupConversations: [],
+  archivedGroupConversations: [],
   activePersona: null,
   activeConversationId: null,
+  activeGroupConversationId: null,
+  activeGroupConversation: null,
   messages: [],
+  groupMessages: [],
   view: "chat",
   editingPersona: false,
   profileOpen: false,
   personaPanelOpen: false,
   threadPanelOpen: false,
   deletedPanelOpen: false,
+  groupCreateOpen: false,
   editingConversationId: null,
   showArchived: false,
+  showArchivedGroups: false,
   conversationSearch: "",
   focusComposer: false,
   sending: false,
@@ -260,21 +267,31 @@ function renderAuth(mode) {
 }
 
 async function loadMainData({ openLatest = false } = {}) {
-  const [options, personas, deletedPersonas, conversations, archivedConversations] = await Promise.all([
+  const [options, personas, deletedPersonas, conversations, archivedConversations, groupConversations, archivedGroupConversations] = await Promise.all([
     api("/api/persona-options"),
     api("/api/personas"),
     api("/api/personas/deleted"),
     api("/api/conversations?status=active"),
     api("/api/conversations?status=archived"),
+    api("/api/group-conversations?status=active"),
+    api("/api/group-conversations?status=archived"),
   ]);
   state.options = options.options;
   state.personas = personas.personas;
   state.deletedPersonas = deletedPersonas.personas;
   state.conversations = conversations.conversations;
   state.archivedConversations = archivedConversations.conversations;
+  state.groupConversations = groupConversations.group_conversations || [];
+  state.archivedGroupConversations = archivedGroupConversations.group_conversations || [];
+  if (state.activeGroupConversationId) {
+    state.activeGroupConversation = [...state.groupConversations, ...state.archivedGroupConversations]
+      .find((item) => Number(item.id) === Number(state.activeGroupConversationId)) || state.activeGroupConversation;
+  }
   const lastActive = loadLastActive();
 
-  if (state.activePersona) {
+  if (state.view === "group" && state.activeGroupConversationId) {
+    state.activePersona = null;
+  } else if (state.activePersona) {
     const refreshed = state.personas.find((persona) => Number(persona.id) === Number(state.activePersona.id));
     state.activePersona = refreshed || state.personas[0] || null;
   } else if (openLatest && lastActive.personaId) {
@@ -287,7 +304,7 @@ async function loadMainData({ openLatest = false } = {}) {
   } else {
     state.activePersona = state.personas[0] || null;
   }
-  state.view = state.activePersona ? state.view : "forge";
+  state.view = state.activePersona || state.activeGroupConversation ? state.view : "forge";
   if (openLatest && state.personas.length) {
     state.view = "home";
     state.activeConversationId = null;
@@ -304,6 +321,11 @@ async function loadConversationMessages(conversationId) {
   state.messages = data.messages;
 }
 
+async function loadGroupMessages(groupConversationId) {
+  const data = await api(`/api/group-conversations/${groupConversationId}/messages`);
+  state.groupMessages = data.messages;
+}
+
 function isMobileShell() {
   return Boolean(window.matchMedia?.("(max-width: 1024px), (hover: none) and (pointer: coarse)").matches);
 }
@@ -312,6 +334,9 @@ async function openConversationItem(item) {
   const persona = state.personas.find((entry) => Number(entry.id) === Number(item.persona_id));
   if (persona) state.activePersona = persona;
   state.activeConversationId = item.id;
+  state.activeGroupConversationId = null;
+  state.activeGroupConversation = null;
+  state.groupMessages = [];
   state.view = "chat";
   state.editingPersona = false;
   state.personaPanelOpen = false;
@@ -322,8 +347,27 @@ async function openConversationItem(item) {
   scrollChat();
 }
 
+async function openGroupConversationItem(item) {
+  state.activeGroupConversation = item;
+  state.activeGroupConversationId = item.id;
+  state.activePersona = null;
+  state.activeConversationId = null;
+  state.messages = [];
+  state.view = "group";
+  state.editingPersona = false;
+  state.personaPanelOpen = false;
+  state.threadPanelOpen = false;
+  await loadGroupMessages(item.id);
+  await loadMainData();
+  renderShell();
+  scrollChat();
+}
+
 async function openPersonaItem(persona) {
   state.activePersona = persona;
+  state.activeGroupConversationId = null;
+  state.activeGroupConversation = null;
+  state.groupMessages = [];
   state.view = "chat";
   state.editingPersona = false;
   state.personaPanelOpen = false;
@@ -438,11 +482,23 @@ function loadLastActive() {
 }
 
 function saveLastActive() {
-  if (!state.user || !state.activePersona) return;
+  if (!state.user) return;
   try {
+    if (state.view === "group" && state.activeGroupConversationId) {
+      localStorage.setItem(
+        lastActiveKey(),
+        JSON.stringify({
+          mode: "group",
+          groupConversationId: state.activeGroupConversationId,
+        })
+      );
+      return;
+    }
+    if (!state.activePersona) return;
     localStorage.setItem(
       lastActiveKey(),
       JSON.stringify({
+        mode: "chat",
         personaId: state.activePersona.id,
         conversationId: state.activeConversationId,
       })
@@ -455,12 +511,13 @@ function saveLastActive() {
 function renderShell() {
   saveLastActive();
   const restoreSearchFocus = document.activeElement?.classList?.contains("conversation-search");
-  app.className = `app-shell view-${state.view || "chat"} ${state.activePersona ? "has-persona" : "no-persona"}`;
+  app.className = `app-shell view-${state.view || "chat"} ${state.activePersona || state.activeGroupConversation ? "has-persona" : "no-persona"}`;
   const children = [renderSidebar(), renderMain()];
   if (state.profileOpen) children.push(renderProfileModal());
   if (state.personaPanelOpen) children.push(renderPersonaModal());
   if (state.threadPanelOpen) children.push(renderThreadModal());
   if (state.deletedPanelOpen) children.push(renderDeletedPersonasModal());
+  if (state.groupCreateOpen) children.push(renderGroupCreateModal());
   app.replaceChildren(...children);
   if (restoreSearchFocus) {
     requestAnimationFrame(() => {
@@ -725,8 +782,10 @@ function renderChatList() {
 
   const query = normalizedSearch(state.conversationSearch);
   const entries = homePersonaEntries(query);
+  const groupEntries = homeGroupEntries(query);
+  for (const entry of groupEntries) list.append(renderSidebarGroupItem(entry));
   for (const entry of entries) list.append(renderSidebarPersonaItem(entry));
-  if (!entries.length) {
+  if (!entries.length && !groupEntries.length) {
     list.append(h("p", { class: "empty", text: "没有匹配的聊天。" }));
   }
 
@@ -774,6 +833,75 @@ function renderArchivedConversationItem(item) {
       },
     }),
   ]);
+}
+
+function renderArchivedGroupConversations() {
+  const visibleItems = state.archivedGroupConversations || [];
+  if (!visibleItems.length) return null;
+  return h("section", { class: "archive-box group-archive-box" }, [
+    h("button", {
+      type: "button",
+      class: "archive-toggle",
+      text: `历史群聊 ${visibleItems.length}`,
+      onclick: () => {
+        state.showArchivedGroups = !state.showArchivedGroups;
+        renderShell();
+      },
+    }),
+    state.showArchivedGroups
+      ? h("div", { class: "archive-list" }, visibleItems.map(renderArchivedGroupConversationItem))
+      : null,
+  ]);
+}
+
+function renderArchivedGroupConversationItem(item) {
+  return h("div", { class: "archived-item archived-group-item" }, [
+    groupAvatar(item),
+    h("span", {}, [
+      h("strong", { text: groupConversationTitle(item) }),
+      h("small", { text: groupConversationPreview(item) }),
+    ]),
+    h("button", {
+      type: "button",
+      class: "ghost compact",
+      text: "移回群聊",
+      onclick: async () => {
+        await api(`/api/group-conversations/${item.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ status: "active" }),
+        });
+        state.showArchivedGroups = false;
+        await loadMainData();
+        renderShell();
+      },
+    }),
+  ]);
+}
+
+function renderSidebarGroupItem(entry) {
+  const group = entry.group;
+  return h(
+    "button",
+    {
+      type: "button",
+      class: `list-item sidebar-persona-item group-list-item ${Number(state.activeGroupConversationId) === Number(group.id) && state.view === "group" ? "active" : ""}`,
+      onclick: () => openGroupConversationItem(group),
+    },
+    [
+      groupAvatar(group),
+      h("span", {}, [
+        h("span", { class: "conversation-title-row" }, [
+          h("strong", {}, [
+            entry.pinned ? h("span", { class: "pin-mark", text: "缃《" }) : null,
+            groupConversationTitle(group),
+          ]),
+          h("small", { text: formatListTime(entry.updatedAt) }),
+        ]),
+        h("small", { text: groupConversationPreview(group) }),
+      ]),
+      Number(group.unread_count || 0) ? renderUnreadBadge(Number(group.unread_count)) : null,
+    ]
+  );
 }
 
 function renderConversationChatItem(item) {
@@ -934,6 +1062,7 @@ function renderSidebarPersonaItem(entry) {
 function renderHome() {
   const query = normalizedSearch(state.conversationSearch);
   const entries = homePersonaEntries(query);
+  const groupEntries = homeGroupEntries(query);
 
   return h("section", { class: "home-screen" }, [
     h("header", { class: "home-head" }, [
@@ -959,6 +1088,16 @@ function renderHome() {
           text: "资料",
           onclick: () => {
             state.profileOpen = true;
+            renderShell();
+          },
+        }),
+        h("button", {
+          type: "button",
+          class: "ghost compact",
+          text: "新群聊",
+          disabled: state.personas.length < 2 ? "disabled" : null,
+          onclick: () => {
+            state.groupCreateOpen = true;
             renderShell();
           },
         }),
@@ -1018,12 +1157,52 @@ function renderHome() {
       }),
     ]),
     h("div", { class: "home-search" }, [renderConversationSearch()]),
+    groupEntries.length
+      ? h("section", { class: "home-group-section" }, [
+          h("div", { class: "section-head" }, [
+            h("strong", { text: "群聊" }),
+            h("small", { text: "多个人格一起接话" }),
+          ]),
+          h("div", { class: "home-persona-list group-home-list" }, groupEntries.map(renderHomeGroupCard)),
+        ])
+      : null,
+    renderArchivedGroupConversations(),
     h("div", { class: "home-persona-list" }, [
       ...entries.map(renderHomePersonaCard),
       !entries.length
         ? h("p", { class: "empty", text: query ? "没有匹配的聊天。" : "还没有聊天对象，点右上角 + 创建一个。" })
         : null,
     ]),
+  ]);
+}
+
+function renderHomeGroupCard(entry) {
+  const group = entry.group;
+  return h("article", {
+    class: "home-persona-card home-group-card",
+    role: "button",
+    tabindex: "0",
+    onclick: () => openGroupConversationItem(group),
+    onkeydown: (event) => {
+      if (event.target !== event.currentTarget) return;
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openGroupConversationItem(group);
+      }
+    },
+  }, [
+    groupAvatar(group),
+    h("span", { class: "home-card-copy" }, [
+      h("span", { class: "home-card-title" }, [
+        h("strong", {}, [
+          entry.pinned ? h("span", { class: "pin-mark", text: "缃《" }) : null,
+          groupConversationTitle(group),
+        ]),
+        h("small", { text: formatListTime(entry.updatedAt) }),
+      ]),
+      h("small", { text: groupConversationPreview(group) }),
+    ]),
+    Number(group.unread_count || 0) ? renderUnreadBadge(Number(group.unread_count)) : null,
   ]);
 }
 
@@ -1130,6 +1309,18 @@ function homePersonaEntries(query) {
   return entries.sort((left, right) => right.pinnedAt - left.pinnedAt || right.updatedAt - left.updatedAt);
 }
 
+function homeGroupEntries(query) {
+  return state.groupConversations
+    .filter((group) => matchesGroupSearch(group, query))
+    .map((group) => ({
+      group,
+      pinned: isPinnedConversation(group),
+      pinnedAt: Number(group.pinned_at || 0),
+      updatedAt: Number(group.updated_at || group.created_at || 0),
+    }))
+    .sort((left, right) => right.pinnedAt - left.pinnedAt || right.updatedAt - left.updatedAt);
+}
+
 function renderUnreadBadge(count) {
   const value = count > 99 ? "99+" : String(count);
   return h("span", { class: `unread-badge ${count > 9 ? "wide" : ""}`, text: value });
@@ -1151,6 +1342,9 @@ function renderMain() {
   }
 
   if (state.view === "forge" || !state.activePersona) {
+    if (state.view === "group" && state.activeGroupConversation) {
+      return renderGroupChat();
+    }
     return renderWizard();
   }
 
@@ -1203,6 +1397,148 @@ function renderMain() {
       ]),
       h("div", { id: "chat-log", class: "chat-log" }, state.messages.length ? renderMessageList(state.messages) : [renderChatEmpty()]),
       renderComposer(),
+    ]),
+  ]);
+}
+
+function renderGroupChat() {
+  const group = state.activeGroupConversation || {};
+  return h("section", { class: "workspace group-workspace" }, [
+    h("section", { class: "chat-panel" }, [
+      h("header", { class: "chat-header group-chat-header" }, [
+        h("button", {
+          type: "button",
+          class: "ghost compact home-back-btn",
+          text: isMobileShell() ? "返回" : "返回主界面",
+          onclick: () => {
+            state.view = "home";
+            state.activeGroupConversationId = null;
+            state.activeGroupConversation = null;
+            state.groupMessages = [];
+            loadMainData().then(() => renderShell());
+          },
+        }),
+        groupAvatar(group),
+        h("div", { class: "chat-header-copy" }, [
+          h("h2", { text: groupConversationTitle(group) }),
+          h("div", { class: "persona-status-line" }, (group.members || []).slice(0, 6).map((member) => (
+            h("span", { class: "status-pill", text: member.display_name || member.name || "TA" })
+          ))),
+          h("p", { text: "群聊模式：大家会视情况接话，也可以保持沉默。" }),
+        ]),
+        h("div", { class: "chat-header-actions" }, [
+          h("button", {
+            type: "button",
+            class: "ghost compact chat-new-action",
+            text: "归档",
+            onclick: async () => {
+              await api(`/api/group-conversations/${group.id}`, {
+                method: "PATCH",
+                body: JSON.stringify({ status: "archived" }),
+              });
+              state.view = "home";
+              state.activeGroupConversationId = null;
+              state.activeGroupConversation = null;
+              state.groupMessages = [];
+              await loadMainData();
+              renderShell();
+            },
+          }),
+        ]),
+      ]),
+      renderGroupSettings(group),
+      h("div", { id: "chat-log", class: "chat-log group-chat-log" }, state.groupMessages.length ? renderGroupMessageList(state.groupMessages) : [renderGroupChatEmpty()]),
+      renderComposer(),
+    ]),
+  ]);
+}
+
+function renderGroupSettings(group) {
+  const input = h("input", { value: groupConversationTitle(group), maxlength: "80" });
+  const status = h("small", { class: "save-status" });
+  const saveTitle = async () => {
+    const title = input.value.trim();
+    if (!title) {
+      status.textContent = "群名不能为空";
+      return;
+    }
+    try {
+      await api(`/api/group-conversations/${group.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ title }),
+      });
+      await loadMainData();
+      renderShell();
+    } catch (err) {
+      status.textContent = err.message;
+    }
+  };
+  const archiveGroup = async () => {
+    try {
+      await api(`/api/group-conversations/${group.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: "archived" }),
+      });
+      state.view = "home";
+      state.activeGroupConversationId = null;
+      state.activeGroupConversation = null;
+      state.groupMessages = [];
+      await loadMainData();
+      renderShell();
+    } catch (err) {
+      status.textContent = err.message;
+    }
+  };
+  return h("details", { class: "group-settings-card" }, [
+    h("summary", { text: "群设置" }),
+    h("div", { class: "group-settings-row" }, [
+      h("label", {}, [
+        h("span", { text: "群名" }),
+        input,
+      ]),
+      h("button", { type: "button", class: "compact", text: "保存", onclick: saveTitle }),
+      h("button", {
+        type: "button",
+        class: "ghost compact",
+        text: isPinnedConversation(group) ? "取消置顶" : "置顶",
+        onclick: async () => {
+          try {
+            await api(`/api/group-conversations/${group.id}`, {
+              method: "PATCH",
+              body: JSON.stringify({ pinned: !isPinnedConversation(group) }),
+            });
+            await loadMainData();
+            renderShell();
+          } catch (err) {
+            status.textContent = err.message;
+          }
+        },
+      }),
+      h("button", { type: "button", class: "ghost compact danger-soft", text: "移到历史", onclick: archiveGroup }),
+    ]),
+    h("div", { class: "group-settings-members" }, [
+      h("strong", { text: "群成员" }),
+      h("div", { class: "group-member-strip" }, (group.members || []).map((member) => (
+        h("span", { class: "group-member-pill" }, [
+          avatar(member.display_name || member.name || "TA", member.avatar_url),
+          h("span", { text: member.display_name || member.name || "TA" }),
+        ])
+      ))),
+    ]),
+    status,
+  ]);
+}
+
+function renderGroupChatEmpty() {
+  const group = state.activeGroupConversation || {};
+  return h("div", { class: "chat-empty" }, [
+    groupAvatar(group),
+    h("h3", { text: groupConversationTitle(group) }),
+    h("p", { text: "发一句话，群里的成员会自己判断谁来接。" }),
+    h("div", { class: "chat-empty-actions" }, [
+      chatStarterButton("你们一起聊聊看。"),
+      chatStarterButton("我今天有点无聊。"),
+      chatStarterButton("给我一个新的话题。"),
     ]),
   ]);
 }
@@ -1260,6 +1596,85 @@ function renderThreadModal() {
         ...activeThreads.map(renderConversationChatItem),
         !activeThreads.length ? h("p", { class: "empty", text: "还没有正在进行的聊天。" }) : null,
         archivedThreads.length ? renderArchivedConversations(archivedThreads) : null,
+      ]),
+    ]),
+  ]);
+}
+
+function renderGroupCreateModal() {
+  const selected = new Set();
+  const titleInput = h("input", { maxlength: "80", placeholder: "群聊标题（可选）" });
+  const status = h("small", { class: "save-status" });
+  const createButton = h("button", { type: "submit", text: "创建群聊", disabled: "disabled" });
+  const close = () => {
+    state.groupCreateOpen = false;
+    renderShell();
+  };
+  const updateCreateState = () => {
+    createButton.disabled = selected.size < 2;
+    status.textContent = selected.size < 2 ? "至少选择 2 个人格。" : `已选择 ${selected.size} 个成员。`;
+  };
+  const memberButtons = state.personas.map((persona) => {
+    const button = h("button", {
+      type: "button",
+      class: "group-member-choice",
+      onclick: () => {
+        const id = Number(persona.id);
+        if (selected.has(id)) selected.delete(id);
+        else if (selected.size < 6) selected.add(id);
+        button.classList.toggle("active", selected.has(id));
+        updateCreateState();
+      },
+    }, [
+      avatar(persona.name, persona.avatar_url),
+      h("span", {}, [
+        h("strong", { text: persona.name }),
+        h("small", { text: persona.summary || persona.speaking_style || "" }),
+      ]),
+    ]);
+    return button;
+  });
+  updateCreateState();
+  return h("div", { class: "profile-modal-backdrop", onclick: (event) => {
+    if (event.target.classList.contains("profile-modal-backdrop")) close();
+  } }, [
+    h("section", { class: "profile-modal group-create-modal" }, [
+      h("div", { class: "profile-modal-head" }, [
+        h("strong", { text: "新建群聊" }),
+        h("button", { type: "button", class: "ghost compact", text: "关闭", onclick: close }),
+      ]),
+      h("p", { class: "muted", text: "选择 2-6 个人格。群里不是每个人都会每轮说话，会由调度器判断谁接。" }),
+      h("form", {
+        class: "group-create-form",
+        onsubmit: async (event) => {
+          event.preventDefault();
+          if (selected.size < 2) return;
+          createButton.disabled = true;
+          status.textContent = "正在创建群聊...";
+          try {
+            const data = await api("/api/group-conversations", {
+              method: "POST",
+              body: JSON.stringify({
+                title: titleInput.value.trim() || null,
+                persona_ids: [...selected],
+              }),
+            });
+            state.groupCreateOpen = false;
+            await loadMainData();
+            await openGroupConversationItem(data.group_conversation);
+          } catch (err) {
+            status.textContent = err.message;
+            createButton.disabled = false;
+          }
+        },
+      }, [
+        h("label", {}, ["标题", titleInput]),
+        h("div", { class: "group-member-grid" }, memberButtons),
+        h("div", { class: "actions modal-actions" }, [
+          createButton,
+          h("button", { type: "button", class: "ghost", text: "取消", onclick: close }),
+        ]),
+        status,
       ]),
     ]),
   ]);
@@ -2052,11 +2467,14 @@ function renderComposer() {
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const content = input.value.trim();
-    if (!content || !state.activePersona || state.sending) return;
+    if (!content || state.sending) return;
+    if (state.view === "group" && !state.activeGroupConversationId) return;
+    if (state.view !== "group" && !state.activePersona) return;
     input.value = "";
     clearDraft();
     autoResizeTextarea(input);
-    await sendChatMessage(content);
+    if (state.view === "group") await sendGroupChatMessage(content);
+    else await sendChatMessage(content);
   });
   input.addEventListener("input", () => {
     saveDraft(input.value);
@@ -2072,6 +2490,10 @@ function renderComposer() {
 }
 
 function draftKey() {
+  if (state.view === "group") {
+    const groupId = state.activeGroupConversationId || "new";
+    return `mnemosyne:group-draft:${groupId}`;
+  }
   const personaId = state.activePersona?.id || "none";
   const conversationId = state.activeConversationId || "new";
   return `mnemosyne:draft:${personaId}:${conversationId}`;
@@ -2187,10 +2609,65 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
   scrollChat();
 }
 
+async function sendGroupChatMessage(content) {
+  if (!content || !state.activeGroupConversationId || state.sending) return;
+  const requestGroupId = Number(state.activeGroupConversationId);
+  const outgoingClientMessageId = createClientMessageId();
+  state.sending = true;
+  state.groupMessages.push({
+    speaker_type: "user",
+    content,
+    client_message_id: outgoingClientMessageId,
+    created_at: nowSeconds(),
+  });
+  renderShell();
+  scrollChat();
+  try {
+    const data = await api("/api/group-chat", {
+      method: "POST",
+      body: JSON.stringify({
+        message: content,
+        group_conversation_id: requestGroupId,
+        client_message_id: outgoingClientMessageId,
+      }),
+    });
+    const stillViewingGroup = state.view === "group" && Number(state.activeGroupConversationId) === requestGroupId;
+    if (stillViewingGroup) {
+      state.groupMessages = state.groupMessages.filter((message) => message.client_message_id !== outgoingClientMessageId);
+      state.groupMessages.push(...(data.messages || []));
+      await markGroupConversationRead(requestGroupId);
+    }
+    await loadMainData();
+  } catch (err) {
+    if (state.view === "group" && Number(state.activeGroupConversationId) === requestGroupId) {
+      state.groupMessages.push({
+        speaker_type: "system",
+        role: "notice",
+        content: friendlyChatError(err.message),
+        status: "error",
+        local_id: `group-error-${Date.now()}`,
+        created_at: nowSeconds(),
+      });
+    }
+  }
+  state.sending = false;
+  renderShell();
+  scrollChat();
+}
+
 async function markConversationRead(conversationId) {
   if (!conversationId) return;
   try {
     await api(`/api/conversations/${conversationId}/read`, { method: "POST" });
+  } catch {
+    // Read markers are a convenience state; failing to update them should not block chat.
+  }
+}
+
+async function markGroupConversationRead(groupConversationId) {
+  if (!groupConversationId) return;
+  try {
+    await api(`/api/group-conversations/${groupConversationId}/read`, { method: "POST" });
   } catch {
     // Read markers are a convenience state; failing to update them should not block chat.
   }
@@ -2236,6 +2713,20 @@ function conversationPreview(item) {
 function conversationDisplayTitle(item) {
   const title = String(item.title || "").trim();
   return title || item.persona_name || "聊天";
+}
+
+function groupConversationTitle(group) {
+  const title = String(group?.title || "").trim();
+  if (title) return title;
+  const names = (group?.members || []).map((member) => member.display_name || member.name).filter(Boolean);
+  return names.slice(0, 3).join("、") || "群聊";
+}
+
+function groupConversationPreview(group) {
+  const content = String(group?.last_message || "").trim();
+  if (content) return content.slice(0, 42);
+  const names = (group?.members || []).map((member) => member.display_name || member.name).filter(Boolean);
+  return names.length ? `${names.slice(0, 4).join("、")} 在群里` : "还没有消息";
 }
 
 function renderPersonaStatusLine(persona, align = "") {
@@ -2303,6 +2794,15 @@ function matchesPersonaSearch(persona, query) {
   ].some((value) => String(value || "").toLowerCase().includes(query));
 }
 
+function matchesGroupSearch(group, query) {
+  if (!query) return true;
+  return [
+    group.title,
+    group.last_message,
+    ...(group.members || []).map((member) => member.display_name || member.name),
+  ].some((value) => String(value || "").toLowerCase().includes(query));
+}
+
 function renderMessageList(messages) {
   const nodes = [];
   let lastDateKey = "";
@@ -2320,6 +2820,47 @@ function renderMessageList(messages) {
     }
   }
   return nodes;
+}
+
+function renderGroupMessageList(messages) {
+  const nodes = [];
+  let lastDateKey = "";
+  for (const message of messages) {
+    const dateKey = messageDateKey(message.created_at);
+    if (dateKey && dateKey !== lastDateKey) {
+      nodes.push(renderDateDivider(message.created_at));
+      lastDateKey = dateKey;
+    }
+    nodes.push(renderGroupMessage(message));
+  }
+  return nodes;
+}
+
+function renderGroupMessage(message) {
+  const isUser = message.speaker_type === "user";
+  const isNotice = message.speaker_type === "system" || message.role === "notice";
+  const speakerName = isUser ? (state.profile?.nickname || "我") : message.speaker_name || groupMemberName(message.speaker_persona_id) || "TA";
+  const speakerAvatar = isUser
+    ? state.profile?.avatar_url
+    : message.speaker_avatar_url || groupMemberAvatar(message.speaker_persona_id);
+  const content = String(message.content || "").trim();
+  return h("article", { class: `message group-message ${isUser ? "user" : isNotice ? "notice" : "assistant"}` }, [
+    !isUser && !isNotice ? avatar(speakerName, speakerAvatar) : null,
+    h("div", { class: "message-stack" }, [
+      !isUser && !isNotice ? h("small", { class: "group-speaker-name", text: speakerName }) : null,
+      h("div", { class: `bubble ${message.status || ""}` }, [content]),
+      h("div", { class: "message-meta" }, [
+        h("small", { class: "message-time", text: formatMessageTime(message.created_at) }),
+        h("button", {
+          type: "button",
+          class: "copy-message",
+          text: "澶嶅埗",
+          onclick: () => copyMessageText(message),
+        }),
+      ]),
+    ]),
+    isUser ? avatar(speakerName, speakerAvatar) : null,
+  ]);
 }
 
 function renderFailedReplyNotice(userMessage) {
@@ -2542,6 +3083,26 @@ function avatar(name, url) {
   return el;
 }
 
+function groupAvatar(group) {
+  const members = group?.members || [];
+  const first = members[0] || {};
+  const second = members[1] || {};
+  return h("div", { class: "group-avatar" }, [
+    avatar(first.display_name || first.name || "群", first.avatar_url),
+    avatar(second.display_name || second.name || "+", second.avatar_url),
+  ]);
+}
+
+function groupMemberName(personaId) {
+  const member = (state.activeGroupConversation?.members || []).find((item) => Number(item.persona_id) === Number(personaId));
+  return member?.display_name || member?.name || "";
+}
+
+function groupMemberAvatar(personaId) {
+  const member = (state.activeGroupConversation?.members || []).find((item) => Number(item.persona_id) === Number(personaId));
+  return member?.avatar_url || "";
+}
+
 function avatarText(name) {
   const text = String(name || "").trim();
   if (!text) return "忆";
@@ -2595,17 +3156,24 @@ function resetClientState() {
     loadingGrowthPersonaId: null,
     conversations: [],
     archivedConversations: [],
+    groupConversations: [],
+    archivedGroupConversations: [],
     activePersona: null,
     activeConversationId: null,
+    activeGroupConversationId: null,
+    activeGroupConversation: null,
     messages: [],
+    groupMessages: [],
     view: "chat",
     editingPersona: false,
     profileOpen: false,
     personaPanelOpen: false,
     threadPanelOpen: false,
     deletedPanelOpen: false,
+    groupCreateOpen: false,
     editingConversationId: null,
     showArchived: false,
+    showArchivedGroups: false,
     conversationSearch: "",
     focusComposer: false,
     sending: false,
@@ -2621,11 +3189,12 @@ function scrollChat() {
 
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
-  if (state.profileOpen || state.personaPanelOpen || state.threadPanelOpen || state.deletedPanelOpen) {
+  if (state.profileOpen || state.personaPanelOpen || state.threadPanelOpen || state.deletedPanelOpen || state.groupCreateOpen) {
     state.profileOpen = false;
     state.personaPanelOpen = false;
     state.threadPanelOpen = false;
     state.deletedPanelOpen = false;
+    state.groupCreateOpen = false;
     state.editingPersona = false;
     renderShell();
     return;

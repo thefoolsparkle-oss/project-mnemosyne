@@ -46,6 +46,47 @@ STRUCTURED_EXPRESSION_LABELS = {
     "gesture": {"点头"},
 }
 EXPRESSION_RECENT_WINDOW = 4
+EXPRESSION_DISABLE_PATTERNS = (
+    "以后别发表情",
+    "以后不要发表情",
+    "以后不用表情",
+    "别发表情",
+    "不要发表情",
+    "不用表情",
+    "别加表情",
+    "不要加表情",
+    "别用表情",
+    "不要用表情",
+    "别用轻表达",
+    "不要轻表达",
+    "关闭轻表达",
+    "关掉轻表达",
+    "别加动作",
+    "不要动作",
+    "别发动作",
+    "不要发动作",
+    "别用动作标签",
+    "不要动作标签",
+    "别加expression标签",
+    "不要expression标签",
+    "expressionoff",
+    "disableexpression",
+)
+EXPRESSION_ENABLE_PATTERNS = (
+    "可以发表情了",
+    "可以用表情了",
+    "可以加表情了",
+    "表情可以开",
+    "打开轻表达",
+    "开启轻表达",
+    "恢复轻表达",
+    "可以用轻表达",
+    "可以加动作了",
+    "可以用动作标签",
+    "动作标签可以开",
+    "expressionon",
+    "enableexpression",
+)
 STAGE_DIRECTION_WORDS = (
     "托腮",
     "歪头",
@@ -354,6 +395,13 @@ def db_chat(
                 (ts, conversation["id"]),
             )
 
+    expression_preference_update = _maybe_update_expression_preference_from_chat(
+        user_id=user_id,
+        persona_id=persona_id,
+        user_text=message,
+        source_message_id=user_message_id,
+    )
+
     stored_memories = [] if retrying else _best_effort(
         "Archivist",
         lambda: extract_and_store(
@@ -507,6 +555,7 @@ def db_chat(
             "active_preference_prompt": active_preference_context,
             "expression_policy_prompt": expression_policy_context,
             "expression_policy": expression_policy,
+            "expression_preference_update": expression_preference_update,
             "profile_usage_prompt": profile_usage_context,
             "runtime_persona_prompt": runtime_persona_context,
             "stored_memories": stored_memories,
@@ -764,8 +813,88 @@ def _extract_reply_presentation(reply: str) -> dict:
     return {"content": cleaned or "我在。", "expressions": expressions}
 
 
+def _expression_preference_intent(text: str) -> str | None:
+    compact = re.sub(r"\s+", "", str(text or "").lower())
+    if not compact:
+        return None
+    disable_positions = [
+        compact.rfind(pattern)
+        for pattern in EXPRESSION_DISABLE_PATTERNS
+        if compact.rfind(pattern) >= 0
+    ]
+    enable_positions = [
+        compact.rfind(pattern)
+        for pattern in EXPRESSION_ENABLE_PATTERNS
+        if compact.rfind(pattern) >= 0
+    ]
+    if not disable_positions and not enable_positions:
+        return None
+    if enable_positions and (not disable_positions or max(enable_positions) > max(disable_positions)):
+        return "enable"
+    return "disable"
+
+
+def _maybe_update_expression_preference_from_chat(
+    *,
+    user_id: int,
+    persona_id: int,
+    user_text: str,
+    source_message_id: int,
+) -> dict | None:
+    intent = _expression_preference_intent(user_text)
+    if not intent:
+        return None
+    enabled = 1 if intent == "enable" else 0
+    ts = now_ts()
+    with get_db() as db:
+        db.execute(
+            """
+            INSERT INTO expression_preferences (user_id, persona_id, enabled, source_message_id, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, persona_id) DO UPDATE SET
+                enabled = excluded.enabled,
+                source_message_id = excluded.source_message_id,
+                updated_at = excluded.updated_at
+            """,
+            (user_id, persona_id, enabled, source_message_id, ts),
+        )
+    return {
+        "intent": intent,
+        "enabled": bool(enabled),
+        "source_message_id": source_message_id,
+        "updated_at": ts,
+    }
+
+
 def _recent_expression_policy(user_id: int, persona_id: int, conversation_id: int) -> dict:
     with get_db() as db:
+        preference_row = db.execute(
+            """
+            SELECT enabled, source_message_id, updated_at
+            FROM expression_preferences
+            WHERE user_id = ? AND persona_id = ?
+            """,
+            (user_id, persona_id),
+        ).fetchone()
+        preference = {
+            "enabled": True,
+            "source_message_id": None,
+            "updated_at": 0,
+        }
+        if preference_row:
+            preference = {
+                "enabled": bool(int(preference_row["enabled"] or 0)),
+                "source_message_id": preference_row["source_message_id"],
+                "updated_at": int(preference_row["updated_at"] or 0),
+            }
+        if not preference["enabled"]:
+            return {
+                "expression_preference": preference,
+                "disabled_by_user": True,
+                "recent_assistant_messages_checked": 0,
+                "suppress_all": True,
+                "recent_labels": [],
+            }
         message_rows = db.execute(
             """
             SELECT id
@@ -799,6 +928,8 @@ def _recent_expression_policy(user_id: int, persona_id: int, conversation_id: in
         dict.fromkeys(label for message_id in message_ids for label in labels_by_message.get(message_id, []))
     )
     return {
+        "expression_preference": preference,
+        "disabled_by_user": False,
         "recent_assistant_messages_checked": len(message_ids),
         "suppress_all": bool(message_ids and labels_by_message.get(message_ids[0])),
         "recent_labels": recent_labels,
@@ -834,6 +965,12 @@ def _active_preference_prompt(user_id: int, persona_id: int) -> str:
 
 
 def _expression_policy_prompt(policy: dict) -> str:
+    if policy.get("disabled_by_user"):
+        return (
+            "Light expression preference: the user has explicitly turned off expression labels. "
+            "Do not output [[expression:...]] tags, bracketed actions, emoji-like stage directions, "
+            "or substitute nonverbal cues. Reply only with natural chat text."
+        )
     if policy.get("suppress_all"):
         return (
             "本轮轻表达节奏约束：上一条回复刚显示过非语言提示，"

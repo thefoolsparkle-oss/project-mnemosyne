@@ -31,6 +31,14 @@ from .archivist import recall_memories
 from .config import load_config
 from .database import dict_from_row, get_db, init_db, now_ts
 from .db_chat import db_chat, normalize_existing_assistant_messages
+from .group_chat import (
+    create_group_conversation,
+    group_chat,
+    group_messages,
+    list_group_conversations,
+    mark_group_conversation_read,
+    update_group_conversation,
+)
 from .conversation_memory import refresh_conversation_summary
 from .identity import is_identity_polluted_boundary, scrub_identity_text
 from .layered_memory import (
@@ -200,6 +208,23 @@ class ConversationUpdateRequest(BaseModel):
     title: str | None = Field(default=None, max_length=80)
     status: str | None = Field(default=None, max_length=20)
     pinned: bool | None = None
+
+
+class GroupConversationCreateRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=80)
+    persona_ids: list[int] = Field(..., min_length=2, max_length=6)
+
+
+class GroupConversationUpdateRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=80)
+    status: str | None = Field(default=None, max_length=20)
+    pinned: bool | None = None
+
+
+class GroupChatRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=8000)
+    group_conversation_id: int
+    client_message_id: str | None = Field(default=None, max_length=80)
 
 
 class MemoryUpdateRequest(BaseModel):
@@ -2409,6 +2434,83 @@ def update_conversation(conversation_id: int, req: ConversationUpdateRequest, us
             (conversation_id,),
         ).fetchone()
     return {"conversation": dict_from_row(row)}
+
+
+@app.get("/api/group-conversations")
+def group_conversations(user: dict = Depends(current_user), status: str = "active"):
+    try:
+        return {"group_conversations": list_group_conversations(int(user["id"]), status)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/group-conversations")
+def create_group_conversation_endpoint(req: GroupConversationCreateRequest, user: dict = Depends(current_user)):
+    try:
+        return {
+            "group_conversation": create_group_conversation(
+                int(user["id"]),
+                req.persona_ids,
+                req.title or "",
+            )
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/group-conversations/{group_conversation_id}/messages")
+def group_conversation_messages(group_conversation_id: int, user: dict = Depends(current_user)):
+    try:
+        return {"messages": group_messages(int(user["id"]), group_conversation_id)}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/group-conversations/{group_conversation_id}/read")
+def mark_group_read(group_conversation_id: int, user: dict = Depends(current_user)):
+    try:
+        return mark_group_conversation_read(int(user["id"]), group_conversation_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.patch("/api/group-conversations/{group_conversation_id}")
+def patch_group_conversation(
+    group_conversation_id: int,
+    req: GroupConversationUpdateRequest,
+    user: dict = Depends(current_user),
+):
+    try:
+        return {
+            "group_conversation": update_group_conversation(
+                int(user["id"]),
+                group_conversation_id,
+                title=req.title,
+                status=req.status,
+                pinned=req.pinned,
+            )
+        }
+    except ValueError as exc:
+        status_code = 404 if "not found" in str(exc) else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
+@app.post("/api/group-chat")
+def group_chat_endpoint(req: GroupChatRequest, user: dict = Depends(current_user)):
+    try:
+        return group_chat(
+            user_id=int(user["id"]),
+            group_conversation_id=int(req.group_conversation_id),
+            message=req.message,
+            client_message_id=req.client_message_id,
+        )
+    except ValueError as exc:
+        status_code = 404 if "not found" in str(exc) else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    except LLMProviderError as exc:
+        raise HTTPException(status_code=503, detail=exc.user_message) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="group chat service unavailable") from exc
 
 
 @app.post("/api/chat")

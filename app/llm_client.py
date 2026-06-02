@@ -138,6 +138,17 @@ def _call_deepseek(messages: List[Message], llm_config: dict) -> str:
     )
 
 
+def _call_kimi(messages: List[Message], llm_config: dict) -> str:
+    return _call_chat_completions(
+        messages,
+        llm_config,
+        provider_name="kimi",
+        env_key="MOONSHOT_API_KEY",
+        default_base_url="https://api.moonshot.ai/v1",
+        default_model="kimi-k2.6",
+    )
+
+
 def call_llm_api(messages: List[Message], task: str = "default") -> str:
     llm_config = _llm_config_for_task(task)
     provider = str(llm_config.get("provider", "ollama")).lower()
@@ -152,6 +163,8 @@ def call_llm_api(messages: List[Message], task: str = "default") -> str:
             response = _call_openai(messages, llm_config)
         elif provider == "deepseek":
             response = _call_deepseek(messages, llm_config)
+        elif provider in {"kimi", "moonshot"}:
+            response = _call_kimi(messages, llm_config)
         elif provider in {"openai_compatible", "compatible"} or llm_config.get("api_key_env"):
             response = _call_compatible_provider(messages, llm_config)
         else:

@@ -218,6 +218,64 @@ def init_db() -> None:
                 FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS expression_preferences (
+                user_id INTEGER NOT NULL,
+                persona_id INTEGER NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                source_message_id INTEGER,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (user_id, persona_id),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE CASCADE,
+                FOREIGN KEY (source_message_id) REFERENCES messages(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS group_conversations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'active',
+                pinned_at INTEGER NOT NULL DEFAULT 0,
+                last_read_group_message_id INTEGER NOT NULL DEFAULT 0,
+                last_read_at INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS group_members (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_conversation_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                persona_id INTEGER NOT NULL,
+                display_name TEXT NOT NULL DEFAULT '',
+                role_note TEXT NOT NULL DEFAULT '',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                joined_at INTEGER NOT NULL,
+                last_spoke_at INTEGER NOT NULL DEFAULT 0,
+                turn_count INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(group_conversation_id, persona_id),
+                FOREIGN KEY (group_conversation_id) REFERENCES group_conversations(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS group_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_conversation_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                speaker_type TEXT NOT NULL CHECK(speaker_type IN ('user', 'persona', 'system')),
+                speaker_persona_id INTEGER,
+                content TEXT NOT NULL,
+                reply_status TEXT NOT NULL DEFAULT '',
+                reply_error TEXT NOT NULL DEFAULT '',
+                client_message_id TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                FOREIGN KEY (group_conversation_id) REFERENCES group_conversations(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (speaker_persona_id) REFERENCES personas(id) ON DELETE SET NULL
+            );
+
             CREATE TABLE IF NOT EXISTS conversation_summaries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -551,6 +609,14 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id);
             CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
             CREATE INDEX IF NOT EXISTS idx_message_expressions_message_id ON message_expressions(message_id);
+            CREATE INDEX IF NOT EXISTS idx_expression_preferences_scope
+                ON expression_preferences(user_id, persona_id);
+            CREATE INDEX IF NOT EXISTS idx_group_conversations_user
+                ON group_conversations(user_id, status, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_group_members_group
+                ON group_members(group_conversation_id, is_active);
+            CREATE INDEX IF NOT EXISTS idx_group_messages_group
+                ON group_messages(group_conversation_id, id);
             CREATE INDEX IF NOT EXISTS idx_conversation_summaries_scope
                 ON conversation_summaries(user_id, persona_id, conversation_id);
             CREATE INDEX IF NOT EXISTS idx_memories_user_persona ON memories(user_id, persona_id, archived);

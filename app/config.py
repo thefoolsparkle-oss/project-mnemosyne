@@ -12,9 +12,10 @@ CONFIG_FILE = BASE_DIR / "config.yaml"
 DEFAULT_CONFIG: dict[str, Any] = {
     "active_persona": "",
     "llm": {
-        "provider": "deepseek",
-        "model": "deepseek-v4-flash",
-        "base_url": "https://api.deepseek.com/v1",
+        "provider": "kimi",
+        "model": "kimi-k2.6",
+        "base_url": "https://api.moonshot.ai/v1",
+        "api_key_env": "MOONSHOT_API_KEY",
         "temperature": 0.75,
     },
     "llm_routes": {},

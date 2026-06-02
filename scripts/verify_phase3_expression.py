@@ -146,6 +146,73 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     )
     assert distinct["expressions"][0]["label"] == "微笑"
 
+    assert chat._expression_preference_intent("以后别发表情了") == "disable"
+    assert chat._expression_preference_intent("现在可以发表情了") == "enable"
+    smile_label = "微笑"
+    nod_label = "点头"
+
+    captured.clear()
+    chat.call_llm_api = lambda messages, task="chat": (
+        captured.setdefault("messages", messages) and f"好。[[expression:mood:{smile_label}]]"
+    )
+    disabled = chat.db_chat(
+        user_id,
+        persona_id,
+        "以后别发表情了。",
+        conversation_id=conversation_id,
+        client_message_id="phase3-expression-disable",
+    )
+    assert disabled["reply"] == "好。"
+    assert disabled["expressions"] == []
+    prompt = "\n".join(str(item.get("content") or "") for item in captured["messages"])
+    assert "explicitly turned off expression labels" in prompt
+    with database.get_db() as db:
+        row = db.execute(
+            "SELECT enabled, source_message_id FROM expression_preferences WHERE user_id = ? AND persona_id = ?",
+            (user_id, persona_id),
+        ).fetchone()
+    assert int(row["enabled"]) == 0
+    assert int(row["source_message_id"]) == disabled["user_message_id"]
+
+    captured.clear()
+    chat.call_llm_api = lambda messages, task="chat": (
+        captured.setdefault("messages", messages) and f"还在。[[expression:mood:{smile_label}]]"
+    )
+    disabled_next = chat.db_chat(
+        user_id,
+        persona_id,
+        "还在吗？",
+        conversation_id=conversation_id,
+        client_message_id="phase3-expression-disabled-next",
+    )
+    assert disabled_next["reply"] == "还在。"
+    assert disabled_next["expressions"] == []
+    prompt = "\n".join(str(item.get("content") or "") for item in captured["messages"])
+    assert "explicitly turned off expression labels" in prompt
+
+    captured.clear()
+    chat.call_llm_api = lambda messages, task="chat": (
+        captured.setdefault("messages", messages) and f"可以。[[expression:gesture:{nod_label}]]"
+    )
+    enabled = chat.db_chat(
+        user_id,
+        persona_id,
+        "现在可以发表情了。",
+        conversation_id=conversation_id,
+        client_message_id="phase3-expression-enable",
+    )
+    assert enabled["reply"] == "可以。"
+    assert enabled["expressions"][0]["label"] == nod_label
+    prompt = "\n".join(str(item.get("content") or "") for item in captured["messages"])
+    assert "explicitly turned off expression labels" not in prompt
+    with database.get_db() as db:
+        row = db.execute(
+            "SELECT enabled, source_message_id FROM expression_preferences WHERE user_id = ? AND persona_id = ?",
+            (user_id, persona_id),
+        ).fetchone()
+    assert int(row["enabled"]) == 1
+    assert int(row["source_message_id"]) == enabled["user_message_id"]
+
 
 def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
