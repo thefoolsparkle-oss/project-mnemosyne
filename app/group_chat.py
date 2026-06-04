@@ -6,13 +6,17 @@ from typing import Any
 
 from .database import dict_from_row, get_db, now_ts
 from .db_chat import (
-    CHAT_RENDERING_RULES,
-    _clean_assistant_reply,
+    EXPRESSION_RECENT_WINDOW,
+    _apply_expression_policy,
+    _extract_reply_presentation,
+    _expression_policy_prompt,
     _final_persona_lock,
     _persona_runtime_prompt,
     _safe_context,
+    chat_rendering_rules_prompt,
     get_persona_for_user,
 )
+from .expression_assets import active_expression_labels
 from .identity import scrub_identity_text
 from .llm_client import call_llm_api
 
@@ -149,7 +153,7 @@ def group_messages(user_id: int, group_conversation_id: int, *, mark_read: bool 
                 """,
                 (max(int(item["id"]) for item in messages), now_ts(), group_conversation_id, user_id),
             )
-    return messages
+    return _attach_group_expressions(user_id, messages)
 
 
 def update_group_conversation(
@@ -269,6 +273,7 @@ def group_chat(
         reply = _generate_group_reply(
             user_id=user_id,
             group=group,
+            group_conversation_id=group_conversation_id,
             members=members,
             history=_recent_group_messages(user_id, group_conversation_id),
             persona=persona,
@@ -352,11 +357,12 @@ def _generate_group_reply(
     *,
     user_id: int,
     group: dict,
+    group_conversation_id: int,
     members: list[dict],
     history: list[dict],
     persona: dict,
     trigger_message: str,
-) -> str:
+) -> dict:
     member_context = [
         {
             "persona_id": int(member["persona_id"]),
@@ -366,10 +372,11 @@ def _generate_group_reply(
         }
         for member in members
     ]
+    expression_policy = _recent_group_expression_policy(user_id, int(persona["id"]), group_conversation_id)
     messages = [
         {"role": "system", "content": _safe_context(str(persona["prompt"]))},
         {"role": "system", "content": _persona_runtime_prompt(persona)},
-        {"role": "system", "content": CHAT_RENDERING_RULES},
+        {"role": "system", "content": chat_rendering_rules_prompt()},
         {
             "role": "system",
             "content": (
@@ -383,15 +390,20 @@ def _generate_group_reply(
         },
         {"role": "system", "content": "Group members:\n" + json.dumps(member_context, ensure_ascii=False)},
         {"role": "system", "content": "Recent group messages:\n" + _format_group_history(history)},
+        {"role": "system", "content": _expression_policy_prompt(expression_policy)},
         {"role": "system", "content": _final_persona_lock(persona)},
         {"role": "user", "content": f"Latest user message: {trigger_message}"},
     ]
     reply = call_llm_api(messages, task="chat")
-    return _clean_assistant_reply(reply)
+    presentation = _extract_reply_presentation(reply)
+    presentation["expressions"] = _apply_expression_policy(presentation["expressions"], expression_policy)
+    return presentation
 
 
-def _store_persona_group_reply(user_id: int, group_conversation_id: int, persona: dict, reply: str) -> dict:
+def _store_persona_group_reply(user_id: int, group_conversation_id: int, persona: dict, presentation: dict) -> dict:
     ts = now_ts()
+    reply = str(presentation.get("content") or "").strip() or "我在。"
+    expressions = list(presentation.get("expressions") or [])
     with get_db() as db:
         cursor = db.execute(
             """
@@ -404,6 +416,29 @@ def _store_persona_group_reply(user_id: int, group_conversation_id: int, persona
             (group_conversation_id, user_id, int(persona["id"]), reply, ts),
         )
         message_id = int(cursor.lastrowid)
+        if expressions:
+            db.executemany(
+                """
+                INSERT INTO group_message_expressions (
+                    group_message_id, user_id, persona_id, group_conversation_id,
+                    expression_type, label, source_text, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        message_id,
+                        user_id,
+                        int(persona["id"]),
+                        group_conversation_id,
+                        str(item.get("type") or "gesture")[:40],
+                        str(item.get("label") or "")[:80],
+                        str(item.get("source_text") or "")[:200],
+                        ts,
+                    )
+                    for item in expressions
+                ],
+            )
         db.execute(
             """
             UPDATE group_members
@@ -450,7 +485,7 @@ def _messages_for_ids(user_id: int, message_ids: list[int]) -> list[dict]:
             """,
             (user_id, *message_ids),
         ).fetchall()
-    return [dict_from_row(row) for row in rows]
+    return _attach_group_expressions(user_id, [dict_from_row(row) for row in rows])
 
 
 def _with_group_members(group: dict) -> dict:
@@ -472,6 +507,113 @@ def _with_group_members(group: dict) -> dict:
     result = dict(group)
     result["members"] = [dict_from_row(row) for row in rows]
     return result
+
+
+def _recent_group_expression_policy(user_id: int, persona_id: int, group_conversation_id: int) -> dict:
+    with get_db() as db:
+        preference_row = db.execute(
+            """
+            SELECT enabled, mode, source_message_id, updated_at
+            FROM expression_preferences
+            WHERE user_id = ? AND persona_id = ?
+            """,
+            (user_id, persona_id),
+        ).fetchone()
+        preference = {"enabled": True, "mode": "normal", "source_message_id": None, "updated_at": 0}
+        if preference_row:
+            enabled = bool(int(preference_row["enabled"] or 0))
+            mode = str(preference_row["mode"] or "").strip() or ("normal" if enabled else "off")
+            if mode not in {"off", "subtle", "normal"}:
+                mode = "normal" if enabled else "off"
+            preference = {
+                "enabled": mode != "off",
+                "mode": mode,
+                "source_message_id": preference_row["source_message_id"],
+                "updated_at": int(preference_row["updated_at"] or 0),
+            }
+        if not preference["enabled"]:
+            return {
+                "expression_preference": preference,
+                "disabled_by_user": True,
+                "recent_assistant_messages_checked": 0,
+                "suppress_all": True,
+                "recent_labels": [],
+            }
+        message_rows = db.execute(
+            """
+            SELECT id
+            FROM group_messages
+            WHERE user_id = ? AND speaker_persona_id = ? AND group_conversation_id = ?
+              AND speaker_type = 'persona'
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (user_id, persona_id, group_conversation_id, EXPRESSION_RECENT_WINDOW),
+        ).fetchall()
+        message_ids = [int(row["id"]) for row in message_rows]
+        expression_rows = []
+        if message_ids:
+            placeholders = ", ".join("?" for _ in message_ids)
+            expression_rows = db.execute(
+                f"""
+                SELECT group_message_id, label
+                FROM group_message_expressions
+                WHERE user_id = ? AND persona_id = ? AND group_conversation_id = ?
+                  AND group_message_id IN ({placeholders})
+                ORDER BY id ASC
+                """,
+                (user_id, persona_id, group_conversation_id, *message_ids),
+            ).fetchall()
+    labels_by_message: dict[int, list[str]] = {message_id: [] for message_id in message_ids}
+    for row in expression_rows:
+        label = str(row["label"] or "").strip()
+        if label:
+            labels_by_message.setdefault(int(row["group_message_id"]), []).append(label)
+    recent_labels = list(
+        dict.fromkeys(label for message_id in message_ids for label in labels_by_message.get(message_id, []))
+    )
+    return {
+        "expression_preference": preference,
+        "disabled_by_user": False,
+        "recent_assistant_messages_checked": len(message_ids),
+        "subtle_mode": preference["mode"] == "subtle",
+        "suppress_all": (
+            bool(message_ids and labels_by_message.get(message_ids[0]))
+            or (preference["mode"] == "subtle" and bool(recent_labels))
+        ),
+        "recent_labels": recent_labels,
+    }
+
+
+def _attach_group_expressions(user_id: int, messages: list[dict]) -> list[dict]:
+    message_ids = [int(item["id"]) for item in messages if item and item.get("id")]
+    expressions_by_message: dict[int, list[dict]] = {message_id: [] for message_id in message_ids}
+    if message_ids:
+        placeholders = ",".join("?" for _ in message_ids)
+        with get_db() as db:
+            rows = db.execute(
+                f"""
+                SELECT group_message_id, expression_type, label, source_text, created_at
+                FROM group_message_expressions
+                WHERE user_id = ? AND group_message_id IN ({placeholders})
+                ORDER BY id ASC
+                """,
+                (user_id, *message_ids),
+            ).fetchall()
+        for row in rows:
+            item = dict_from_row(row) or {}
+            expression_type = str(item.get("expression_type") or "")
+            label = str(item.get("label") or "")
+            if label not in active_expression_labels().get(expression_type, set()):
+                continue
+            message_id = int(item.pop("group_message_id"))
+            expressions_by_message.setdefault(message_id, []).append(item)
+    for message in messages:
+        if message and message.get("speaker_type") == "persona":
+            message["expressions"] = expressions_by_message.get(int(message["id"]), [])
+        else:
+            message["expressions"] = []
+    return messages
 
 
 def _assert_group_owner(user_id: int, group_conversation_id: int) -> None:

@@ -1325,6 +1325,9 @@ small {
 }
 
 .expression-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   max-width: 160px;
   padding: 3px 8px;
   border: 1px solid rgba(225, 189, 118, 0.35);
@@ -1338,10 +1341,34 @@ small {
   white-space: nowrap;
 }
 
+.expression-icon {
+  font-size: 11px;
+  font-weight: 700;
+  opacity: 0.8;
+}
+
 .expression-pill.mood {
   border-color: rgba(83, 109, 150, 0.32);
   background: rgba(83, 109, 150, 0.08);
   color: var(--accent-strong);
+}
+
+.expression-pill.tone {
+  border-color: rgba(99, 121, 112, 0.32);
+  background: rgba(99, 121, 112, 0.08);
+  color: #4e675d;
+}
+
+.expression-pill.gesture {
+  border-color: rgba(151, 111, 76, 0.28);
+  background: rgba(151, 111, 76, 0.08);
+  color: #755942;
+}
+
+.expression-pill.intensity-2 {
+  border-color: rgba(164, 91, 91, 0.36);
+  background: rgba(164, 91, 91, 0.08);
+  color: #8a4a4a;
 }
 
 .message-meta {
@@ -1547,6 +1574,70 @@ small {
   border: 1px solid rgba(83, 109, 150, 0.2);
   border-radius: 8px;
   background: rgba(83, 109, 150, 0.035);
+}
+
+.persona-expression-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid rgba(83, 109, 150, 0.16);
+  border-radius: 8px;
+  background: rgba(83, 109, 150, 0.03);
+}
+
+.persona-expression-card.disabled {
+  border-color: rgba(159, 58, 56, 0.18);
+  background: rgba(159, 58, 56, 0.035);
+}
+
+.persona-expression-card strong,
+.persona-expression-card p {
+  margin: 0;
+}
+
+.persona-expression-card p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.persona-expression-card .save-status {
+  grid-column: 1 / -1;
+}
+
+.expression-mode-control {
+  display: inline-grid;
+  grid-template-columns: repeat(3, minmax(44px, 1fr));
+  gap: 2px;
+  min-width: 142px;
+  padding: 2px;
+  border: 1px solid rgba(83, 109, 150, 0.16);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.expression-mode-control button {
+  min-height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.expression-mode-control button.active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.expression-mode-control button:disabled {
+  opacity: 1;
 }
 
 .persona-growth-head {

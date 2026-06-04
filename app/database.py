@@ -222,12 +222,24 @@ def init_db() -> None:
                 user_id INTEGER NOT NULL,
                 persona_id INTEGER NOT NULL,
                 enabled INTEGER NOT NULL DEFAULT 1,
+                mode TEXT NOT NULL DEFAULT 'normal',
                 source_message_id INTEGER,
                 updated_at INTEGER NOT NULL,
                 PRIMARY KEY (user_id, persona_id),
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
                 FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE CASCADE,
                 FOREIGN KEY (source_message_id) REFERENCES messages(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS expression_asset_settings (
+                expression_type TEXT NOT NULL,
+                label TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                admin_note TEXT NOT NULL DEFAULT '',
+                updated_by_user_id INTEGER,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (expression_type, label),
+                FOREIGN KEY (updated_by_user_id) REFERENCES users(id) ON DELETE SET NULL
             );
 
             CREATE TABLE IF NOT EXISTS group_conversations (
@@ -274,6 +286,22 @@ def init_db() -> None:
                 FOREIGN KEY (group_conversation_id) REFERENCES group_conversations(id) ON DELETE CASCADE,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
                 FOREIGN KEY (speaker_persona_id) REFERENCES personas(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS group_message_expressions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_message_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                persona_id INTEGER NOT NULL,
+                group_conversation_id INTEGER NOT NULL,
+                expression_type TEXT NOT NULL DEFAULT 'gesture',
+                label TEXT NOT NULL DEFAULT '',
+                source_text TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                FOREIGN KEY (group_message_id) REFERENCES group_messages(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE CASCADE,
+                FOREIGN KEY (group_conversation_id) REFERENCES group_conversations(id) ON DELETE CASCADE
             );
 
             CREATE TABLE IF NOT EXISTS conversation_summaries (
@@ -611,12 +639,16 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_message_expressions_message_id ON message_expressions(message_id);
             CREATE INDEX IF NOT EXISTS idx_expression_preferences_scope
                 ON expression_preferences(user_id, persona_id);
+            CREATE INDEX IF NOT EXISTS idx_expression_asset_settings_enabled
+                ON expression_asset_settings(enabled);
             CREATE INDEX IF NOT EXISTS idx_group_conversations_user
                 ON group_conversations(user_id, status, updated_at);
             CREATE INDEX IF NOT EXISTS idx_group_members_group
                 ON group_members(group_conversation_id, is_active);
             CREATE INDEX IF NOT EXISTS idx_group_messages_group
                 ON group_messages(group_conversation_id, id);
+            CREATE INDEX IF NOT EXISTS idx_group_message_expressions_message_id
+                ON group_message_expressions(group_message_id);
             CREATE INDEX IF NOT EXISTS idx_conversation_summaries_scope
                 ON conversation_summaries(user_id, persona_id, conversation_id);
             CREATE INDEX IF NOT EXISTS idx_memories_user_persona ON memories(user_id, persona_id, archived);
@@ -658,6 +690,7 @@ def init_db() -> None:
         _ensure_column(db, "messages", "reply_status", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(db, "messages", "reply_error", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(db, "messages", "client_message_id", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(db, "expression_preferences", "mode", "TEXT NOT NULL DEFAULT 'normal'")
         for table in ("personas", "persona_versions"):
             _ensure_column(db, table, "psychological_profile_json", "TEXT NOT NULL DEFAULT '{}'")
             _ensure_column(db, table, "psychological_fit_notes", "TEXT NOT NULL DEFAULT ''")

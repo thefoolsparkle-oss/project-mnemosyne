@@ -31,6 +31,7 @@ from .archivist import recall_memories
 from .config import load_config
 from .database import dict_from_row, get_db, init_db, now_ts
 from .db_chat import db_chat, normalize_existing_assistant_messages
+from .expression_assets import active_expression_labels, expression_assets_public, update_expression_asset_setting
 from .group_chat import (
     create_group_conversation,
     group_chat,
@@ -186,6 +187,16 @@ class PersonaUpdateRequest(BaseModel):
     avatar_url: str | None = Field(default=None, max_length=500)
     appearance_description: str | None = Field(default=None, max_length=2000)
     desired_image: str | None = Field(default=None, max_length=2000)
+
+
+class ExpressionPreferenceUpdateRequest(BaseModel):
+    enabled: bool | None = None
+    mode: str | None = Field(default=None, max_length=20)
+
+
+class ExpressionAssetUpdateRequest(BaseModel):
+    enabled: bool
+    admin_note: str | None = Field(default="", max_length=500)
 
 
 class PersonaAvatarGenerateRequest(BaseModel):
@@ -399,6 +410,39 @@ def persona_options():
     return {"options": PERSONA_OPTIONS, "max_per_group": 4}
 
 
+@app.get("/api/expression-assets")
+def expression_assets(user: dict = Depends(current_user)):
+    return {"assets": expression_assets_public()}
+
+
+@app.get("/api/admin/expression-assets")
+def admin_expression_assets(admin: dict = Depends(current_admin)):
+    return {"assets": expression_assets_public(include_disabled=True, include_admin_metadata=True)}
+
+
+@app.patch("/api/admin/expression-assets/{expression_type}/{label}")
+def admin_update_expression_asset(
+    expression_type: str,
+    label: str,
+    req: ExpressionAssetUpdateRequest,
+    admin: dict = Depends(current_admin),
+):
+    try:
+        asset = update_expression_asset_setting(
+            expression_type,
+            label,
+            enabled=req.enabled,
+            admin_note=req.admin_note or "",
+            updated_by_user_id=int(admin["id"]),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "asset": asset,
+        "assets": expression_assets_public(include_disabled=True, include_admin_metadata=True),
+    }
+
+
 @app.post("/api/uploads/avatar")
 async def upload_avatar(file: UploadFile = File(...), user: dict = Depends(current_user)):
     content_type = (file.content_type or "").lower()
@@ -484,6 +528,115 @@ def admin_context_traces(
     owner_id = _admin_target_user_id(admin, target_user_id)
     _assert_persona_owner(owner_id, persona_id)
     return {"traces": context_traces(owner_id, persona_id, limit)}
+
+
+@app.get("/api/admin/expression-usage")
+def admin_expression_usage(
+    admin: dict = Depends(current_admin),
+    target_user_id: int | None = None,
+    persona_id: int | None = None,
+    limit: int = 12,
+):
+    owner_id = _admin_target_user_id(admin, target_user_id)
+    _assert_persona_owner(owner_id, persona_id)
+    limit = max(1, min(int(limit or 12), 50))
+    persona_filter = int(persona_id) if persona_id else None
+    params: list[Any] = [owner_id]
+    persona_clause = ""
+    if persona_filter:
+        persona_clause = "AND message_expressions.persona_id = ?"
+        params.append(persona_filter)
+    params.append(limit)
+    with get_db() as db:
+        preference_row = None
+        if persona_filter:
+            preference_row = db.execute(
+                """
+                SELECT enabled, mode, source_message_id, updated_at
+                FROM expression_preferences
+                WHERE user_id = ? AND persona_id = ?
+                """,
+                (owner_id, persona_filter),
+            ).fetchone()
+        single_rows = db.execute(
+            f"""
+            SELECT message_expressions.*, messages.content, messages.created_at AS message_created_at,
+                   conversations.title AS conversation_title,
+                   personas.name AS persona_name,
+                   'single' AS scope
+            FROM message_expressions
+            JOIN messages ON messages.id = message_expressions.message_id
+            JOIN conversations ON conversations.id = message_expressions.conversation_id
+            JOIN personas ON personas.id = message_expressions.persona_id
+            WHERE message_expressions.user_id = ?
+              {persona_clause}
+            ORDER BY message_expressions.id DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+        group_params: list[Any] = [owner_id]
+        group_persona_clause = ""
+        if persona_filter:
+            group_persona_clause = "AND group_message_expressions.persona_id = ?"
+            group_params.append(persona_filter)
+        group_params.append(limit)
+        group_rows = db.execute(
+            f"""
+            SELECT group_message_expressions.*, group_messages.content,
+                   group_messages.created_at AS message_created_at,
+                   group_conversations.title AS conversation_title,
+                   personas.name AS persona_name,
+                   'group' AS scope
+            FROM group_message_expressions
+            JOIN group_messages ON group_messages.id = group_message_expressions.group_message_id
+            JOIN group_conversations ON group_conversations.id = group_message_expressions.group_conversation_id
+            JOIN personas ON personas.id = group_message_expressions.persona_id
+            WHERE group_message_expressions.user_id = ?
+              {group_persona_clause}
+            ORDER BY group_message_expressions.id DESC
+            LIMIT ?
+            """,
+            group_params,
+        ).fetchall()
+    asset_map = {
+        (str(asset.get("expression_type") or ""), str(asset.get("label") or "")): asset
+        for asset in expression_assets_public(include_disabled=True, include_admin_metadata=True)
+    }
+    recent = [_with_expression_asset_metadata(dict_from_row(row), asset_map) for row in [*single_rows, *group_rows]]
+    recent.sort(key=lambda item: int(item.get("created_at") or 0), reverse=True)
+    recent = recent[:limit]
+    counts: dict[str, dict[str, Any]] = {}
+    for item in recent:
+        key = f"{item.get('expression_type') or 'gesture'}:{item.get('label') or ''}"
+        if key not in counts:
+            counts[key] = {
+                "tag": key,
+                "count": 0,
+                "label": item.get("label") or "",
+                "expression_type": item.get("expression_type") or "gesture",
+                "display_text": item.get("display_text") or item.get("label") or "",
+                "asset_enabled": item.get("asset_enabled", False),
+                "risk_level": item.get("risk_level") or "unknown",
+                "group": item.get("group") or "unknown",
+            }
+        counts[key]["count"] += 1
+    preference = {"enabled": True, "mode": "normal", "explicit": False}
+    if preference_row:
+        row = dict_from_row(preference_row) or {}
+        mode = _normalize_expression_mode(row.get("mode"), bool(int(row.get("enabled", 1) or 0)))
+        preference = {
+            "enabled": mode != "off",
+            "mode": mode,
+            "explicit": True,
+            "updated_at": int(row.get("updated_at") or 0),
+            "source_message_id": row.get("source_message_id"),
+        }
+    return {
+        "preference": preference,
+        "recent": recent,
+        "counts": sorted(counts.values(), key=lambda item: (-int(item["count"]), str(item["tag"]))),
+    }
 
 
 @app.post("/api/admin/rag/sync")
@@ -1295,7 +1448,21 @@ def personas(user: dict = Depends(current_user)):
                              persona_revision_suggestions.base_version IS NULL
                              OR persona_revision_suggestions.base_version != personas.version
                          )
-                   ) AS retry_preference_request_count
+                   ) AS retry_preference_request_count,
+                    (
+                        SELECT enabled
+                        FROM expression_preferences
+                        WHERE expression_preferences.user_id = personas.user_id
+                          AND expression_preferences.persona_id = personas.id
+                        LIMIT 1
+                    ) AS expression_enabled,
+                    (
+                        SELECT mode
+                        FROM expression_preferences
+                        WHERE expression_preferences.user_id = personas.user_id
+                          AND expression_preferences.persona_id = personas.id
+                        LIMIT 1
+                    ) AS expression_mode
             FROM personas
             LEFT JOIN persona_growth_views
               ON persona_growth_views.persona_id = personas.id
@@ -1336,6 +1503,7 @@ def persona_detail(persona_id: int, user: dict = Depends(current_user)):
     persona = _public_persona(dict_from_row(row))
     if not persona:
         raise HTTPException(status_code=404, detail="persona not found")
+    persona["expression_preference"] = _expression_preference_public(int(user["id"]), persona_id)
     return {"persona": persona}
 
 
@@ -2068,7 +2236,44 @@ def update_persona(persona_id: int, req: PersonaUpdateRequest, user: dict = Depe
                 ),
             )
         persona = dict_from_row(db.execute("SELECT * FROM personas WHERE id = ?", (persona_id,)).fetchone())
-    return {"persona": _public_persona(persona)}
+    public_persona = _public_persona(persona)
+    public_persona["expression_preference"] = _expression_preference_public(user_id, persona_id)
+    return {"persona": public_persona}
+
+
+@app.patch("/api/personas/{persona_id}/expression-preference")
+def update_persona_expression_preference(
+    persona_id: int,
+    req: ExpressionPreferenceUpdateRequest,
+    user: dict = Depends(current_user),
+):
+    user_id = int(user["id"])
+    with get_db() as db:
+        row = db.execute(
+            "SELECT id FROM personas WHERE id = ? AND user_id = ? AND status = 'active'",
+            (persona_id, user_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="persona not found")
+        ts = now_ts()
+        mode = _normalize_expression_mode(req.mode, req.enabled)
+        enabled = 0 if mode == "off" else 1
+        db.execute(
+            """
+            INSERT INTO expression_preferences (user_id, persona_id, enabled, mode, source_message_id, updated_at)
+            VALUES (?, ?, ?, ?, NULL, ?)
+            ON CONFLICT(user_id, persona_id) DO UPDATE SET
+                enabled = excluded.enabled,
+                mode = excluded.mode,
+                source_message_id = NULL,
+                updated_at = excluded.updated_at
+            """,
+            (user_id, persona_id, enabled, mode, ts),
+        )
+    return {
+        "persona_id": persona_id,
+        "expression_preference": _expression_preference_public(user_id, persona_id),
+    }
 
 
 @app.post("/api/personas/{persona_id}/avatar/generate")
@@ -2320,6 +2525,7 @@ def conversation_messages(conversation_id: int, user: dict = Depends(current_use
         message_ids = [int(item["id"]) for item in messages]
         expressions_by_message: dict[int, list[dict[str, Any]]] = {message_id: [] for message_id in message_ids}
         if message_ids:
+            active_labels = active_expression_labels()
             placeholders = ",".join("?" for _ in message_ids)
             expression_rows = db.execute(
                 f"""
@@ -2332,6 +2538,10 @@ def conversation_messages(conversation_id: int, user: dict = Depends(current_use
             ).fetchall()
             for row in expression_rows:
                 expression = dict_from_row(row)
+                expression_type = str(expression.get("expression_type") or "")
+                label = str(expression.get("label") or "")
+                if label not in active_labels.get(expression_type, set()):
+                    continue
                 message_id = int(expression.pop("message_id"))
                 expressions_by_message.setdefault(message_id, []).append(expression)
         for item in messages:
@@ -2612,12 +2822,58 @@ def _public_persona(persona: dict | None) -> dict:
     return result
 
 
+def _expression_preference_public(user_id: int, persona_id: int) -> dict[str, Any]:
+    with get_db() as db:
+        row = db.execute(
+            """
+            SELECT enabled, mode, source_message_id, updated_at
+            FROM expression_preferences
+            WHERE user_id = ? AND persona_id = ?
+            """,
+            (user_id, persona_id),
+        ).fetchone()
+    if not row:
+        return {"enabled": True, "mode": "normal", "explicit": False, "updated_at": 0, "source_message_id": None}
+    item = dict_from_row(row) or {}
+    mode = _normalize_expression_mode(item.get("mode"), bool(int(item.get("enabled", 1) or 0)))
+    return {
+        "enabled": mode != "off",
+        "mode": mode,
+        "explicit": True,
+        "updated_at": int(item.get("updated_at") or 0),
+        "source_message_id": item.get("source_message_id"),
+    }
+
+
+def _with_expression_asset_metadata(item: dict[str, Any], asset_map: dict[tuple[str, str], dict[str, Any]]) -> dict[str, Any]:
+    expression_type = str(item.get("expression_type") or "")
+    label = str(item.get("label") or "")
+    asset = asset_map.get((expression_type, label)) or {}
+    item["asset_enabled"] = bool(asset.get("enabled", False))
+    item["asset_known"] = bool(asset)
+    item["asset_kind"] = asset.get("asset_kind") or "unknown"
+    item["display_text"] = asset.get("display_text") or label
+    item["icon"] = asset.get("icon") or ""
+    item["group"] = asset.get("group") or "unknown"
+    item["risk_level"] = asset.get("risk_level") or "unknown"
+    item["intensity"] = int(asset.get("intensity") or 0)
+    return item
+
+
 def _persona_list_item(persona: dict) -> dict:
     result = dict(persona)
     latest_version = int(result.pop("latest_reviewed_version", 0) or 0)
     latest_at = int(result.pop("latest_reviewed_at", 0) or 0)
     seen_version = int(result.pop("seen_reviewed_version", 0) or 0)
     result.pop("retry_preference_request_count", None)
+    expression_enabled = result.pop("expression_enabled", None)
+    expression_mode = result.pop("expression_mode", None)
+    mode = _normalize_expression_mode(expression_mode, None if expression_enabled is None else bool(int(expression_enabled)))
+    result["expression_preference"] = {
+        "enabled": mode != "off",
+        "mode": mode,
+        "explicit": expression_enabled is not None,
+    }
     result["growth_notice"] = (
         {
             "kind": "adaptation",
@@ -2630,6 +2886,29 @@ def _persona_list_item(persona: dict) -> dict:
     )
     result["growth_action"] = None
     return result
+
+
+def _normalize_expression_mode(mode: Any, enabled: bool | None = None) -> str:
+    value = str(mode or "").strip().lower()
+    aliases = {
+        "off": "off",
+        "disabled": "off",
+        "disable": "off",
+        "false": "off",
+        "subtle": "subtle",
+        "low": "subtle",
+        "less": "subtle",
+        "quiet": "subtle",
+        "normal": "normal",
+        "on": "normal",
+        "enabled": "normal",
+        "true": "normal",
+    }
+    if value in aliases:
+        return aliases[value]
+    if enabled is False:
+        return "off"
+    return "normal"
 
 
 def _public_review_highlights(previous_version: dict | None, reviewed_version: dict | None) -> list[str]:

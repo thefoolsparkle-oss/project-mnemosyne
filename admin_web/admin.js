@@ -10,6 +10,8 @@ let state = {
   selectedPersonaId: null,
   review: null,
   traces: [],
+  expressionUsage: null,
+  expressionAssets: [],
   revisions: [],
   growth: null,
   versions: [],
@@ -113,15 +115,19 @@ async function loadReview() {
   if (!state.selectedUserId || !state.selectedPersonaId) {
     state.review = null;
     state.traces = [];
+    state.expressionUsage = null;
+    state.expressionAssets = [];
     state.revisions = [];
     state.growth = null;
     state.versions = [];
     state.llmRoutes = null;
     return;
   }
-  const [data, traceData, revisionData, growthData, versionData, evalData, llmData, routeData] = await Promise.all([
+  const [data, traceData, expressionData, assetData, revisionData, growthData, versionData, evalData, llmData, routeData] = await Promise.all([
     api(`/api/admin/memory/review?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}&include_history=true`),
     api(`/api/admin/chat-context-traces?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}&limit=6`),
+    api(`/api/admin/expression-usage?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}&limit=12`),
+    api("/api/admin/expression-assets"),
     api(`/api/admin/persona-revisions?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}&limit=8`),
     api(`/api/admin/persona-growth?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}`),
     api(`/api/admin/persona-versions?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}&limit=10`),
@@ -131,6 +137,8 @@ async function loadReview() {
   ]);
   state.review = data.review;
   state.traces = traceData.traces;
+  state.expressionUsage = expressionData;
+  state.expressionAssets = assetData.assets || [];
   state.revisions = revisionData.suggestions;
   state.growth = growthData;
   state.versions = versionData.versions;
@@ -290,9 +298,131 @@ function renderReview() {
     card("摘要", renderLines((review.summaries || []).map((item) => item.text))),
     card("会话滚动摘要", renderConversationSummaries(review.conversation_summaries || []), "wide"),
     card("人格调整建议", renderRevisionPanel(), "wide"),
+    card("轻表达使用", renderExpressionUsage(state.expressionUsage), "wide"),
     card("最近注入上下文", renderTraceList(state.traces || []), "wide"),
     card("当前事实", renderMemoryList(review.facts || []), "wide"),
     card("当前关系", renderMemoryList(review.relations || []), "wide"),
+  ]);
+}
+
+function renderExpressionUsage(data) {
+  if (!data) return h("p", { class: "muted", text: "暂无。" });
+  const preference = data.preference || {};
+  const assets = Array.isArray(state.expressionAssets) ? state.expressionAssets : [];
+  const modeLabel = {
+    off: "关闭",
+    subtle: "克制",
+    normal: "正常",
+  }[preference.mode] || "正常";
+  const counts = Array.isArray(data.counts) ? data.counts : [];
+  const recent = Array.isArray(data.recent) ? data.recent : [];
+  return h("div", { class: "expression-usage-panel" }, [
+    h("div", { class: "expression-usage-head" }, [
+      h("strong", { text: `当前模式：${modeLabel}` }),
+      h("small", { text: preference.explicit ? "用户已显式设置" : "默认" }),
+    ]),
+    assets.length
+      ? h("div", { class: "expression-asset-catalog" }, assets.map(renderExpressionAsset))
+      : null,
+    counts.length
+      ? h("div", { class: "expression-usage-tags" }, counts.slice(0, 8).map((item) => h("span", {
+        class: `expression-usage-tag ${item.asset_enabled === false ? "disabled" : "enabled"} ${item.risk_level || "low"}`,
+        text: `${item.display_text || item.tag} × ${item.count}`,
+      })))
+      : h("p", { class: "muted", text: "最近还没有展示轻表达。" }),
+    recent.length
+      ? h("div", { class: "expression-usage-list" }, recent.slice(0, 8).map(renderExpressionUsageItem))
+      : null,
+  ]);
+}
+
+function renderExpressionAsset(asset) {
+  const enabled = asset.enabled !== false;
+  return h("article", { class: `expression-asset-item ${asset.expression_type || "gesture"} ${enabled ? "enabled" : "disabled"}` }, [
+    h("span", { class: "expression-asset-icon", text: asset.icon || "" }),
+    h("span", {}, [
+      h("strong", { text: asset.display_text || asset.label || "" }),
+      h("small", { text: `${asset.expression_type || ""} / ${asset.group || "general"} / 强度 ${asset.intensity || 1} / ${enabled ? "启用" : "禁用"}` }),
+    ]),
+    h("button", {
+      type: "button",
+      class: enabled ? "ghost compact" : "compact",
+      text: enabled ? "禁用" : "启用",
+      onclick: () => toggleExpressionAsset(asset),
+    }),
+    h("button", {
+      type: "button",
+      class: "ghost compact",
+      text: "备注",
+      onclick: () => editExpressionAssetNote(asset),
+    }),
+    h("p", { text: asset.description || "" }),
+    h("small", { class: `expression-asset-risk ${asset.risk_level || "low"}`, text: `风险：${asset.risk_level || "low"}` }),
+    asset.admin_note ? h("small", { class: "expression-asset-note", text: `备注：${asset.admin_note}` }) : null,
+  ]);
+}
+
+async function toggleExpressionAsset(asset) {
+  state.error = "";
+  try {
+    const data = await api(
+      `/api/admin/expression-assets/${encodeURIComponent(asset.expression_type)}/${encodeURIComponent(asset.label)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          enabled: asset.enabled === false,
+          admin_note: asset.enabled === false ? "管理台重新启用" : "管理台禁用",
+        }),
+      }
+    );
+    state.expressionAssets = data.assets || [];
+    await loadReview();
+  } catch (err) {
+    state.error = err.message;
+  }
+  render();
+}
+
+async function editExpressionAssetNote(asset) {
+  const note = window.prompt("表达资源备注", asset.admin_note || "");
+  if (note === null) return;
+  state.error = "";
+  try {
+    const data = await api(
+      `/api/admin/expression-assets/${encodeURIComponent(asset.expression_type)}/${encodeURIComponent(asset.label)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          enabled: asset.enabled !== false,
+          admin_note: note,
+        }),
+      }
+    );
+    state.expressionAssets = data.assets || [];
+    await loadReview();
+  } catch (err) {
+    state.error = err.message;
+  }
+  render();
+}
+
+function renderExpressionUsageItem(item) {
+  const scope = item.scope === "group" ? "群聊" : "单聊";
+  const enabled = item.asset_enabled !== false;
+  const status = enabled ? "启用" : "已禁用";
+  const label = item.display_text || item.label || "";
+  const meta = `${scope} / ${item.persona_name || "TA"} / ${item.conversation_title || ""}`;
+  return h("article", { class: "expression-usage-item" }, [
+    h("div", { class: "memory-title" }, [
+      h("strong", { text: `${item.icon || ""} ${label}`.trim() }),
+      h("small", { text: meta }),
+    ]),
+    h("div", { class: "expression-usage-meta" }, [
+      h("span", { class: `expression-asset-risk ${item.risk_level || "unknown"}`, text: `风险：${item.risk_level || "unknown"}` }),
+      h("span", { text: `分组：${item.group || "unknown"}` }),
+      h("span", { class: enabled ? "asset-enabled" : "asset-disabled", text: status }),
+    ]),
+    h("p", { text: item.content || "" }),
   ]);
 }
 

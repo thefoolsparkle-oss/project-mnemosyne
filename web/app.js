@@ -39,6 +39,7 @@ let state = {
   user: null,
   profile: null,
   options: null,
+  expressionAssets: [],
   personas: [],
   deletedPersonas: [],
   personaGrowth: {},
@@ -267,8 +268,9 @@ function renderAuth(mode) {
 }
 
 async function loadMainData({ openLatest = false } = {}) {
-  const [options, personas, deletedPersonas, conversations, archivedConversations, groupConversations, archivedGroupConversations] = await Promise.all([
+  const [options, expressionAssets, personas, deletedPersonas, conversations, archivedConversations, groupConversations, archivedGroupConversations] = await Promise.all([
     api("/api/persona-options"),
+    api("/api/expression-assets").catch(() => ({ assets: [] })),
     api("/api/personas"),
     api("/api/personas/deleted"),
     api("/api/conversations?status=active"),
@@ -277,6 +279,7 @@ async function loadMainData({ openLatest = false } = {}) {
     api("/api/group-conversations?status=archived"),
   ]);
   state.options = options.options;
+  state.expressionAssets = expressionAssets.assets || [];
   state.personas = personas.personas;
   state.deletedPersonas = deletedPersonas.personas;
   state.conversations = conversations.conversations;
@@ -1758,6 +1761,7 @@ function renderPersonaRail() {
       ]), 
       detailLine("说话方式", persona.speaking_style || "会在对话中逐步稳定"),
       detailLine("摘要", persona.summary || "还在形成中"),
+      renderPersonaExpressionPreference(persona),
       renderPersonaGrowth(persona),
       h("details", { class: "persona-more-details" }, [
         h("summary", { text: "更多资料" }),
@@ -1768,6 +1772,78 @@ function renderPersonaRail() {
         detailLine("成长方向", persona.growth_notes || profileList(persona.psychological_profile?.growth_direction) || "由聊天、记忆和关系状态逐步推动。"),
       ]),
     ]),
+  ]);
+}
+
+function expressionPreferenceEnabled(persona) {
+  return persona?.expression_preference?.enabled !== false;
+}
+
+function expressionPreferenceMode(persona) {
+  if (!expressionPreferenceEnabled(persona)) return "off";
+  return persona?.expression_preference?.mode || "normal";
+}
+
+function applyPersonaExpressionPreference(personaId, preference) {
+  const update = (persona) => (
+    Number(persona.id) === Number(personaId)
+      ? { ...persona, expression_preference: preference }
+      : persona
+  );
+  state.personas = state.personas.map(update);
+  if (state.activePersona && Number(state.activePersona.id) === Number(personaId)) {
+    state.activePersona = update(state.activePersona);
+  }
+}
+
+function renderPersonaExpressionPreference(persona) {
+  const mode = expressionPreferenceMode(persona);
+  const enabled = mode !== "off";
+  const status = h("small", { class: "save-status" });
+  const modeCopy = {
+    off: "已关闭：聊天回复不会再显示轻表达标签。",
+    subtle: "克制显示：只在明显需要承接情绪时出现。",
+    normal: "正常显示：合适时显示微笑、轻声、点头这类克制提示。",
+  };
+  const options = [
+    ["off", "关闭"],
+    ["subtle", "克制"],
+    ["normal", "正常"],
+  ];
+  return h("section", { class: `persona-expression-card ${enabled ? "enabled" : "disabled"}` }, [
+    h("div", {}, [
+      h("strong", { text: "轻表达" }),
+      h("p", {
+        text: modeCopy[mode] || modeCopy.normal,
+      }),
+    ]),
+    h("div", { class: "segmented-control expression-mode-control" }, options.map(([value, label]) => h("button", {
+      type: "button",
+      class: value === mode ? "active" : "",
+      text: label,
+      disabled: value === mode ? "disabled" : null,
+      onclick: async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        status.textContent = "正在保存...";
+        try {
+          const data = await api(`/api/personas/${persona.id}/expression-preference`, {
+            method: "PATCH",
+            body: JSON.stringify({ mode: value }),
+          });
+          applyPersonaExpressionPreference(persona.id, data.expression_preference || {
+            enabled: value !== "off",
+            mode: value,
+            explicit: true,
+          });
+          renderShell();
+        } catch (err) {
+          button.disabled = false;
+          status.textContent = err.message;
+        }
+      },
+    }))),
+    status,
   ]);
 }
 
@@ -2849,6 +2925,9 @@ function renderGroupMessage(message) {
     h("div", { class: "message-stack" }, [
       !isUser && !isNotice ? h("small", { class: "group-speaker-name", text: speakerName }) : null,
       h("div", { class: `bubble ${message.status || ""}` }, [content]),
+      !isUser && !isNotice && Array.isArray(message.expressions) && message.expressions.length
+        ? renderExpressionStrip(message.expressions)
+        : null,
       h("div", { class: "message-meta" }, [
         h("small", { class: "message-time", text: formatMessageTime(message.created_at) }),
         h("button", {
@@ -3008,8 +3087,32 @@ function splitLongSegment(text, maxLength) {
 
 function renderExpressionStrip(expressions) {
   return h("div", { class: "expression-strip" }, expressions.slice(0, 3).map((item) => (
-    h("span", { class: `expression-pill ${item.expression_type || item.type || "gesture"}`, text: item.label || item.source_text || "" })
+    renderExpressionPill(item)
   )));
+}
+
+function renderExpressionPill(item) {
+  const asset = expressionAssetFor(item);
+  const type = asset?.expression_type || item.expression_type || item.type || "gesture";
+  const label = asset?.display_text || item.label || item.source_text || "";
+  const icon = asset?.icon || "";
+  const assetKind = asset?.asset_kind || "text_badge";
+  const intensity = asset?.intensity ? `intensity-${asset.intensity}` : "intensity-1";
+  return h("span", {
+    class: `expression-pill ${type} ${assetKind} ${intensity}`,
+    title: asset?.description || label,
+  }, [
+    icon ? h("span", { class: "expression-icon", text: icon }) : null,
+    h("span", { text: label }),
+  ]);
+}
+
+function expressionAssetFor(item) {
+  const type = String(item.expression_type || item.type || "").trim();
+  const label = String(item.label || "").trim();
+  return (state.expressionAssets || []).find((asset) => (
+    String(asset.expression_type || "") === type && String(asset.label || "") === label
+  ));
 }
 
 function replaceLocalMessage(localId, replacement) {
@@ -3150,6 +3253,7 @@ function resetClientState() {
     user: null,
     profile: null,
     options: null,
+    expressionAssets: [],
     personas: [],
     deletedPersonas: [],
     personaGrowth: {},

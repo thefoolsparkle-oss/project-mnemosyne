@@ -62,6 +62,82 @@ def disable_chat_side_effects(chat) -> None:
 
 
 def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id: int) -> None:
+    assets = server.expression_assets({"id": user_id})["assets"]
+    assert {item["label"] for item in assets} >= {"微笑", "轻笑", "担心", "轻声", "停顿", "点头"}
+    assert chat.STRUCTURED_EXPRESSION_LABELS["mood"] >= {"微笑", "轻笑", "担心"}
+    assert all(item["asset_kind"] == "text_badge" for item in assets)
+    assert all("admin_note" not in item for item in assets)
+    smile_asset = next(item for item in assets if item["label"] == "微笑")
+    concern_asset = next(item for item in assets if item["label"] == "担心")
+    assert smile_asset["prompt_hint"]
+    assert smile_asset["group"] == "warmth"
+    assert smile_asset["risk_level"] == "low"
+    assert concern_asset["intensity"] == 2
+    assert concern_asset["risk_level"] == "medium"
+    assert "[[expression:mood:担心]]" in chat.CHAT_RENDERING_RULES
+    assert concern_asset["prompt_hint"] in chat.CHAT_RENDERING_RULES
+    disabled_asset = server.admin_update_expression_asset(
+        "mood",
+        "担心",
+        server.ExpressionAssetUpdateRequest(enabled=False, admin_note="phase3 test disable"),
+        {"id": user_id, "role": "admin"},
+    )["asset"]
+    assert disabled_asset["enabled"] is False
+    public_assets = server.expression_assets({"id": user_id})["assets"]
+    assert "担心" not in {item["label"] for item in public_assets}
+    admin_assets = server.admin_expression_assets({"id": user_id, "role": "admin"})["assets"]
+    admin_concern = next(item for item in admin_assets if item["label"] == "担心")
+    assert admin_concern["enabled"] is False
+    assert admin_concern["admin_note"] == "phase3 test disable"
+    assert "[[expression:mood:担心]]" not in chat.chat_rendering_rules_prompt()
+    disabled_direct = chat._extract_reply_presentation("我有点担心。[[expression:mood:担心]]")
+    assert disabled_direct["content"] == "我有点担心。"
+    assert disabled_direct["expressions"] == []
+    restored_asset = server.admin_update_expression_asset(
+        "mood",
+        "担心",
+        server.ExpressionAssetUpdateRequest(enabled=True, admin_note="phase3 test restore"),
+        {"id": user_id, "role": "admin"},
+    )["asset"]
+    assert restored_asset["enabled"] is True
+    assert restored_asset["admin_note"] == "phase3 test restore"
+    assert "[[expression:mood:担心]]" in chat.chat_rendering_rules_prompt()
+    try:
+        server.admin_update_expression_asset(
+            "mood",
+            "不存在",
+            server.ExpressionAssetUpdateRequest(enabled=False, admin_note="phase3 unknown"),
+            {"id": user_id, "role": "admin"},
+        )
+    except Exception as exc:
+        assert getattr(exc, "status_code", None) == 404
+    else:
+        assert False, "unknown expression asset should return 404"
+    risk_policy = {"suppress_all": False, "recent_labels": ["微笑"]}
+    assert chat._apply_expression_policy(
+        [{"type": "mood", "label": "担心", "source_text": "[[expression:mood:担心]]"}],
+        risk_policy,
+    ) == []
+    assert chat._apply_expression_policy(
+        [{"type": "gesture", "label": "点头", "source_text": "[[expression:gesture:点头]]"}],
+        risk_policy,
+    )[0]["label"] == "点头"
+    server.admin_update_expression_asset(
+        "mood",
+        "轻笑",
+        server.ExpressionAssetUpdateRequest(enabled=False, admin_note="phase3 fallback disable"),
+        {"id": user_id, "role": "admin"},
+    )
+    disabled_fallback = chat._extract_reply_presentation("（轻笑）还在呢。")
+    assert disabled_fallback["content"] == "还在呢。"
+    assert disabled_fallback["expressions"] == []
+    server.admin_update_expression_asset(
+        "mood",
+        "轻笑",
+        server.ExpressionAssetUpdateRequest(enabled=True, admin_note="phase3 fallback restore"),
+        {"id": user_id, "role": "admin"},
+    )
+
     direct = chat._extract_reply_presentation("先缓一缓。[[expression:mood:微笑]]")
     assert direct["content"] == "先缓一缓。"
     assert direct["expressions"] == [
@@ -97,6 +173,7 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     prompt = "\n".join(str(item.get("content") or "") for item in captured["messages"])
     assert "[[expression:mood:微笑]]" in prompt
     assert "至多一个程序标签" in prompt
+    assert "轻表达资源目录" in prompt
     assert "近期没有已展示的提示" in prompt
 
     loaded = server.conversation_messages(conversation_id, {"id": user_id})["messages"]
@@ -104,6 +181,36 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     assert assistant["role"] == "assistant" and assistant["content"] == "先坐一会儿。"
     assert assistant["expressions"][0]["expression_type"] == "tone"
     assert assistant["expressions"][0]["label"] == "轻声"
+    server.admin_update_expression_asset(
+        "tone",
+        "轻声",
+        server.ExpressionAssetUpdateRequest(enabled=False, admin_note="phase3 hide history"),
+        {"id": user_id, "role": "admin"},
+    )
+    hidden_loaded = server.conversation_messages(conversation_id, {"id": user_id})["messages"]
+    assert hidden_loaded[-1]["content"] == "先坐一会儿。"
+    assert hidden_loaded[-1]["expressions"] == []
+    usage = server.admin_expression_usage(
+        {"id": user_id, "role": "admin"},
+        target_user_id=user_id,
+        persona_id=persona_id,
+        limit=8,
+    )
+    hidden_usage_item = next(item for item in usage["recent"] if item["label"] == "轻声")
+    assert hidden_usage_item["asset_enabled"] is False
+    assert hidden_usage_item["asset_known"] is True
+    assert hidden_usage_item["display_text"] == "轻声"
+    assert hidden_usage_item["risk_level"] == "low"
+    assert hidden_usage_item["group"] == "support"
+    hidden_count = next(item for item in usage["counts"] if item["tag"] == "tone:轻声")
+    assert hidden_count["asset_enabled"] is False
+    assert hidden_count["display_text"] == "轻声"
+    server.admin_update_expression_asset(
+        "tone",
+        "轻声",
+        server.ExpressionAssetUpdateRequest(enabled=True, admin_note="phase3 restore history"),
+        {"id": user_id, "role": "admin"},
+    )
 
     captured.clear()
     chat.call_llm_api = lambda messages, task="chat": (
@@ -147,7 +254,66 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     assert distinct["expressions"][0]["label"] == "微笑"
 
     assert chat._expression_preference_intent("以后别发表情了") == "disable"
+    assert chat._expression_preference_intent("表情少一点") == "subtle"
     assert chat._expression_preference_intent("现在可以发表情了") == "enable"
+
+    listed = server.personas({"id": user_id})["personas"][0]
+    assert listed["expression_preference"] == {"enabled": True, "mode": "normal", "explicit": False}
+    profile_subtle = server.update_persona_expression_preference(
+        persona_id,
+        server.ExpressionPreferenceUpdateRequest(mode="subtle"),
+        {"id": user_id},
+    )
+    assert profile_subtle["expression_preference"]["enabled"] is True
+    assert profile_subtle["expression_preference"]["mode"] == "subtle"
+    assert profile_subtle["expression_preference"]["explicit"] is True
+    policy = chat._recent_expression_policy(user_id, persona_id, conversation_id)
+    assert policy["expression_preference"]["mode"] == "subtle"
+    assert policy["subtle_mode"] is True
+    assert policy["suppress_all"] is True
+    assert "用户选择了克制轻表达" in chat._expression_policy_prompt(policy)
+    with database.get_db() as db:
+        db.execute(
+            "DELETE FROM message_expressions WHERE user_id = ? AND persona_id = ? AND conversation_id = ?",
+            (user_id, persona_id, conversation_id),
+        )
+    policy = chat._recent_expression_policy(user_id, persona_id, conversation_id)
+    assert policy["subtle_mode"] is True
+    assert policy["suppress_all"] is False
+    assert "普通闲聊不要添加" in chat._expression_policy_prompt(policy)
+    profile_disabled = server.update_persona_expression_preference(
+        persona_id,
+        server.ExpressionPreferenceUpdateRequest(mode="off"),
+        {"id": user_id},
+    )
+    assert profile_disabled["expression_preference"]["enabled"] is False
+    assert profile_disabled["expression_preference"]["mode"] == "off"
+    assert profile_disabled["expression_preference"]["explicit"] is True
+    detail = server.persona_detail(persona_id, {"id": user_id})["persona"]
+    assert detail["expression_preference"]["enabled"] is False
+    assert detail["expression_preference"]["mode"] == "off"
+    with database.get_db() as db:
+        row = db.execute(
+            "SELECT enabled, mode, source_message_id FROM expression_preferences WHERE user_id = ? AND persona_id = ?",
+            (user_id, persona_id),
+        ).fetchone()
+    assert int(row["enabled"]) == 0
+    assert row["mode"] == "off"
+    assert row["source_message_id"] is None
+    policy = chat._recent_expression_policy(user_id, persona_id, conversation_id)
+    assert int(policy["expression_preference"]["enabled"]) == 0
+    profile_enabled = server.update_persona_expression_preference(
+        persona_id,
+        server.ExpressionPreferenceUpdateRequest(mode="normal"),
+        {"id": user_id},
+    )
+    assert profile_enabled["expression_preference"]["enabled"] is True
+    assert profile_enabled["expression_preference"]["mode"] == "normal"
+    listed = server.personas({"id": user_id})["personas"][0]
+    assert listed["expression_preference"] == {"enabled": True, "mode": "normal", "explicit": True}
+    policy = chat._recent_expression_policy(user_id, persona_id, conversation_id)
+    assert int(policy["expression_preference"]["enabled"]) == 1
+
     smile_label = "微笑"
     nod_label = "点头"
 
@@ -176,19 +342,43 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
 
     captured.clear()
     chat.call_llm_api = lambda messages, task="chat": (
+        captured.setdefault("messages", messages) and f"嗯。[[expression:mood:{smile_label}]]"
+    )
+    subtle = chat.db_chat(
+        user_id,
+        persona_id,
+        "表情少一点。",
+        conversation_id=conversation_id,
+        client_message_id="phase3-expression-subtle",
+    )
+    assert subtle["reply"] == "嗯。"
+    assert subtle["expressions"][0]["label"] == smile_label
+    prompt = "\n".join(str(item.get("content") or "") for item in captured["messages"])
+    assert "用户选择了克制轻表达" in prompt
+    with database.get_db() as db:
+        row = db.execute(
+            "SELECT enabled, mode, source_message_id FROM expression_preferences WHERE user_id = ? AND persona_id = ?",
+            (user_id, persona_id),
+        ).fetchone()
+    assert int(row["enabled"]) == 1
+    assert row["mode"] == "subtle"
+    assert int(row["source_message_id"]) == subtle["user_message_id"]
+
+    captured.clear()
+    chat.call_llm_api = lambda messages, task="chat": (
         captured.setdefault("messages", messages) and f"还在。[[expression:mood:{smile_label}]]"
     )
-    disabled_next = chat.db_chat(
+    subtle_next = chat.db_chat(
         user_id,
         persona_id,
         "还在吗？",
         conversation_id=conversation_id,
         client_message_id="phase3-expression-disabled-next",
     )
-    assert disabled_next["reply"] == "还在。"
-    assert disabled_next["expressions"] == []
+    assert subtle_next["reply"] == "还在。"
+    assert subtle_next["expressions"] == []
     prompt = "\n".join(str(item.get("content") or "") for item in captured["messages"])
-    assert "explicitly turned off expression labels" in prompt
+    assert "用户选择了克制轻表达" in prompt
 
     captured.clear()
     chat.call_llm_api = lambda messages, task="chat": (
@@ -207,10 +397,11 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     assert "explicitly turned off expression labels" not in prompt
     with database.get_db() as db:
         row = db.execute(
-            "SELECT enabled, source_message_id FROM expression_preferences WHERE user_id = ? AND persona_id = ?",
+            "SELECT enabled, mode, source_message_id FROM expression_preferences WHERE user_id = ? AND persona_id = ?",
             (user_id, persona_id),
         ).fetchone()
     assert int(row["enabled"]) == 1
+    assert row["mode"] == "normal"
     assert int(row["source_message_id"]) == enabled["user_message_id"]
 
 

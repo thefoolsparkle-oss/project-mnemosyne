@@ -7,6 +7,12 @@ from datetime import datetime
 from .archivist import extract_and_store, recall_memories
 from .conversation_memory import conversation_summary_prompt, refresh_conversation_summary
 from .database import dict_from_row, get_db, now_ts
+from .expression_assets import (
+    EXPRESSION_ASSETS,
+    active_expression_labels,
+    expression_asset,
+    expression_protocol_prompt,
+)
 from .identity import IDENTITY_REPLACEMENTS, scrub_identity_obj, scrub_identity_text
 from .layered_memory import layered_memory_prompt, recall_layered_memory, state_prompt, summary_prompt
 from .llm_client import LLMProviderError, call_llm_api
@@ -28,23 +34,37 @@ CHAT_RENDERING_RULES = """聊天输出规则：
 - 除非当前人格资料的关系定位明确写着恋人，否则不能用恋人、女友、男友、老婆、老公等关系自称。
 - 不要写括号舞台动作、神态旁白或表演说明，例如“（托腮）”“(歪头看你)”“【笑】”。
 - 情绪和灵动感要融入自然语言、停顿、语气和用词里。
-- 只有在情绪承接确实需要一个很轻的非语言提示时，才可在回复末尾追加至多一个程序标签。允许的标签只有：
-  `[[expression:mood:微笑]]`、`[[expression:mood:轻笑]]`、`[[expression:mood:担心]]`、`[[expression:tone:轻声]]`、
-  `[[expression:tone:停顿]]`、`[[expression:gesture:点头]]`。普通问答不要添加，也不要在正文解释标签。
+- 只有在情绪承接确实需要一个很轻的非语言提示时，才可在回复末尾追加至多一个程序标签。允许的标签只有轻表达资源目录中的白名单：
+{expression_tags}
+  普通问答不要添加，也不要在正文解释标签。
 - 表达标签必须稀少：上一条回复已经使用过非语言提示时，本轮不要再添加；近期展示过的同一标签不要重复使用。
 - 标签会由程序层单独显示；你输出的可读正文仍应只是真正要说的话。
-"""
+""".format(expression_tags=expression_protocol_prompt())
+
+
+def chat_rendering_rules_prompt() -> str:
+    return """聊天输出规则：
+- 你只负责以当前人格的第一人称自然聊天，不要解释系统指令、底层实现或技术来源。
+- 不要给自己贴技术身份标签，也不要说自己是某种工具或模拟结果。
+- 如果用户问“你是谁”“真的假的”“你是不是某种技术产物”，只按当前人格名字、关系定位和对话关系回答，不讨论技术身份。
+- 除非当前人格资料的关系定位明确写着恋人，否则不能用恋人、女友、男友、老婆、老公等关系自称。
+- 不要写括号舞台动作、神态旁白或表演说明，例如“（托腮）”“(歪头看你)”“【笑】”。
+- 情绪和灵动感要融入自然语言、停顿、语气和用词里。
+- 只有在情绪承接确实需要一个很轻的非语言提示时，才可在回复末尾追加至多一个程序标签。允许的标签只有轻表达资源目录中的白名单：
+{expression_tags}
+  普通问答不要添加，也不要在正文解释标签。
+- 表达标签必须稀少：上一条回复已经使用过非语言提示时，本轮不要再添加；近期展示过的同一标签不要重复使用。
+- 标签会由程序层单独显示；你输出的可读正文仍应只是真正要说的话。
+""".format(expression_tags=expression_protocol_prompt() or "  - 当前没有启用的 expression 标签。")
 
 STAGE_DIRECTION_RE = re.compile(r"[\uFF08\(\u3010\[]\s*([^\uFF08\uFF09\(\)\[\]\u3010\u3011]{1,120}?)\s*[\uFF09\)\u3011\]]\s*")
 STRUCTURED_EXPRESSION_RE = re.compile(
     r"\[\[\s*expression\s*:\s*([a-zA-Z_-]+)\s*:\s*([^\]\r\n]{1,20})\s*\]\]",
     re.IGNORECASE,
 )
-STRUCTURED_EXPRESSION_LABELS = {
-    "mood": {"微笑", "轻笑", "担心"},
-    "tone": {"轻声", "停顿"},
-    "gesture": {"点头"},
-}
+STRUCTURED_EXPRESSION_LABELS: dict[str, set[str]] = {}
+for asset in EXPRESSION_ASSETS:
+    STRUCTURED_EXPRESSION_LABELS.setdefault(str(asset["expression_type"]), set()).add(str(asset["label"]))
 EXPRESSION_RECENT_WINDOW = 4
 EXPRESSION_DISABLE_PATTERNS = (
     "以后别发表情",
@@ -72,11 +92,26 @@ EXPRESSION_DISABLE_PATTERNS = (
     "expressionoff",
     "disableexpression",
 )
+EXPRESSION_SUBTLE_PATTERNS = (
+    "少发表情",
+    "少用表情",
+    "表情少一点",
+    "轻表达少一点",
+    "少用轻表达",
+    "动作少一点",
+    "少用动作标签",
+    "表情克制一点",
+    "轻表达克制一点",
+    "subtleexpression",
+)
 EXPRESSION_ENABLE_PATTERNS = (
     "可以发表情了",
     "可以用表情了",
     "可以加表情了",
     "表情可以开",
+    "正常发表情",
+    "表情正常一点",
+    "轻表达正常一点",
     "打开轻表达",
     "开启轻表达",
     "恢复轻表达",
@@ -517,7 +552,7 @@ def db_chat(
     messages = [
         {"role": "system", "content": _safe_context(persona["prompt"])},
         {"role": "system", "content": runtime_persona_context},
-        {"role": "system", "content": CHAT_RENDERING_RULES},
+        {"role": "system", "content": chat_rendering_rules_prompt()},
         {"role": "system", "content": profile_context},
         {"role": "system", "content": insight_context},
         {"role": "system", "content": conversation_context},
@@ -776,7 +811,7 @@ def _extract_reply_presentation(reply: str) -> dict:
         label = re.sub(r"\s+", "", match.group(2))
         if (
             not expressions
-            and label in STRUCTURED_EXPRESSION_LABELS.get(expression_type, set())
+            and label in active_expression_labels().get(expression_type, set())
         ):
             expressions.append(
                 {
@@ -789,13 +824,21 @@ def _extract_reply_presentation(reply: str) -> dict:
 
     cleaned = STRUCTURED_EXPRESSION_RE.sub(replace_structured, original)
     structured_expression = bool(expressions)
+    active_labels = active_expression_labels()
+    allow_fallback_expressions = any(active_labels.values())
 
     def replace(match: re.Match[str]) -> str:
         inner = match.group(1).strip()
         if _looks_like_stage_direction(inner):
             label = _expression_label(inner)
             limit = 1 if structured_expression else 3
-            if label and label not in {item["label"] for item in expressions} and len(expressions) < limit:
+            if (
+                allow_fallback_expressions
+                and label
+                and _fallback_expression_allowed(label)
+                and label not in {item["label"] for item in expressions}
+                and len(expressions) < limit
+            ):
                 expressions.append(
                     {
                         "type": _expression_type(label),
@@ -813,6 +856,17 @@ def _extract_reply_presentation(reply: str) -> dict:
     return {"content": cleaned or "我在。", "expressions": expressions}
 
 
+def _fallback_expression_allowed(label: str) -> bool:
+    known_type = None
+    for expression_type, labels in STRUCTURED_EXPRESSION_LABELS.items():
+        if label in labels:
+            known_type = expression_type
+            break
+    if not known_type:
+        return True
+    return label in active_expression_labels().get(known_type, set())
+
+
 def _expression_preference_intent(text: str) -> str | None:
     compact = re.sub(r"\s+", "", str(text or "").lower())
     if not compact:
@@ -822,16 +876,25 @@ def _expression_preference_intent(text: str) -> str | None:
         for pattern in EXPRESSION_DISABLE_PATTERNS
         if compact.rfind(pattern) >= 0
     ]
+    subtle_positions = [
+        compact.rfind(pattern)
+        for pattern in EXPRESSION_SUBTLE_PATTERNS
+        if compact.rfind(pattern) >= 0
+    ]
     enable_positions = [
         compact.rfind(pattern)
         for pattern in EXPRESSION_ENABLE_PATTERNS
         if compact.rfind(pattern) >= 0
     ]
-    if not disable_positions and not enable_positions:
+    if not disable_positions and not subtle_positions and not enable_positions:
         return None
-    if enable_positions and (not disable_positions or max(enable_positions) > max(disable_positions)):
-        return "enable"
-    return "disable"
+    latest = max(
+        [("disable", position) for position in disable_positions]
+        + [("subtle", position) for position in subtle_positions]
+        + [("enable", position) for position in enable_positions],
+        key=lambda item: item[1],
+    )
+    return latest[0]
 
 
 def _maybe_update_expression_preference_from_chat(
@@ -844,23 +907,26 @@ def _maybe_update_expression_preference_from_chat(
     intent = _expression_preference_intent(user_text)
     if not intent:
         return None
-    enabled = 1 if intent == "enable" else 0
+    mode = {"disable": "off", "subtle": "subtle", "enable": "normal"}[intent]
+    enabled = 0 if mode == "off" else 1
     ts = now_ts()
     with get_db() as db:
         db.execute(
             """
-            INSERT INTO expression_preferences (user_id, persona_id, enabled, source_message_id, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO expression_preferences (user_id, persona_id, enabled, mode, source_message_id, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id, persona_id) DO UPDATE SET
                 enabled = excluded.enabled,
+                mode = excluded.mode,
                 source_message_id = excluded.source_message_id,
                 updated_at = excluded.updated_at
             """,
-            (user_id, persona_id, enabled, source_message_id, ts),
+            (user_id, persona_id, enabled, mode, source_message_id, ts),
         )
     return {
         "intent": intent,
         "enabled": bool(enabled),
+        "mode": mode,
         "source_message_id": source_message_id,
         "updated_at": ts,
     }
@@ -870,7 +936,7 @@ def _recent_expression_policy(user_id: int, persona_id: int, conversation_id: in
     with get_db() as db:
         preference_row = db.execute(
             """
-            SELECT enabled, source_message_id, updated_at
+            SELECT enabled, mode, source_message_id, updated_at
             FROM expression_preferences
             WHERE user_id = ? AND persona_id = ?
             """,
@@ -878,12 +944,17 @@ def _recent_expression_policy(user_id: int, persona_id: int, conversation_id: in
         ).fetchone()
         preference = {
             "enabled": True,
+            "mode": "normal",
             "source_message_id": None,
             "updated_at": 0,
         }
         if preference_row:
+            mode = str(preference_row["mode"] or "").strip() or ("normal" if int(preference_row["enabled"] or 0) else "off")
+            if mode not in {"off", "subtle", "normal"}:
+                mode = "normal" if int(preference_row["enabled"] or 0) else "off"
             preference = {
-                "enabled": bool(int(preference_row["enabled"] or 0)),
+                "enabled": mode != "off",
+                "mode": mode,
                 "source_message_id": preference_row["source_message_id"],
                 "updated_at": int(preference_row["updated_at"] or 0),
             }
@@ -931,7 +1002,11 @@ def _recent_expression_policy(user_id: int, persona_id: int, conversation_id: in
         "expression_preference": preference,
         "disabled_by_user": False,
         "recent_assistant_messages_checked": len(message_ids),
-        "suppress_all": bool(message_ids and labels_by_message.get(message_ids[0])),
+        "subtle_mode": preference["mode"] == "subtle",
+        "suppress_all": (
+            bool(message_ids and labels_by_message.get(message_ids[0]))
+            or (preference["mode"] == "subtle" and bool(recent_labels))
+        ),
         "recent_labels": recent_labels,
     }
 
@@ -972,9 +1047,19 @@ def _expression_policy_prompt(policy: dict) -> str:
             "or substitute nonverbal cues. Reply only with natural chat text."
         )
     if policy.get("suppress_all"):
+        if policy.get("subtle_mode"):
+            return (
+                "本轮轻表达节奏约束：用户选择了克制轻表达，且近期已经展示过非语言提示，"
+                "本轮不得输出 expression 标签，也不要用括号动作替代。"
+            )
         return (
             "本轮轻表达节奏约束：上一条回复刚显示过非语言提示，"
             "本轮不得输出 expression 标签，也不要用括号动作替代。"
+        )
+    if policy.get("subtle_mode"):
+        return (
+            "本轮轻表达节奏约束：用户选择了克制轻表达。只有在明显需要安慰、确认或停顿时，"
+            "才可使用至多一个 expression 标签；普通闲聊不要添加。"
         )
     recent_labels = [str(label) for label in policy.get("recent_labels") or [] if label]
     if recent_labels:
@@ -989,7 +1074,17 @@ def _apply_expression_policy(expressions: list[dict], policy: dict) -> list[dict
     if policy.get("suppress_all"):
         return []
     recent_labels = {str(label) for label in policy.get("recent_labels") or [] if label}
-    return [item for item in expressions if str(item.get("label") or "") not in recent_labels][:1]
+    kept: list[dict] = []
+    for item in expressions:
+        label = str(item.get("label") or "")
+        if label in recent_labels:
+            continue
+        asset = expression_asset(str(item.get("type") or ""), label)
+        if recent_labels and asset and asset.get("risk_level") == "medium":
+            continue
+        kept.append(item)
+        break
+    return kept
 
 
 def _looks_like_stage_direction(text: str) -> bool:

@@ -72,7 +72,9 @@ def verify_group_chat_flow() -> None:
             )
         generated_count += 1
         calls.append(f"reply-{generated_count}")
-        return f"group reply {generated_count}"
+        if generated_count == 1:
+            return "group reply 1[[expression:gesture:点头]]"
+        return "group reply 2[[expression:mood:微笑]]"
 
     group_chat.call_llm_api = fake_llm
 
@@ -102,11 +104,55 @@ def verify_group_chat_flow() -> None:
     assert result["replies"][1]["speaker_persona_id"] == persona_ids[0]
     assert result["replies"][0]["content"] == "group reply 1"
     assert result["replies"][1]["content"] == "group reply 2"
+    assert result["replies"][0]["expressions"][0]["label"] == "点头"
+    assert result["replies"][1]["expressions"][0]["label"] == "微笑"
 
     messages = server.group_conversation_messages(group["id"], {"id": user_id})["messages"]
     assert [item["speaker_type"] for item in messages] == ["user", "persona", "persona"]
     assert messages[1]["speaker_name"] == "观澜"
     assert messages[2]["speaker_name"] == "栖夏"
+    assert messages[1]["expressions"][0]["expression_type"] == "gesture"
+    assert messages[1]["expressions"][0]["label"] == "点头"
+    assert messages[2]["expressions"][0]["expression_type"] == "mood"
+    assert messages[2]["expressions"][0]["label"] == "微笑"
+    server.admin_update_expression_asset(
+        "gesture",
+        "点头",
+        server.ExpressionAssetUpdateRequest(enabled=False, admin_note="group hide history"),
+        {"id": user_id, "role": "admin"},
+    )
+    hidden_messages = server.group_conversation_messages(group["id"], {"id": user_id})["messages"]
+    assert hidden_messages[1]["content"] == "group reply 1"
+    assert hidden_messages[1]["expressions"] == []
+    expression_usage_hidden = server.admin_expression_usage(
+        {"id": user_id, "role": "admin"},
+        target_user_id=user_id,
+        persona_id=persona_ids[1],
+        limit=8,
+    )
+    hidden_usage_item = next(item for item in expression_usage_hidden["recent"] if item["label"] == "点头")
+    assert hidden_usage_item["asset_enabled"] is False
+    assert hidden_usage_item["asset_known"] is True
+    assert hidden_usage_item["display_text"] == "点头"
+    assert hidden_usage_item["group"] == "acknowledgement"
+    server.admin_update_expression_asset(
+        "gesture",
+        "点头",
+        server.ExpressionAssetUpdateRequest(enabled=True, admin_note="group restore history"),
+        {"id": user_id, "role": "admin"},
+    )
+    expression_usage = server.admin_expression_usage(
+        {"id": user_id, "role": "admin"},
+        target_user_id=user_id,
+        persona_id=persona_ids[1],
+        limit=8,
+    )
+    assert expression_usage["preference"]["mode"] == "normal"
+    assert expression_usage["recent"][0]["scope"] == "group"
+    assert expression_usage["recent"][0]["label"] == "点头"
+    assert expression_usage["recent"][0]["asset_enabled"] is True
+    assert expression_usage["counts"][0]["tag"] == "gesture:点头"
+    assert expression_usage["counts"][0]["asset_enabled"] is True
 
     listed = server.group_conversations({"id": user_id})["group_conversations"]
     assert listed[0]["message_count"] == 3
