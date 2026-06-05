@@ -3,7 +3,7 @@ active_persona: ""
 llm:
   provider: kimi
   model: kimi-k2.6
-  base_url: https://api.moonshot.ai/v1
+  base_url: https://api.moonshot.cn/v1
   api_key_env: MOONSHOT_API_KEY
   temperature: 0.75
 
@@ -11,54 +11,54 @@ llm_routes:
   default:
     provider: kimi
     model: kimi-k2.6
-    base_url: https://api.moonshot.ai/v1
+    base_url: https://api.moonshot.cn/v1
     api_key_env: MOONSHOT_API_KEY
   chat:
     provider: kimi
     model: kimi-k2.6
-    base_url: https://api.moonshot.ai/v1
+    base_url: https://api.moonshot.cn/v1
     api_key_env: MOONSHOT_API_KEY
     temperature: 0.75
   forge:
     provider: kimi
     model: kimi-k2.6
-    base_url: https://api.moonshot.ai/v1
+    base_url: https://api.moonshot.cn/v1
     api_key_env: MOONSHOT_API_KEY
     temperature: 0.7
   namer:
     provider: kimi
     model: kimi-k2.6
-    base_url: https://api.moonshot.ai/v1
+    base_url: https://api.moonshot.cn/v1
     api_key_env: MOONSHOT_API_KEY
     temperature: 0.7
   memory:
     provider: kimi
     model: kimi-k2.6
-    base_url: https://api.moonshot.ai/v1
+    base_url: https://api.moonshot.cn/v1
     api_key_env: MOONSHOT_API_KEY
     temperature: 0.2
   sculptor:
     provider: kimi
     model: kimi-k2.6
-    base_url: https://api.moonshot.ai/v1
+    base_url: https://api.moonshot.cn/v1
     api_key_env: MOONSHOT_API_KEY
     temperature: 0.35
   mirror:
     provider: kimi
     model: kimi-k2.6
-    base_url: https://api.moonshot.ai/v1
+    base_url: https://api.moonshot.cn/v1
     api_key_env: MOONSHOT_API_KEY
     temperature: 0.25
   judge:
     provider: kimi
     model: kimi-k2.6
-    base_url: https://api.moonshot.ai/v1
+    base_url: https://api.moonshot.cn/v1
     api_key_env: MOONSHOT_API_KEY
     temperature: 0.2
   summary:
     provider: kimi
     model: kimi-k2.6
-    base_url: https://api.moonshot.ai/v1
+    base_url: https://api.moonshot.cn/v1
     api_key_env: MOONSHOT_API_KEY
     temperature: 0.25
 

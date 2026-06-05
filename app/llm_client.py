@@ -86,6 +86,7 @@ def _call_chat_completions(
     env_key: str,
     default_base_url: str,
     default_model: str,
+    include_temperature: bool = True,
 ) -> str:
     api_key = _get_env(str(llm_config.get("api_key_env") or env_key))
     if not api_key:
@@ -99,8 +100,9 @@ def _call_chat_completions(
     payload = {
         "model": llm_config.get("model") or default_model,
         "messages": messages,
-        "temperature": float(llm_config.get("temperature", 0.75)),
     }
+    if include_temperature:
+        payload["temperature"] = float(llm_config.get("temperature", 0.75))
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -146,6 +148,7 @@ def _call_kimi(messages: List[Message], llm_config: dict) -> str:
         env_key="MOONSHOT_API_KEY",
         default_base_url="https://api.moonshot.ai/v1",
         default_model="kimi-k2.6",
+        include_temperature=False,
     )
 
 
