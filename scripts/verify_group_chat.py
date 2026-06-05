@@ -196,10 +196,33 @@ def verify_group_chat_flow() -> None:
         {"id": user_id},
     )
     assert fallback_calls == ["router", "reply"]
-    assert fallback["replies"]
-    assert fallback["replies"][0]["speaker_persona_id"] == persona_ids[0]
-    assert "服务现在" not in fallback["replies"][0]["content"]
-    assert fallback["messages"][-1]["speaker_type"] == "persona"
+    assert fallback["degraded"] is True
+    assert fallback["replies"] == []
+    assert fallback["error_message"]
+    assert len(fallback["messages"]) == 1
+    assert fallback["messages"][0]["speaker_type"] == "user"
+
+    route_failure_calls: list[str] = []
+
+    def broken_router(messages, task="chat"):
+        route_failure_calls.append("router")
+        raise LLMProviderError("router outage", status_code=503)
+
+    group_chat.call_llm_api = broken_router
+    route_failed = server.group_chat_endpoint(
+        server.GroupChatRequest(
+            group_conversation_id=group["id"],
+            message="有人接一下吗",
+            client_message_id="group-chat-router-failed",
+        ),
+        {"id": user_id},
+    )
+    assert route_failure_calls == ["router"]
+    assert route_failed["degraded"] is True
+    assert route_failed["route"]["speakers"] == []
+    assert route_failed["replies"] == []
+    assert len(route_failed["messages"]) == 1
+    assert route_failed["messages"][0]["speaker_type"] == "user"
 
     updated = server.patch_group_conversation(
         group["id"],

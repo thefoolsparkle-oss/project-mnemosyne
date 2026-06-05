@@ -268,6 +268,7 @@ def group_chat(
     route = _route_group_turn(user_id, group, members, history, content)
     speaker_ids = [int(item["persona_id"]) for item in route.get("speakers") or []]
     replies: list[dict] = []
+    reply_failures = 0
     for speaker_id in speaker_ids[:MAX_GROUP_SPEAKERS_PER_TURN]:
         persona = _persona_for_user(user_id, speaker_id)
         reply = _generate_group_reply(
@@ -279,14 +280,20 @@ def group_chat(
             persona=persona,
             trigger_message=content,
         )
+        if reply.get("failed"):
+            reply_failures += 1
+            continue
         replies.append(_store_persona_group_reply(user_id, group_conversation_id, persona, reply))
 
+    degraded = bool(route.get("degraded")) or (bool(speaker_ids) and not replies and reply_failures > 0)
     return {
         "group_conversation_id": group_conversation_id,
         "user_message_id": user_message_id,
         "route": route,
         "replies": replies,
         "messages": [*_messages_for_ids(user_id, [user_message_id]), *replies],
+        "degraded": degraded,
+        "error_message": _group_degraded_message(route, reply_failures) if degraded else "",
     }
 
 
@@ -326,8 +333,7 @@ def _route_group_turn(
     try:
         raw = call_llm_api(messages, task="chat")
         parsed = _parse_route_json(raw)
-    except Exception as exc:
-        print("[GroupRouter] fallback:", exc)
+    except Exception:
         route_failed = True
         parsed = {}
     valid_ids = {int(member["persona_id"]) for member in members}
@@ -348,8 +354,8 @@ def _route_group_turn(
             )
         if len(speakers) >= MAX_GROUP_SPEAKERS_PER_TURN:
             break
-    if not speakers and (route_failed or "speakers" not in parsed):
-        speakers = [{"persona_id": _fallback_speaker_id(members), "reason": "fallback_round_robin"}]
+    if route_failed or "speakers" not in parsed:
+        return {"speakers": [], "degraded": True, "reason": "router_unavailable"}
     return {"speakers": speakers}
 
 
@@ -397,20 +403,18 @@ def _generate_group_reply(
     try:
         reply = call_llm_api(messages, task="chat")
     except LLMProviderError:
-        return {"content": _fallback_group_reply(persona, trigger_message), "expressions": []}
+        return {"content": "", "expressions": [], "failed": True}
     presentation = _extract_reply_presentation(reply)
     presentation["expressions"] = _apply_expression_policy(presentation["expressions"], expression_policy)
     return presentation
 
 
-def _fallback_group_reply(persona: dict, trigger_message: str) -> str:
-    name = str(persona.get("name") or "").strip()
-    text = str(trigger_message or "").strip()
-    if len(text) <= 12:
-        return "我在，刚才有点卡住，但我看到你说的了。"
-    if name:
-        return f"我在。刚才有点卡住，{name}先接住这句：我看到你说的了。"
-    return "我在。刚才有点卡住，但我看到你说的了。"
+def _group_degraded_message(route: dict, reply_failures: int) -> str:
+    if route.get("reason") == "router_unavailable":
+        return "群聊调度暂时没有接上，这句话已经留在当前会话里。稍后再试一次。"
+    if reply_failures:
+        return "这轮没人成功接话，这句话已经留在当前会话里。稍后再试一次。"
+    return "群聊暂时没有成功接上，这句话已经留在当前会话里。稍后再试一次。"
 
 
 def _store_persona_group_reply(user_id: int, group_conversation_id: int, persona: dict, presentation: dict) -> dict:

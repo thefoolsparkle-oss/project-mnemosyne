@@ -2737,6 +2737,16 @@ async function sendGroupChatMessage(content) {
     if (stillViewingGroup) {
       state.groupMessages = state.groupMessages.filter((message) => message.client_message_id !== outgoingClientMessageId);
       state.groupMessages.push(...(data.messages || []));
+      if (data.degraded && !(data.replies || []).length) {
+        state.groupMessages.push({
+          speaker_type: "system",
+          role: "notice",
+          content: data.error_message || "这轮群聊暂时没有成功接上。稍后再试一次。",
+          status: "error",
+          local_id: `group-degraded-${Date.now()}`,
+          created_at: nowSeconds(),
+        });
+      }
       await markGroupConversationRead(requestGroupId);
     }
     await loadMainData();
