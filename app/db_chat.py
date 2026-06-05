@@ -10,6 +10,7 @@ from .database import dict_from_row, get_db, now_ts
 from .expression_assets import (
     EXPRESSION_ASSETS,
     active_expression_labels,
+    expression_alias_match,
     expression_asset,
     expression_protocol_prompt,
 )
@@ -37,7 +38,7 @@ CHAT_RENDERING_RULES = """聊天输出规则：
 - 只有在情绪承接确实需要一个很轻的非语言提示时，才可在回复末尾追加至多一个程序标签。允许的标签只有轻表达资源目录中的白名单：
 {expression_tags}
   普通问答不要添加，也不要在正文解释标签。
-- 表达标签必须稀少：上一条回复已经使用过非语言提示时，本轮不要再添加；近期展示过的同一标签不要重复使用。
+- 表达标签必须稀少：上一条回复已经使用过非语言提示时，本轮不要再添加；近期展示过的同一标签不要重复使用；风险为 medium 的标签只在用户情绪明显需要承接时使用。
 - 标签会由程序层单独显示；你输出的可读正文仍应只是真正要说的话。
 """.format(expression_tags=expression_protocol_prompt())
 
@@ -53,7 +54,7 @@ def chat_rendering_rules_prompt() -> str:
 - 只有在情绪承接确实需要一个很轻的非语言提示时，才可在回复末尾追加至多一个程序标签。允许的标签只有轻表达资源目录中的白名单：
 {expression_tags}
   普通问答不要添加，也不要在正文解释标签。
-- 表达标签必须稀少：上一条回复已经使用过非语言提示时，本轮不要再添加；近期展示过的同一标签不要重复使用。
+- 表达标签必须稀少：上一条回复已经使用过非语言提示时，本轮不要再添加；近期展示过的同一标签不要重复使用；风险为 medium 的标签只在用户情绪明显需要承接时使用。
 - 标签会由程序层单独显示；你输出的可读正文仍应只是真正要说的话。
 """.format(expression_tags=expression_protocol_prompt() or "  - 当前没有启用的 expression 标签。")
 
@@ -66,6 +67,7 @@ STRUCTURED_EXPRESSION_LABELS: dict[str, set[str]] = {}
 for asset in EXPRESSION_ASSETS:
     STRUCTURED_EXPRESSION_LABELS.setdefault(str(asset["expression_type"]), set()).add(str(asset["label"]))
 EXPRESSION_RECENT_WINDOW = 4
+EXPRESSION_POLICY_LOOKBACK = 8
 EXPRESSION_DISABLE_PATTERNS = (
     "以后别发表情",
     "以后不要发表情",
@@ -863,7 +865,7 @@ def _fallback_expression_allowed(label: str) -> bool:
             known_type = expression_type
             break
     if not known_type:
-        return True
+        return False
     return label in active_expression_labels().get(known_type, set())
 
 
@@ -974,7 +976,7 @@ def _recent_expression_policy(user_id: int, persona_id: int, conversation_id: in
             ORDER BY id DESC
             LIMIT ?
             """,
-            (user_id, persona_id, conversation_id, EXPRESSION_RECENT_WINDOW),
+            (user_id, persona_id, conversation_id, EXPRESSION_POLICY_LOOKBACK),
         ).fetchall()
         message_ids = [int(row["id"]) for row in message_rows]
         expression_rows = []
@@ -998,6 +1000,10 @@ def _recent_expression_policy(user_id: int, persona_id: int, conversation_id: in
     recent_labels = list(
         dict.fromkeys(label for message_id in message_ids for label in labels_by_message.get(message_id, []))
     )
+    recent_label_distances: dict[str, int] = {}
+    for distance, message_id in enumerate(message_ids):
+        for label in labels_by_message.get(message_id, []):
+            recent_label_distances.setdefault(label, distance)
     return {
         "expression_preference": preference,
         "disabled_by_user": False,
@@ -1008,6 +1014,7 @@ def _recent_expression_policy(user_id: int, persona_id: int, conversation_id: in
             or (preference["mode"] == "subtle" and bool(recent_labels))
         ),
         "recent_labels": recent_labels,
+        "recent_label_distances": recent_label_distances,
     }
 
 
@@ -1074,12 +1081,18 @@ def _apply_expression_policy(expressions: list[dict], policy: dict) -> list[dict
     if policy.get("suppress_all"):
         return []
     recent_labels = {str(label) for label in policy.get("recent_labels") or [] if label}
+    recent_label_distances = {
+        str(label): int(distance)
+        for label, distance in (policy.get("recent_label_distances") or {}).items()
+        if label
+    }
     kept: list[dict] = []
     for item in expressions:
         label = str(item.get("label") or "")
-        if label in recent_labels:
-            continue
         asset = expression_asset(str(item.get("type") or ""), label)
+        cooldown_turns = int((asset or {}).get("cooldown_turns") or EXPRESSION_RECENT_WINDOW)
+        if label in recent_label_distances and recent_label_distances[label] < cooldown_turns:
+            continue
         if recent_labels and asset and asset.get("risk_level") == "medium":
             continue
         kept.append(item)
@@ -1123,6 +1136,9 @@ def _clean_identity_leaks(text: str) -> str:
 
 
 def _expression_label(text: str) -> str:
+    alias = expression_alias_match(text)
+    if alias:
+        return alias["label"]
     compact = re.sub(r"\s+", "", text)
     for word in sorted(STAGE_DIRECTION_WORDS, key=len, reverse=True):
         if word in compact:
@@ -1131,6 +1147,9 @@ def _expression_label(text: str) -> str:
 
 
 def _expression_type(label: str) -> str:
+    for expression_type, labels in active_expression_labels().items():
+        if label in labels:
+            return expression_type
     if label in {"笑", "微笑", "轻笑", "眨眼", "抿嘴", "皱眉"}:
         return "mood"
     if label in {"小声", "轻声", "停顿", "沉默"}:

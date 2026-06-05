@@ -6,7 +6,7 @@ from typing import Any
 
 from .database import dict_from_row, get_db, now_ts
 from .db_chat import (
-    EXPRESSION_RECENT_WINDOW,
+    EXPRESSION_POLICY_LOOKBACK,
     _apply_expression_policy,
     _extract_reply_presentation,
     _expression_policy_prompt,
@@ -18,7 +18,7 @@ from .db_chat import (
 )
 from .expression_assets import active_expression_labels
 from .identity import scrub_identity_text
-from .llm_client import call_llm_api
+from .llm_client import LLMProviderError, call_llm_api
 
 
 MAX_GROUP_MEMBERS = 6
@@ -394,10 +394,23 @@ def _generate_group_reply(
         {"role": "system", "content": _final_persona_lock(persona)},
         {"role": "user", "content": f"Latest user message: {trigger_message}"},
     ]
-    reply = call_llm_api(messages, task="chat")
+    try:
+        reply = call_llm_api(messages, task="chat")
+    except LLMProviderError:
+        return {"content": _fallback_group_reply(persona, trigger_message), "expressions": []}
     presentation = _extract_reply_presentation(reply)
     presentation["expressions"] = _apply_expression_policy(presentation["expressions"], expression_policy)
     return presentation
+
+
+def _fallback_group_reply(persona: dict, trigger_message: str) -> str:
+    name = str(persona.get("name") or "").strip()
+    text = str(trigger_message or "").strip()
+    if len(text) <= 12:
+        return "我在，刚才有点卡住，但我看到你说的了。"
+    if name:
+        return f"我在。刚才有点卡住，{name}先接住这句：我看到你说的了。"
+    return "我在。刚才有点卡住，但我看到你说的了。"
 
 
 def _store_persona_group_reply(user_id: int, group_conversation_id: int, persona: dict, presentation: dict) -> dict:
@@ -548,7 +561,7 @@ def _recent_group_expression_policy(user_id: int, persona_id: int, group_convers
             ORDER BY id DESC
             LIMIT ?
             """,
-            (user_id, persona_id, group_conversation_id, EXPRESSION_RECENT_WINDOW),
+            (user_id, persona_id, group_conversation_id, EXPRESSION_POLICY_LOOKBACK),
         ).fetchall()
         message_ids = [int(row["id"]) for row in message_rows]
         expression_rows = []
@@ -572,6 +585,10 @@ def _recent_group_expression_policy(user_id: int, persona_id: int, group_convers
     recent_labels = list(
         dict.fromkeys(label for message_id in message_ids for label in labels_by_message.get(message_id, []))
     )
+    recent_label_distances: dict[str, int] = {}
+    for distance, message_id in enumerate(message_ids):
+        for label in labels_by_message.get(message_id, []):
+            recent_label_distances.setdefault(label, distance)
     return {
         "expression_preference": preference,
         "disabled_by_user": False,
@@ -582,6 +599,7 @@ def _recent_group_expression_policy(user_id: int, persona_id: int, group_convers
             or (preference["mode"] == "subtle" and bool(recent_labels))
         ),
         "recent_labels": recent_labels,
+        "recent_label_distances": recent_label_distances,
     }
 
 

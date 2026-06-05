@@ -72,10 +72,17 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     assert smile_asset["prompt_hint"]
     assert smile_asset["group"] == "warmth"
     assert smile_asset["risk_level"] == "low"
+    assert "笑一下" in smile_asset["aliases"]
+    assert smile_asset["cooldown_turns"] == 4
     assert concern_asset["intensity"] == 2
     assert concern_asset["risk_level"] == "medium"
+    assert concern_asset["cooldown_turns"] == 8
     assert "[[expression:mood:担心]]" in chat.CHAT_RENDERING_RULES
     assert concern_asset["prompt_hint"] in chat.CHAT_RENDERING_RULES
+    assert "风险：medium" in chat.CHAT_RENDERING_RULES
+    assert "强度：2" in chat.CHAT_RENDERING_RULES
+    assert "冷却：8轮" in chat.CHAT_RENDERING_RULES
+    assert "风险为 medium 的标签" in chat.CHAT_RENDERING_RULES
     disabled_asset = server.admin_update_expression_asset(
         "mood",
         "担心",
@@ -102,6 +109,16 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     assert restored_asset["enabled"] is True
     assert restored_asset["admin_note"] == "phase3 test restore"
     assert "[[expression:mood:担心]]" in chat.chat_rendering_rules_prompt()
+    assert "风险：medium" in chat.chat_rendering_rules_prompt()
+    cooldown_asset = server.admin_update_expression_asset(
+        "gesture",
+        "点头",
+        server.ExpressionAssetUpdateRequest(enabled=True, cooldown_turns=1, admin_note="phase3 cooldown override"),
+        {"id": user_id, "role": "admin"},
+    )["asset"]
+    assert cooldown_asset["cooldown_turns"] == 1
+    assert cooldown_asset["cooldown_turns_override"] == 1
+    assert "冷却：1轮" in chat.chat_rendering_rules_prompt()
     try:
         server.admin_update_expression_asset(
             "mood",
@@ -118,10 +135,30 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
         [{"type": "mood", "label": "担心", "source_text": "[[expression:mood:担心]]"}],
         risk_policy,
     ) == []
+    cooldown_policy = {
+        "suppress_all": False,
+        "recent_labels": ["点头"],
+        "recent_label_distances": {"点头": 0},
+    }
+    assert chat._apply_expression_policy(
+        [{"type": "gesture", "label": "点头", "source_text": "[[expression:gesture:点头]]"}],
+        cooldown_policy,
+    ) == []
+    cooldown_policy["recent_label_distances"] = {"点头": 1}
+    assert chat._apply_expression_policy(
+        [{"type": "gesture", "label": "点头", "source_text": "[[expression:gesture:点头]]"}],
+        cooldown_policy,
+    )[0]["label"] == "点头"
     assert chat._apply_expression_policy(
         [{"type": "gesture", "label": "点头", "source_text": "[[expression:gesture:点头]]"}],
         risk_policy,
     )[0]["label"] == "点头"
+    server.admin_update_expression_asset(
+        "gesture",
+        "点头",
+        server.ExpressionAssetUpdateRequest(enabled=True, cooldown_turns=3, admin_note="phase3 cooldown restore"),
+        {"id": user_id, "role": "admin"},
+    )
     server.admin_update_expression_asset(
         "mood",
         "轻笑",
@@ -131,6 +168,9 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     disabled_fallback = chat._extract_reply_presentation("（轻笑）还在呢。")
     assert disabled_fallback["content"] == "还在呢。"
     assert disabled_fallback["expressions"] == []
+    disabled_alias_fallback = chat._extract_reply_presentation("（偷笑）还在呢。")
+    assert disabled_alias_fallback["content"] == "还在呢。"
+    assert disabled_alias_fallback["expressions"] == []
     server.admin_update_expression_asset(
         "mood",
         "轻笑",
@@ -147,10 +187,17 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     rejected = chat._extract_reply_presentation("知道了。[[expression:mood:大哭]]")
     assert rejected["content"] == "知道了。"
     assert rejected["expressions"] == []
+    rejected_fallback = chat._extract_reply_presentation("（眨眼）知道了。")
+    assert rejected_fallback["content"] == "知道了。"
+    assert rejected_fallback["expressions"] == []
 
     fallback = chat._extract_reply_presentation("（轻笑）还在呢。")
     assert fallback["content"] == "还在呢。"
     assert fallback["expressions"][0]["label"] == "轻笑"
+    alias_fallback = chat._extract_reply_presentation("（轻轻点头）知道了。")
+    assert alias_fallback["content"] == "知道了。"
+    assert alias_fallback["expressions"][0]["type"] == "gesture"
+    assert alias_fallback["expressions"][0]["label"] == "点头"
 
     captured = {}
 
@@ -194,17 +241,26 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
         {"id": user_id, "role": "admin"},
         target_user_id=user_id,
         persona_id=persona_id,
-        limit=8,
+        limit=1,
+        usage_limit=8,
     )
+    assert len(usage["recent"]) == 1
+    assert usage["counted"] == usage["summary"]["window"]
+    assert usage["summary"]["window"] >= 1
+    assert usage["summary"]["single"] >= 1
+    assert usage["summary"]["disabled_asset"] >= 1
+    assert any(item["kind"] == "disabled_asset_history" for item in usage["insights"])
     hidden_usage_item = next(item for item in usage["recent"] if item["label"] == "轻声")
     assert hidden_usage_item["asset_enabled"] is False
     assert hidden_usage_item["asset_known"] is True
     assert hidden_usage_item["display_text"] == "轻声"
     assert hidden_usage_item["risk_level"] == "low"
     assert hidden_usage_item["group"] == "support"
+    assert hidden_usage_item["cooldown_turns"] == 4
     hidden_count = next(item for item in usage["counts"] if item["tag"] == "tone:轻声")
     assert hidden_count["asset_enabled"] is False
     assert hidden_count["display_text"] == "轻声"
+    assert hidden_count["cooldown_turns"] == 4
     server.admin_update_expression_asset(
         "tone",
         "轻声",

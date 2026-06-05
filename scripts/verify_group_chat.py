@@ -51,6 +51,7 @@ def seed_personas() -> tuple[int, list[int]]:
 def verify_group_chat_flow() -> None:
     import app.group_chat as group_chat
     import app.server as server
+    from app.llm_client import LLMProviderError
 
     user_id, persona_ids = seed_personas()
     calls: list[str] = []
@@ -128,13 +129,20 @@ def verify_group_chat_flow() -> None:
         {"id": user_id, "role": "admin"},
         target_user_id=user_id,
         persona_id=persona_ids[1],
-        limit=8,
+        limit=1,
+        usage_limit=8,
     )
+    assert len(expression_usage_hidden["recent"]) == 1
+    assert expression_usage_hidden["counted"] == expression_usage_hidden["summary"]["window"]
+    assert expression_usage_hidden["summary"]["group"] >= 1
+    assert expression_usage_hidden["summary"]["disabled_asset"] >= 1
+    assert any(item["kind"] == "disabled_asset_history" for item in expression_usage_hidden["insights"])
     hidden_usage_item = next(item for item in expression_usage_hidden["recent"] if item["label"] == "点头")
     assert hidden_usage_item["asset_enabled"] is False
     assert hidden_usage_item["asset_known"] is True
     assert hidden_usage_item["display_text"] == "点头"
     assert hidden_usage_item["group"] == "acknowledgement"
+    assert hidden_usage_item["cooldown_turns"] == 3
     server.admin_update_expression_asset(
         "gesture",
         "点头",
@@ -145,14 +153,18 @@ def verify_group_chat_flow() -> None:
         {"id": user_id, "role": "admin"},
         target_user_id=user_id,
         persona_id=persona_ids[1],
-        limit=8,
+        limit=1,
+        usage_limit=8,
     )
     assert expression_usage["preference"]["mode"] == "normal"
+    assert expression_usage["summary"]["group"] >= 1
     assert expression_usage["recent"][0]["scope"] == "group"
     assert expression_usage["recent"][0]["label"] == "点头"
     assert expression_usage["recent"][0]["asset_enabled"] is True
+    assert expression_usage["recent"][0]["cooldown_turns"] == 3
     assert expression_usage["counts"][0]["tag"] == "gesture:点头"
     assert expression_usage["counts"][0]["asset_enabled"] is True
+    assert expression_usage["counts"][0]["cooldown_turns"] == 3
 
     listed = server.group_conversations({"id": user_id})["group_conversations"]
     assert listed[0]["message_count"] == 3
@@ -160,6 +172,34 @@ def verify_group_chat_flow() -> None:
 
     read = server.mark_group_read(group["id"], {"id": user_id})
     assert read["last_read_group_message_id"] == messages[-1]["id"]
+
+    fallback_calls: list[str] = []
+
+    def flaky_llm(messages, task="chat"):
+        joined = "\n".join(str(item.get("content") or "") for item in messages)
+        if "Group Router" in joined:
+            fallback_calls.append("router")
+            return json.dumps(
+                {"speakers": [{"persona_id": persona_ids[0], "reason": "temporary fallback"}]},
+                ensure_ascii=False,
+            )
+        fallback_calls.append("reply")
+        raise LLMProviderError("temporary outage", status_code=503)
+
+    group_chat.call_llm_api = flaky_llm
+    fallback = server.group_chat_endpoint(
+        server.GroupChatRequest(
+            group_conversation_id=group["id"],
+            message="哈喽",
+            client_message_id="group-chat-fallback",
+        ),
+        {"id": user_id},
+    )
+    assert fallback_calls == ["router", "reply"]
+    assert fallback["replies"]
+    assert fallback["replies"][0]["speaker_persona_id"] == persona_ids[0]
+    assert "服务现在" not in fallback["replies"][0]["content"]
+    assert fallback["messages"][-1]["speaker_type"] == "persona"
 
     updated = server.patch_group_conversation(
         group["id"],

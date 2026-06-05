@@ -196,6 +196,7 @@ class ExpressionPreferenceUpdateRequest(BaseModel):
 
 class ExpressionAssetUpdateRequest(BaseModel):
     enabled: bool
+    cooldown_turns: int | None = Field(default=None, ge=0, le=20)
     admin_note: str | None = Field(default="", max_length=500)
 
 
@@ -432,6 +433,7 @@ def admin_update_expression_asset(
             expression_type,
             label,
             enabled=req.enabled,
+            cooldown_turns=req.cooldown_turns,
             admin_note=req.admin_note or "",
             updated_by_user_id=int(admin["id"]),
         )
@@ -536,17 +538,19 @@ def admin_expression_usage(
     target_user_id: int | None = None,
     persona_id: int | None = None,
     limit: int = 12,
+    usage_limit: int = 80,
 ):
     owner_id = _admin_target_user_id(admin, target_user_id)
     _assert_persona_owner(owner_id, persona_id)
     limit = max(1, min(int(limit or 12), 50))
+    usage_limit = max(limit, min(int(usage_limit or 80), 500))
     persona_filter = int(persona_id) if persona_id else None
     params: list[Any] = [owner_id]
     persona_clause = ""
     if persona_filter:
         persona_clause = "AND message_expressions.persona_id = ?"
         params.append(persona_filter)
-    params.append(limit)
+    params.append(usage_limit)
     with get_db() as db:
         preference_row = None
         if persona_filter:
@@ -580,7 +584,7 @@ def admin_expression_usage(
         if persona_filter:
             group_persona_clause = "AND group_message_expressions.persona_id = ?"
             group_params.append(persona_filter)
-        group_params.append(limit)
+        group_params.append(usage_limit)
         group_rows = db.execute(
             f"""
             SELECT group_message_expressions.*, group_messages.content,
@@ -603,11 +607,24 @@ def admin_expression_usage(
         (str(asset.get("expression_type") or ""), str(asset.get("label") or "")): asset
         for asset in expression_assets_public(include_disabled=True, include_admin_metadata=True)
     }
-    recent = [_with_expression_asset_metadata(dict_from_row(row), asset_map) for row in [*single_rows, *group_rows]]
-    recent.sort(key=lambda item: int(item.get("created_at") or 0), reverse=True)
-    recent = recent[:limit]
+    usage_rows = [_with_expression_asset_metadata(dict_from_row(row), asset_map) for row in [*single_rows, *group_rows]]
+    usage_rows.sort(key=lambda item: int(item.get("created_at") or 0), reverse=True)
+    recent = usage_rows[:limit]
     counts: dict[str, dict[str, Any]] = {}
-    for item in recent:
+    summary = {
+        "window": len(usage_rows),
+        "single": 0,
+        "group": 0,
+        "disabled_asset": 0,
+        "medium_risk": 0,
+    }
+    for item in usage_rows:
+        scope = "group" if item.get("scope") == "group" else "single"
+        summary[scope] += 1
+        if item.get("asset_enabled") is False:
+            summary["disabled_asset"] += 1
+        if item.get("risk_level") == "medium":
+            summary["medium_risk"] += 1
         key = f"{item.get('expression_type') or 'gesture'}:{item.get('label') or ''}"
         if key not in counts:
             counts[key] = {
@@ -619,8 +636,33 @@ def admin_expression_usage(
                 "asset_enabled": item.get("asset_enabled", False),
                 "risk_level": item.get("risk_level") or "unknown",
                 "group": item.get("group") or "unknown",
+                "cooldown_turns": int(item.get("cooldown_turns") or 0),
             }
         counts[key]["count"] += 1
+    sorted_counts = sorted(counts.values(), key=lambda item: (-int(item["count"]), str(item["tag"])))
+    insights: list[dict[str, Any]] = []
+    if summary["disabled_asset"]:
+        insights.append({
+            "kind": "disabled_asset_history",
+            "severity": "watch",
+            "text": f"{summary['disabled_asset']} 条历史记录来自当前已禁用资源，普通端已隐藏，管理端仍保留审查。",
+        })
+    if summary["medium_risk"]:
+        insights.append({
+            "kind": "medium_risk_usage",
+            "severity": "watch",
+            "text": f"{summary['medium_risk']} 条中风险轻表达出现在统计窗口内，可结合冷却轮数继续观察。",
+        })
+    if sorted_counts and summary["window"]:
+        top = sorted_counts[0]
+        share = int(top["count"]) / max(1, int(summary["window"]))
+        if int(top["count"]) >= 3 and share >= 0.5:
+            insights.append({
+                "kind": "concentrated_label",
+                "severity": "tune",
+                "text": f"{top['display_text']} 占最近统计窗口 {share:.0%}，可考虑提高冷却或改写用途说明。",
+                "tag": top["tag"],
+            })
     preference = {"enabled": True, "mode": "normal", "explicit": False}
     if preference_row:
         row = dict_from_row(preference_row) or {}
@@ -634,8 +676,11 @@ def admin_expression_usage(
         }
     return {
         "preference": preference,
+        "summary": summary,
+        "insights": insights,
         "recent": recent,
-        "counts": sorted(counts.values(), key=lambda item: (-int(item["count"]), str(item["tag"]))),
+        "counts": sorted_counts,
+        "counted": len(usage_rows),
     }
 
 
@@ -2857,6 +2902,7 @@ def _with_expression_asset_metadata(item: dict[str, Any], asset_map: dict[tuple[
     item["group"] = asset.get("group") or "unknown"
     item["risk_level"] = asset.get("risk_level") or "unknown"
     item["intensity"] = int(asset.get("intensity") or 0)
+    item["cooldown_turns"] = int(asset.get("cooldown_turns") or 0)
     return item
 
 

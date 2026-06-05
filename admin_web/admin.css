@@ -432,6 +432,52 @@ small {
   gap: 6px;
 }
 
+.expression-usage-counts {
+  display: grid;
+  gap: 6px;
+}
+
+.expression-usage-counts small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.expression-usage-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.expression-usage-summary span {
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.expression-usage-insights {
+  display: grid;
+  gap: 6px;
+}
+
+.expression-usage-insight {
+  margin: 0;
+  padding: 7px 8px;
+  border-radius: 6px;
+  background: rgba(213, 183, 120, 0.08);
+  color: #d5b778;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.expression-usage-insight.tune {
+  background: rgba(95, 125, 181, 0.1);
+  color: var(--accent);
+}
+
 .expression-asset-catalog {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));

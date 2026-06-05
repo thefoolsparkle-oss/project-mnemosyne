@@ -126,7 +126,7 @@ async function loadReview() {
   const [data, traceData, expressionData, assetData, revisionData, growthData, versionData, evalData, llmData, routeData] = await Promise.all([
     api(`/api/admin/memory/review?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}&include_history=true`),
     api(`/api/admin/chat-context-traces?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}&limit=6`),
-    api(`/api/admin/expression-usage?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}&limit=12`),
+    api(`/api/admin/expression-usage?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}&limit=12&usage_limit=80`),
     api("/api/admin/expression-assets"),
     api(`/api/admin/persona-revisions?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}&limit=8`),
     api(`/api/admin/persona-growth?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}`),
@@ -316,6 +316,8 @@ function renderExpressionUsage(data) {
   }[preference.mode] || "正常";
   const counts = Array.isArray(data.counts) ? data.counts : [];
   const recent = Array.isArray(data.recent) ? data.recent : [];
+  const summary = data.summary || {};
+  const insights = Array.isArray(data.insights) ? data.insights : [];
   return h("div", { class: "expression-usage-panel" }, [
     h("div", { class: "expression-usage-head" }, [
       h("strong", { text: `当前模式：${modeLabel}` }),
@@ -324,11 +326,27 @@ function renderExpressionUsage(data) {
     assets.length
       ? h("div", { class: "expression-asset-catalog" }, assets.map(renderExpressionAsset))
       : null,
-    counts.length
-      ? h("div", { class: "expression-usage-tags" }, counts.slice(0, 8).map((item) => h("span", {
-        class: `expression-usage-tag ${item.asset_enabled === false ? "disabled" : "enabled"} ${item.risk_level || "low"}`,
-        text: `${item.display_text || item.tag} × ${item.count}`,
+    h("div", { class: "expression-usage-summary" }, [
+      h("span", { text: `统计 ${summary.window || 0}` }),
+      h("span", { text: `单聊 ${summary.single || 0}` }),
+      h("span", { text: `群聊 ${summary.group || 0}` }),
+      h("span", { text: `中风险 ${summary.medium_risk || 0}` }),
+      h("span", { text: `已禁用历史 ${summary.disabled_asset || 0}` }),
+    ]),
+    insights.length
+      ? h("div", { class: "expression-usage-insights" }, insights.map((item) => h("p", {
+        class: `expression-usage-insight ${item.severity || "watch"}`,
+        text: item.text || "",
       })))
+      : null,
+    counts.length
+      ? h("div", { class: "expression-usage-counts" }, [
+        h("small", { text: `标签计数基于 ${data.counted || counts.reduce((sum, item) => sum + Number(item.count || 0), 0)} 条历史` }),
+        h("div", { class: "expression-usage-tags" }, counts.slice(0, 8).map((item) => h("span", {
+          class: `expression-usage-tag ${item.asset_enabled === false ? "disabled" : "enabled"} ${item.risk_level || "low"}`,
+          text: `${item.display_text || item.tag} × ${item.count}`,
+        }))),
+      ])
       : h("p", { class: "muted", text: "最近还没有展示轻表达。" }),
     recent.length
       ? h("div", { class: "expression-usage-list" }, recent.slice(0, 8).map(renderExpressionUsageItem))
@@ -342,7 +360,7 @@ function renderExpressionAsset(asset) {
     h("span", { class: "expression-asset-icon", text: asset.icon || "" }),
     h("span", {}, [
       h("strong", { text: asset.display_text || asset.label || "" }),
-      h("small", { text: `${asset.expression_type || ""} / ${asset.group || "general"} / 强度 ${asset.intensity || 1} / ${enabled ? "启用" : "禁用"}` }),
+      h("small", { text: `${asset.expression_type || ""} / ${asset.group || "general"} / 强度 ${asset.intensity || 1} / 冷却 ${asset.cooldown_turns ?? 0} 轮 / ${enabled ? "启用" : "禁用"}` }),
     ]),
     h("button", {
       type: "button",
@@ -355,6 +373,12 @@ function renderExpressionAsset(asset) {
       class: "ghost compact",
       text: "备注",
       onclick: () => editExpressionAssetNote(asset),
+    }),
+    h("button", {
+      type: "button",
+      class: "ghost compact",
+      text: "冷却",
+      onclick: () => editExpressionAssetCooldown(asset),
     }),
     h("p", { text: asset.description || "" }),
     h("small", { class: `expression-asset-risk ${asset.risk_level || "low"}`, text: `风险：${asset.risk_level || "low"}` }),
@@ -406,6 +430,33 @@ async function editExpressionAssetNote(asset) {
   render();
 }
 
+async function editExpressionAssetCooldown(asset) {
+  const current = Number.isFinite(Number(asset.cooldown_turns)) ? Number(asset.cooldown_turns) : 0;
+  const value = window.prompt("冷却轮数（0-20）", String(current));
+  if (value === null) return;
+  const cooldown = Math.max(0, Math.min(20, Number.parseInt(value, 10)));
+  if (!Number.isFinite(cooldown)) return;
+  state.error = "";
+  try {
+    const data = await api(
+      `/api/admin/expression-assets/${encodeURIComponent(asset.expression_type)}/${encodeURIComponent(asset.label)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          enabled: asset.enabled !== false,
+          cooldown_turns: cooldown,
+          admin_note: asset.admin_note || "",
+        }),
+      }
+    );
+    state.expressionAssets = data.assets || [];
+    await loadReview();
+  } catch (err) {
+    state.error = err.message;
+  }
+  render();
+}
+
 function renderExpressionUsageItem(item) {
   const scope = item.scope === "group" ? "群聊" : "单聊";
   const enabled = item.asset_enabled !== false;
@@ -420,6 +471,7 @@ function renderExpressionUsageItem(item) {
     h("div", { class: "expression-usage-meta" }, [
       h("span", { class: `expression-asset-risk ${item.risk_level || "unknown"}`, text: `风险：${item.risk_level || "unknown"}` }),
       h("span", { text: `分组：${item.group || "unknown"}` }),
+      h("span", { text: `冷却：${item.cooldown_turns ?? 0}轮` }),
       h("span", { class: enabled ? "asset-enabled" : "asset-disabled", text: status }),
     ]),
     h("p", { text: item.content || "" }),

@@ -235,6 +235,7 @@ def init_db() -> None:
                 expression_type TEXT NOT NULL,
                 label TEXT NOT NULL,
                 enabled INTEGER NOT NULL DEFAULT 1,
+                cooldown_turns INTEGER NOT NULL DEFAULT -1,
                 admin_note TEXT NOT NULL DEFAULT '',
                 updated_by_user_id INTEGER,
                 updated_at INTEGER NOT NULL,
@@ -691,6 +692,7 @@ def init_db() -> None:
         _ensure_column(db, "messages", "reply_error", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(db, "messages", "client_message_id", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(db, "expression_preferences", "mode", "TEXT NOT NULL DEFAULT 'normal'")
+        _ensure_column(db, "expression_asset_settings", "cooldown_turns", "INTEGER NOT NULL DEFAULT -1")
         for table in ("personas", "persona_versions"):
             _ensure_column(db, table, "psychological_profile_json", "TEXT NOT NULL DEFAULT '{}'")
             _ensure_column(db, table, "psychological_fit_notes", "TEXT NOT NULL DEFAULT ''")

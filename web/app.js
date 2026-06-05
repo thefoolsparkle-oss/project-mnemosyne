@@ -61,6 +61,7 @@ let state = {
   threadPanelOpen: false,
   deletedPanelOpen: false,
   groupCreateOpen: false,
+  groupSettingsOpen: false,
   editingConversationId: null,
   showArchived: false,
   showArchivedGroups: false,
@@ -327,6 +328,24 @@ async function loadConversationMessages(conversationId) {
 async function loadGroupMessages(groupConversationId) {
   const data = await api(`/api/group-conversations/${groupConversationId}/messages`);
   state.groupMessages = data.messages;
+}
+
+function returnToHome() {
+  state.view = "home";
+  state.activePersona = null;
+  state.activeConversationId = null;
+  state.activeGroupConversationId = null;
+  state.activeGroupConversation = null;
+  state.messages = [];
+  state.groupMessages = [];
+  state.threadPanelOpen = false;
+  state.personaPanelOpen = false;
+  state.groupSettingsOpen = false;
+  renderShell();
+  loadMainData().then(() => renderShell()).catch((err) => {
+    state.error = err.message;
+    renderShell();
+  });
 }
 
 function isMobileShell() {
@@ -1358,12 +1377,7 @@ function renderMain() {
           type: "button",
           class: "ghost compact home-back-btn",
           text: isMobileShell() ? "返回" : "返回主界面",
-          onclick: () => {
-            state.view = "home";
-            state.activeConversationId = null;
-            state.messages = [];
-            loadMainData().then(() => renderShell());
-          },
+          onclick: returnToHome,
         }),
         h("button", {
           type: "button",
@@ -1413,13 +1427,7 @@ function renderGroupChat() {
           type: "button",
           class: "ghost compact home-back-btn",
           text: isMobileShell() ? "返回" : "返回主界面",
-          onclick: () => {
-            state.view = "home";
-            state.activeGroupConversationId = null;
-            state.activeGroupConversation = null;
-            state.groupMessages = [];
-            loadMainData().then(() => renderShell());
-          },
+          onclick: returnToHome,
         }),
         groupAvatar(group),
         h("div", { class: "chat-header-copy" }, [
@@ -1433,6 +1441,15 @@ function renderGroupChat() {
           h("button", {
             type: "button",
             class: "ghost compact chat-new-action",
+            text: "设置",
+            onclick: () => {
+              state.groupSettingsOpen = true;
+              renderShell();
+            },
+          }),
+          h("button", {
+            type: "button",
+            class: "ghost compact chat-new-action",
             text: "归档",
             onclick: async () => {
               await api(`/api/group-conversations/${group.id}`, {
@@ -1443,22 +1460,27 @@ function renderGroupChat() {
               state.activeGroupConversationId = null;
               state.activeGroupConversation = null;
               state.groupMessages = [];
+              state.groupSettingsOpen = false;
               await loadMainData();
               renderShell();
             },
           }),
         ]),
       ]),
-      renderGroupSettings(group),
       h("div", { id: "chat-log", class: "chat-log group-chat-log" }, state.groupMessages.length ? renderGroupMessageList(state.groupMessages) : [renderGroupChatEmpty()]),
       renderComposer(),
     ]),
+    state.groupSettingsOpen ? renderGroupSettingsModal(group) : null,
   ]);
 }
 
-function renderGroupSettings(group) {
+function renderGroupSettingsModal(group) {
   const input = h("input", { value: groupConversationTitle(group), maxlength: "80" });
   const status = h("small", { class: "save-status" });
+  const close = () => {
+    state.groupSettingsOpen = false;
+    renderShell();
+  };
   const saveTitle = async () => {
     const title = input.value.trim();
     if (!title) {
@@ -1471,6 +1493,7 @@ function renderGroupSettings(group) {
         body: JSON.stringify({ title }),
       });
       await loadMainData();
+      state.groupSettingsOpen = false;
       renderShell();
     } catch (err) {
       status.textContent = err.message;
@@ -1486,49 +1509,57 @@ function renderGroupSettings(group) {
       state.activeGroupConversationId = null;
       state.activeGroupConversation = null;
       state.groupMessages = [];
+      state.groupSettingsOpen = false;
       await loadMainData();
       renderShell();
     } catch (err) {
       status.textContent = err.message;
     }
   };
-  return h("details", { class: "group-settings-card" }, [
-    h("summary", { text: "群设置" }),
-    h("div", { class: "group-settings-row" }, [
-      h("label", {}, [
-        h("span", { text: "群名" }),
-        input,
+  return h("div", { class: "profile-modal-backdrop", onclick: (event) => {
+    if (event.target.classList.contains("profile-modal-backdrop")) close();
+  } }, [
+    h("section", { class: "profile-modal group-settings-modal" }, [
+      h("div", { class: "profile-modal-head" }, [
+        h("h3", { text: "群设置" }),
+        h("button", { type: "button", class: "ghost compact", text: "关闭", onclick: close }),
       ]),
-      h("button", { type: "button", class: "compact", text: "保存", onclick: saveTitle }),
-      h("button", {
-        type: "button",
-        class: "ghost compact",
-        text: isPinnedConversation(group) ? "取消置顶" : "置顶",
-        onclick: async () => {
-          try {
-            await api(`/api/group-conversations/${group.id}`, {
-              method: "PATCH",
-              body: JSON.stringify({ pinned: !isPinnedConversation(group) }),
-            });
-            await loadMainData();
-            renderShell();
-          } catch (err) {
-            status.textContent = err.message;
-          }
-        },
-      }),
-      h("button", { type: "button", class: "ghost compact danger-soft", text: "移到历史", onclick: archiveGroup }),
+      h("div", { class: "group-settings-row" }, [
+        h("label", {}, [
+          h("span", { text: "群名" }),
+          input,
+        ]),
+        h("button", { type: "button", class: "compact", text: "保存", onclick: saveTitle }),
+        h("button", {
+          type: "button",
+          class: "ghost compact",
+          text: isPinnedConversation(group) ? "取消置顶" : "置顶",
+          onclick: async () => {
+            try {
+              await api(`/api/group-conversations/${group.id}`, {
+                method: "PATCH",
+                body: JSON.stringify({ pinned: !isPinnedConversation(group) }),
+              });
+              await loadMainData();
+              renderShell();
+            } catch (err) {
+              status.textContent = err.message;
+            }
+          },
+        }),
+        h("button", { type: "button", class: "ghost compact danger-soft", text: "移到历史", onclick: archiveGroup }),
+      ]),
+      h("div", { class: "group-settings-members" }, [
+        h("strong", { text: "群成员" }),
+        h("div", { class: "group-member-strip" }, (group.members || []).map((member) => (
+          h("span", { class: "group-member-pill" }, [
+            avatar(member.display_name || member.name || "TA", member.avatar_url),
+            h("span", { text: member.display_name || member.name || "TA" }),
+          ])
+        ))),
+      ]),
+      status,
     ]),
-    h("div", { class: "group-settings-members" }, [
-      h("strong", { text: "群成员" }),
-      h("div", { class: "group-member-strip" }, (group.members || []).map((member) => (
-        h("span", { class: "group-member-pill" }, [
-          avatar(member.display_name || member.name || "TA", member.avatar_url),
-          h("span", { text: member.display_name || member.name || "TA" }),
-        ])
-      ))),
-    ]),
-    status,
   ]);
 }
 
@@ -2453,12 +2484,7 @@ function renderWizard() {
         type: "button",
         class: "ghost",
         text: "返回主界面",
-        onclick: () => {
-          state.view = "home";
-          state.editingPersona = false;
-          state.personaPanelOpen = false;
-          renderShell();
-        },
+        onclick: returnToHome,
       })
     );
   }
