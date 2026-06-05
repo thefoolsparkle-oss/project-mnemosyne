@@ -55,13 +55,22 @@ def verify_group_chat_flow() -> None:
 
     user_id, persona_ids = seed_personas()
     calls: list[str] = []
-    generated_count = 0
-
     def fake_llm(messages, task="chat"):
-        nonlocal generated_count
         joined = "\n".join(str(item.get("content") or "") for item in messages)
+        assert "Group members" in joined
+        assert "Recent group messages" in joined
+        calls.append("turn")
+        return json.dumps(
+            {
+                "messages": [
+                    {"persona_id": persona_ids[1], "content": "group reply 1[[expression:gesture:点头]]", "reason": "organize"},
+                    {"persona_id": persona_ids[0], "content": "group reply 2[[expression:mood:微笑]]", "reason": "follow"},
+                ]
+            },
+            ensure_ascii=False,
+        )
         if "Group Router" in joined:
-            calls.append("router")
+            raise AssertionError("group chat should use a single turn call")
             return json.dumps(
                 {
                     "speakers": [
@@ -98,7 +107,7 @@ def verify_group_chat_flow() -> None:
         ),
         {"id": user_id},
     )
-    assert calls == ["router", "reply-1", "reply-2"]
+    assert calls == ["turn"]
     assert result["route"]["speakers"][0]["persona_id"] == persona_ids[1]
     assert len(result["replies"]) == 2
     assert result["replies"][0]["speaker_persona_id"] == persona_ids[1]
@@ -176,6 +185,8 @@ def verify_group_chat_flow() -> None:
     fallback_calls: list[str] = []
 
     def flaky_llm(messages, task="chat"):
+        fallback_calls.append("turn")
+        raise LLMProviderError("temporary outage", status_code=503)
         joined = "\n".join(str(item.get("content") or "") for item in messages)
         if "Group Router" in joined:
             fallback_calls.append("router")
@@ -195,7 +206,7 @@ def verify_group_chat_flow() -> None:
         ),
         {"id": user_id},
     )
-    assert fallback_calls == ["router", "reply"]
+    assert fallback_calls == ["turn"]
     assert fallback["degraded"] is True
     assert fallback["replies"] == []
     assert fallback["error_message"]
@@ -205,8 +216,8 @@ def verify_group_chat_flow() -> None:
     route_failure_calls: list[str] = []
 
     def broken_router(messages, task="chat"):
-        route_failure_calls.append("router")
-        raise LLMProviderError("router outage", status_code=503)
+        route_failure_calls.append("turn")
+        return "not json"
 
     group_chat.call_llm_api = broken_router
     route_failed = server.group_chat_endpoint(
@@ -217,7 +228,7 @@ def verify_group_chat_flow() -> None:
         ),
         {"id": user_id},
     )
-    assert route_failure_calls == ["router"]
+    assert route_failure_calls == ["turn"]
     assert route_failed["degraded"] is True
     assert route_failed["route"]["speakers"] == []
     assert route_failed["replies"] == []
@@ -235,6 +246,8 @@ def verify_group_chat_flow() -> None:
     quiet_calls: list[str] = []
 
     def quiet_llm(messages, task="chat"):
+        quiet_calls.append("turn")
+        return json.dumps({"messages": []}, ensure_ascii=False)
         joined = "\n".join(str(item.get("content") or "") for item in messages)
         if "Group Router" in joined:
             quiet_calls.append("router")
@@ -251,7 +264,7 @@ def verify_group_chat_flow() -> None:
         ),
         {"id": user_id},
     )
-    assert quiet_calls == ["router"]
+    assert quiet_calls == ["turn"]
     assert quiet["route"]["speakers"] == []
     assert quiet["replies"] == []
 

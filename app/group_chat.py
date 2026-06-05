@@ -10,7 +10,6 @@ from .db_chat import (
     _apply_expression_policy,
     _extract_reply_presentation,
     _expression_policy_prompt,
-    _final_persona_lock,
     _persona_runtime_prompt,
     _safe_context,
     chat_rendering_rules_prompt,
@@ -22,7 +21,7 @@ from .llm_client import LLMProviderError, call_llm_api
 
 
 MAX_GROUP_MEMBERS = 6
-MAX_GROUP_SPEAKERS_PER_TURN = 2
+MAX_GROUP_MESSAGES_PER_TURN = 3
 GROUP_HISTORY_LIMIT = 24
 
 
@@ -265,27 +264,23 @@ def group_chat(
         )
 
     history = _recent_group_messages(user_id, group_conversation_id)
-    route = _route_group_turn(user_id, group, members, history, content)
-    speaker_ids = [int(item["persona_id"]) for item in route.get("speakers") or []]
+    turn = _generate_group_turn(user_id, group_conversation_id, members, history, content)
+    planned_messages = turn.get("messages") or []
     replies: list[dict] = []
-    reply_failures = 0
-    for speaker_id in speaker_ids[:MAX_GROUP_SPEAKERS_PER_TURN]:
+    for item in planned_messages[:MAX_GROUP_MESSAGES_PER_TURN]:
+        speaker_id = int(item["persona_id"])
         persona = _persona_for_user(user_id, speaker_id)
-        reply = _generate_group_reply(
-            user_id=user_id,
-            group=group,
-            group_conversation_id=group_conversation_id,
-            members=members,
-            history=_recent_group_messages(user_id, group_conversation_id),
-            persona=persona,
-            trigger_message=content,
-        )
-        if reply.get("failed"):
-            reply_failures += 1
-            continue
+        reply = {
+            "content": item["content"],
+            "expressions": _apply_expression_policy(
+                item.get("expressions") or [],
+                _recent_group_expression_policy(user_id, speaker_id, group_conversation_id),
+            ),
+        }
         replies.append(_store_persona_group_reply(user_id, group_conversation_id, persona, reply))
 
-    degraded = bool(route.get("degraded")) or (bool(speaker_ids) and not replies and reply_failures > 0)
+    route = {"speakers": [{"persona_id": item["persona_id"], "reason": item.get("reason", "")} for item in planned_messages]}
+    degraded = bool(turn.get("degraded"))
     return {
         "group_conversation_id": group_conversation_id,
         "user_message_id": user_message_id,
@@ -293,127 +288,104 @@ def group_chat(
         "replies": replies,
         "messages": [*_messages_for_ids(user_id, [user_message_id]), *replies],
         "degraded": degraded,
-        "error_message": _group_degraded_message(route, reply_failures) if degraded else "",
+        "error_message": _group_degraded_message(turn) if degraded else "",
     }
 
 
-def _route_group_turn(
+def _generate_group_turn(
     user_id: int,
-    group: dict,
+    group_conversation_id: int,
     members: list[dict],
     history: list[dict],
     user_message: str,
 ) -> dict:
-    member_lines = [
-        {
-            "persona_id": int(member["persona_id"]),
-            "name": member.get("display_name") or member.get("name") or "",
-            "summary": member.get("summary") or "",
-            "speaking_style": member.get("speaking_style") or "",
-            "turn_count": int(member.get("turn_count") or 0),
-            "last_spoke_at": int(member.get("last_spoke_at") or 0),
-        }
-        for member in members
-    ]
+    member_lines = [_group_member_prompt_context(member) for member in members]
     messages = [
         {
             "role": "system",
             "content": (
-                "You are Group Router for a multi-persona chat. Decide who should speak next.\n"
-                "Return strict JSON only: {\"speakers\":[{\"persona_id\":123,\"reason\":\"short\"}]}.\n"
-                f"Choose 0 to {MAX_GROUP_SPEAKERS_PER_TURN} speakers. Prefer restraint; do not make everyone answer.\n"
-                "Pick a persona only if they can add something natural, answer directly, or respond to another persona.\n"
+                "You are the conductor for a natural multi-persona group chat.\n"
+                "In one pass, decide whether anyone should speak and write the actual messages.\n"
+                "Return strict JSON only: "
+                "{\"messages\":[{\"persona_id\":123,\"content\":\"short natural message\",\"reason\":\"short\"}]}.\n"
+                f"Choose 0 to {MAX_GROUP_MESSAGES_PER_TURN} messages. Do not make everyone answer by default.\n"
+                "A normal turn may have one speaker, two speakers, or silence.\n"
+                "Let personas respond to each other when it feels natural: one may answer the user, another may add a "
+                "different angle, tease lightly, disagree gently, or ask another persona a follow-up.\n"
+                "If the user says things like '你们聊', '你们怎么看', or leaves an opening, the personas may carry the "
+                "conversation for 2-3 short messages without waiting for another user prompt.\n"
+                "Do not write generic assistant filler. Do not repeat the same content across speakers.\n"
+                "Each content must be a chat bubble from that persona only, usually one short sentence.\n"
+                "No speaker names inside content. No stage directions. No markdown.\n"
             ),
         },
         {"role": "system", "content": "Group members:\n" + json.dumps(member_lines, ensure_ascii=False)},
         {"role": "system", "content": "Recent group messages:\n" + _format_group_history(history)},
+        {"role": "system", "content": "Available expression tags:\n" + _format_group_expression_options(user_id, members, group_conversation_id)},
         {"role": "user", "content": user_message},
     ]
-    route_failed = False
     try:
         raw = call_llm_api(messages, task="chat")
-        parsed = _parse_route_json(raw)
-    except Exception:
-        route_failed = True
-        parsed = {}
+    except LLMProviderError:
+        return {"messages": [], "degraded": True, "reason": "turn_unavailable"}
+    parsed = _parse_route_json(raw)
     valid_ids = {int(member["persona_id"]) for member in members}
-    speakers: list[dict] = []
-    for item in parsed.get("speakers") or []:
+    planned: list[dict] = []
+    used_speakers: set[int] = set()
+    for item in parsed.get("messages") or []:
         if not isinstance(item, dict):
             continue
         try:
             persona_id = int(item.get("persona_id"))
         except Exception:
             continue
-        if persona_id in valid_ids and persona_id not in {speaker["persona_id"] for speaker in speakers}:
-            speakers.append(
-                {
-                    "persona_id": persona_id,
-                    "reason": str(item.get("reason") or "")[:200],
-                }
-            )
-        if len(speakers) >= MAX_GROUP_SPEAKERS_PER_TURN:
+        content = scrub_identity_text(str(item.get("content") or "")).strip()
+        if persona_id not in valid_ids or persona_id in used_speakers or not content:
+            continue
+        presentation = _extract_reply_presentation(content)
+        planned.append(
+            {
+                "persona_id": persona_id,
+                "content": presentation["content"],
+                "expressions": presentation.get("expressions") or [],
+                "reason": str(item.get("reason") or "")[:200],
+            }
+        )
+        used_speakers.add(persona_id)
+        if len(planned) >= MAX_GROUP_MESSAGES_PER_TURN:
             break
-    if route_failed or "speakers" not in parsed:
-        return {"speakers": [], "degraded": True, "reason": "router_unavailable"}
-    return {"speakers": speakers}
+    if "messages" not in parsed:
+        return {"messages": [], "degraded": True, "reason": "turn_parse_failed"}
+    return {"messages": planned}
 
 
-def _generate_group_reply(
-    *,
-    user_id: int,
-    group: dict,
-    group_conversation_id: int,
-    members: list[dict],
-    history: list[dict],
-    persona: dict,
-    trigger_message: str,
-) -> dict:
-    member_context = [
-        {
-            "persona_id": int(member["persona_id"]),
-            "name": member.get("display_name") or member.get("name") or "",
-            "summary": member.get("summary") or "",
-            "relationship": member.get("relationship") or "",
-        }
-        for member in members
-    ]
-    expression_policy = _recent_group_expression_policy(user_id, int(persona["id"]), group_conversation_id)
-    messages = [
-        {"role": "system", "content": _safe_context(str(persona["prompt"]))},
-        {"role": "system", "content": _persona_runtime_prompt(persona)},
-        {"role": "system", "content": chat_rendering_rules_prompt()},
-        {
-            "role": "system",
-            "content": (
-                "Group chat mode:\n"
-                f"- You are speaking as {persona.get('name') or ''} inside a shared group chat.\n"
-                "- Reply with one short natural message, usually 1-3 sentences.\n"
-                "- You may respond to the user or to another persona's latest point.\n"
-                "- Do not speak for other personas. Do not narrate stage directions.\n"
-                "- If another persona already covered the point, add a different angle or keep it brief.\n"
-            ),
-        },
-        {"role": "system", "content": "Group members:\n" + json.dumps(member_context, ensure_ascii=False)},
-        {"role": "system", "content": "Recent group messages:\n" + _format_group_history(history)},
-        {"role": "system", "content": _expression_policy_prompt(expression_policy)},
-        {"role": "system", "content": _final_persona_lock(persona)},
-        {"role": "user", "content": f"Latest user message: {trigger_message}"},
-    ]
-    try:
-        reply = call_llm_api(messages, task="chat")
-    except LLMProviderError:
-        return {"content": "", "expressions": [], "failed": True}
-    presentation = _extract_reply_presentation(reply)
-    presentation["expressions"] = _apply_expression_policy(presentation["expressions"], expression_policy)
-    return presentation
+def _group_member_prompt_context(member: dict) -> dict:
+    persona = dict(member)
+    return {
+        "persona_id": int(member["persona_id"]),
+        "name": member.get("display_name") or member.get("name") or "",
+        "summary": member.get("summary") or "",
+        "relationship": member.get("relationship") or "",
+        "speaking_style": member.get("speaking_style") or "",
+        "turn_count": int(member.get("turn_count") or 0),
+        "last_spoke_at": int(member.get("last_spoke_at") or 0),
+        "persona_prompt": _safe_context(str(member.get("prompt") or ""))[:1200],
+        "runtime_rules": _persona_runtime_prompt(persona)[:900],
+    }
 
 
-def _group_degraded_message(route: dict, reply_failures: int) -> str:
-    if route.get("reason") == "router_unavailable":
-        return "群聊调度暂时没有接上，这句话已经留在当前会话里。稍后再试一次。"
-    if reply_failures:
-        return "这轮没人成功接话，这句话已经留在当前会话里。稍后再试一次。"
+def _format_group_expression_options(user_id: int, members: list[dict], group_conversation_id: int) -> str:
+    lines = [chat_rendering_rules_prompt()]
+    for member in members:
+        persona_id = int(member["persona_id"])
+        policy = _recent_group_expression_policy(user_id, persona_id, group_conversation_id)
+        lines.append(f"Persona {persona_id} expression policy:\n{_expression_policy_prompt(policy)}")
+    return "\n\n".join(lines)
+
+
+def _group_degraded_message(turn: dict) -> str:
+    if turn.get("reason") == "turn_parse_failed":
+        return "群聊刚才说乱了格式，这句话已经留在当前会话里。稍后再试一次。"
     return "群聊暂时没有成功接上，这句话已经留在当前会话里。稍后再试一次。"
 
 
@@ -511,8 +483,8 @@ def _with_group_members(group: dict) -> dict:
     with get_db() as db:
         rows = db.execute(
             """
-            SELECT group_members.*, personas.name, personas.summary, personas.relationship,
-                   personas.speaking_style, personas.avatar_url
+            SELECT group_members.*, personas.name, personas.summary, personas.prompt,
+                   personas.relationship, personas.speaking_style, personas.avatar_url
             FROM group_members
             JOIN personas ON personas.id = group_members.persona_id
             WHERE group_members.group_conversation_id = ?
@@ -667,14 +639,6 @@ def _unique_ints(values: list[int]) -> list[int]:
         if item > 0 and item not in result:
             result.append(item)
     return result
-
-
-def _fallback_speaker_id(members: list[dict]) -> int:
-    sorted_members = sorted(
-        members,
-        key=lambda item: (int(item.get("last_spoke_at") or 0), int(item.get("turn_count") or 0), int(item["persona_id"])),
-    )
-    return int(sorted_members[0]["persona_id"])
 
 
 def _format_group_history(history: list[dict]) -> str:
