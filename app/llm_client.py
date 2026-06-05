@@ -103,13 +103,20 @@ def _call_chat_completions(
     }
     if include_temperature:
         payload["temperature"] = float(llm_config.get("temperature", 0.75))
+    if llm_config.get("max_tokens"):
+        payload["max_tokens"] = int(llm_config.get("max_tokens") or 0)
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
 
     try:
-        response = requests.post(f"{base_url}/chat/completions", json=payload, headers=headers, timeout=120)
+        response = requests.post(
+            f"{base_url}/chat/completions",
+            json=payload,
+            headers=headers,
+            timeout=float(llm_config.get("timeout", 60)),
+        )
         response.raise_for_status()
     except requests.RequestException as exc:
         status_code = getattr(getattr(exc, "response", None), "status_code", None)
@@ -181,7 +188,7 @@ def call_llm_api(messages: List[Message], task: str = "default") -> str:
             prompt_chars=prompt_chars,
             response_chars=0,
             duration_ms=_elapsed_ms(started),
-            error_text=str(exc),
+            error_text=f"{type(exc).__name__}: {exc}",
         )
         raise
 

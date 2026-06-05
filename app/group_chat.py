@@ -9,10 +9,7 @@ from .db_chat import (
     EXPRESSION_POLICY_LOOKBACK,
     _apply_expression_policy,
     _extract_reply_presentation,
-    _expression_policy_prompt,
-    _persona_runtime_prompt,
     _safe_context,
-    chat_rendering_rules_prompt,
     get_persona_for_user,
 )
 from .expression_assets import active_expression_labels
@@ -321,7 +318,6 @@ def _generate_group_turn(
         },
         {"role": "system", "content": "Group members:\n" + json.dumps(member_lines, ensure_ascii=False)},
         {"role": "system", "content": "Recent group messages:\n" + _format_group_history(history)},
-        {"role": "system", "content": "Available expression tags:\n" + _format_group_expression_options(user_id, members, group_conversation_id)},
         {"role": "user", "content": user_message},
     ]
     try:
@@ -360,7 +356,6 @@ def _generate_group_turn(
 
 
 def _group_member_prompt_context(member: dict) -> dict:
-    persona = dict(member)
     return {
         "persona_id": int(member["persona_id"]),
         "name": member.get("display_name") or member.get("name") or "",
@@ -369,18 +364,8 @@ def _group_member_prompt_context(member: dict) -> dict:
         "speaking_style": member.get("speaking_style") or "",
         "turn_count": int(member.get("turn_count") or 0),
         "last_spoke_at": int(member.get("last_spoke_at") or 0),
-        "persona_prompt": _safe_context(str(member.get("prompt") or ""))[:1200],
-        "runtime_rules": _persona_runtime_prompt(persona)[:900],
+        "persona_prompt": _safe_context(str(member.get("prompt") or ""))[:360],
     }
-
-
-def _format_group_expression_options(user_id: int, members: list[dict], group_conversation_id: int) -> str:
-    lines = [chat_rendering_rules_prompt()]
-    for member in members:
-        persona_id = int(member["persona_id"])
-        policy = _recent_group_expression_policy(user_id, persona_id, group_conversation_id)
-        lines.append(f"Persona {persona_id} expression policy:\n{_expression_policy_prompt(policy)}")
-    return "\n\n".join(lines)
 
 
 def _group_degraded_message(turn: dict) -> str:
