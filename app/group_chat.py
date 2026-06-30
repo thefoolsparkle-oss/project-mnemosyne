@@ -19,7 +19,11 @@ from .llm_client import LLMProviderError, call_llm_api
 
 MAX_GROUP_MEMBERS = 6
 MAX_GROUP_MESSAGES_PER_TURN = 3
+MAX_AUTONOMOUS_GROUP_MESSAGES = 2
+MAX_PERSONA_MESSAGES_AFTER_USER = 4
 GROUP_HISTORY_LIMIT = 24
+GROUP_AUTONOMOUS_MIN_IDLE_SECONDS = 75
+GROUP_AUTONOMOUS_USER_WINDOW_SECONDS = 600
 
 
 def create_group_conversation(user_id: int, persona_ids: list[int], title: str = "") -> dict:
@@ -389,6 +393,84 @@ def group_chat(
     }
 
 
+def autonomous_group_turn(
+    *,
+    user_id: int,
+    group_conversation_id: int,
+    client_message_id: str | None = None,
+    min_idle_seconds: int = GROUP_AUTONOMOUS_MIN_IDLE_SECONDS,
+) -> dict:
+    group = group_conversation(user_id, group_conversation_id)
+    if group.get("status") != "active":
+        raise ValueError("group conversation not active")
+    members = [member for member in group.get("members") or [] if int(member.get("is_active") or 0)]
+    if len(members) < 2:
+        raise ValueError("group conversation needs at least two active personas")
+
+    client_message_id = str(client_message_id or "").strip()[:80]
+    existing = _group_autonomous_messages_by_client_id(user_id, group_conversation_id, client_message_id)
+    if existing:
+        return {
+            "group_conversation_id": group_conversation_id,
+            "route": _route_from_group_replies(existing),
+            "replies": existing,
+            "messages": existing,
+            "skipped": False,
+            "reason": "reused",
+            "degraded": False,
+            "error_message": "",
+        }
+
+    eligibility = _autonomous_group_eligibility(user_id, group_conversation_id, min_idle_seconds=min_idle_seconds)
+    if not eligibility["ok"]:
+        return {
+            "group_conversation_id": group_conversation_id,
+            "route": {"speakers": []},
+            "replies": [],
+            "messages": [],
+            "skipped": True,
+            "reason": eligibility["reason"],
+            "degraded": False,
+            "error_message": "",
+        }
+
+    history = _recent_group_messages(user_id, group_conversation_id)
+    turn = _generate_group_autonomous_turn(user_id, group_conversation_id, members, history)
+    planned_messages = turn.get("messages") or []
+    replies: list[dict] = []
+    for index, item in enumerate(planned_messages[:MAX_AUTONOMOUS_GROUP_MESSAGES]):
+        speaker_id = int(item["persona_id"])
+        persona = _persona_for_user(user_id, speaker_id)
+        reply = {
+            "content": item["content"],
+            "expressions": _apply_expression_policy(
+                item.get("expressions") or [],
+                _recent_group_expression_policy(user_id, speaker_id, group_conversation_id),
+            ),
+        }
+        replies.append(
+            _store_persona_group_reply(
+                user_id,
+                group_conversation_id,
+                persona,
+                reply,
+                client_message_id=client_message_id if index == 0 else "",
+            )
+        )
+
+    degraded = bool(turn.get("degraded"))
+    return {
+        "group_conversation_id": group_conversation_id,
+        "route": {"speakers": [{"persona_id": item["persona_id"], "reason": item.get("reason", "")} for item in planned_messages]},
+        "replies": replies,
+        "messages": replies,
+        "skipped": not bool(replies),
+        "reason": "quiet" if not replies and not degraded else "",
+        "degraded": degraded,
+        "error_message": _group_degraded_message(turn) if degraded else "",
+    }
+
+
 def _generate_group_turn(
     user_id: int,
     group_conversation_id: int,
@@ -455,6 +537,67 @@ def _generate_group_turn(
     return {"messages": planned}
 
 
+def _generate_group_autonomous_turn(
+    user_id: int,
+    group_conversation_id: int,
+    members: list[dict],
+    history: list[dict],
+) -> dict:
+    member_lines = [_group_member_prompt_context(member) for member in members]
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are continuing a natural multi-persona group chat while the user is briefly idle.\n"
+                "Decide whether the personas should continue from the recent messages without demanding the user's reply.\n"
+                "Return strict JSON only: "
+                "{\"messages\":[{\"persona_id\":123,\"content\":\"short natural message\",\"reason\":\"short\"}]}.\n"
+                f"Choose 0 to {MAX_AUTONOMOUS_GROUP_MESSAGES} messages. Prefer 0 if the conversation already feels complete.\n"
+                "Good autonomous turns can answer another persona, add a small different angle, lightly disagree, or let the topic rest.\n"
+                "Do not greet the user, do not ask 'are you still there', and do not force everyone to speak.\n"
+                "Each content must be a chat bubble from that persona only, usually one short sentence.\n"
+                "No speaker names inside content. No stage directions. No markdown.\n"
+            ),
+        },
+        {"role": "system", "content": "Group members:\n" + json.dumps(member_lines, ensure_ascii=False)},
+        {"role": "system", "content": "Recent group messages:\n" + _format_group_history(history)},
+        {"role": "user", "content": "Continue only if the group would naturally say one more thing now."},
+    ]
+    try:
+        raw = call_llm_api(messages, task="chat")
+    except LLMProviderError:
+        return {"messages": [], "degraded": True, "reason": "turn_unavailable"}
+    parsed = _parse_route_json(raw)
+    valid_ids = {int(member["persona_id"]) for member in members}
+    planned: list[dict] = []
+    used_speakers: set[int] = set()
+    for item in parsed.get("messages") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            persona_id = int(item.get("persona_id"))
+        except Exception:
+            continue
+        content = scrub_identity_text(str(item.get("content") or "")).strip()
+        if persona_id not in valid_ids or persona_id in used_speakers or not content:
+            continue
+        presentation = _extract_reply_presentation(content)
+        planned.append(
+            {
+                "persona_id": persona_id,
+                "content": presentation["content"],
+                "expressions": presentation.get("expressions") or [],
+                "reason": str(item.get("reason") or "")[:200],
+            }
+        )
+        used_speakers.add(persona_id)
+        if len(planned) >= MAX_AUTONOMOUS_GROUP_MESSAGES:
+            break
+    if "messages" not in parsed:
+        return {"messages": [], "degraded": True, "reason": "turn_parse_failed"}
+    return {"messages": planned}
+
+
 def _group_member_prompt_context(member: dict) -> dict:
     return {
         "persona_id": int(member["persona_id"]),
@@ -474,7 +617,14 @@ def _group_degraded_message(turn: dict) -> str:
     return "群聊暂时没有成功接上，这句话已经留在当前会话里。稍后再试一次。"
 
 
-def _store_persona_group_reply(user_id: int, group_conversation_id: int, persona: dict, presentation: dict) -> dict:
+def _store_persona_group_reply(
+    user_id: int,
+    group_conversation_id: int,
+    persona: dict,
+    presentation: dict,
+    *,
+    client_message_id: str = "",
+) -> dict:
     ts = now_ts()
     reply = str(presentation.get("content") or "").strip() or "我在。"
     expressions = list(presentation.get("expressions") or [])
@@ -483,11 +633,11 @@ def _store_persona_group_reply(user_id: int, group_conversation_id: int, persona
             """
             INSERT INTO group_messages (
                 group_conversation_id, user_id, speaker_type, speaker_persona_id, content,
-                reply_status, created_at
+                reply_status, client_message_id, created_at
             )
-            VALUES (?, ?, 'persona', ?, ?, 'answered', ?)
+            VALUES (?, ?, 'persona', ?, ?, 'answered', ?, ?)
             """,
-            (group_conversation_id, user_id, int(persona["id"]), reply, ts),
+            (group_conversation_id, user_id, int(persona["id"]), reply, str(client_message_id or "")[:80], ts),
         )
         message_id = int(cursor.lastrowid)
         if expressions:
@@ -562,6 +712,80 @@ def _group_user_message_by_client_id(user_id: int, group_conversation_id: int, c
             (user_id, group_conversation_id, client_message_id),
         ).fetchone()
     return dict_from_row(row) if row else None
+
+
+def _group_autonomous_messages_by_client_id(user_id: int, group_conversation_id: int, client_message_id: str) -> list[dict]:
+    if not client_message_id:
+        return []
+    with get_db() as db:
+        rows = db.execute(
+            """
+            SELECT group_messages.*, personas.name AS speaker_name, personas.avatar_url AS speaker_avatar_url
+            FROM group_messages
+            LEFT JOIN personas ON personas.id = group_messages.speaker_persona_id
+            WHERE group_messages.user_id = ?
+              AND group_messages.group_conversation_id = ?
+              AND group_messages.speaker_type = 'persona'
+              AND group_messages.client_message_id = ?
+            ORDER BY group_messages.id ASC
+            """,
+            (user_id, group_conversation_id, client_message_id),
+        ).fetchall()
+    return _attach_group_expressions(user_id, [dict_from_row(row) for row in rows])
+
+
+def _autonomous_group_eligibility(
+    user_id: int,
+    group_conversation_id: int,
+    *,
+    min_idle_seconds: int,
+) -> dict:
+    ts = now_ts()
+    with get_db() as db:
+        latest = db.execute(
+            """
+            SELECT id, speaker_type, created_at
+            FROM group_messages
+            WHERE user_id = ? AND group_conversation_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (user_id, group_conversation_id),
+        ).fetchone()
+        if not latest:
+            return {"ok": False, "reason": "empty"}
+        if ts - int(latest["created_at"] or 0) < max(0, int(min_idle_seconds)):
+            return {"ok": False, "reason": "too_fresh"}
+        last_user = db.execute(
+            """
+            SELECT id, created_at
+            FROM group_messages
+            WHERE user_id = ?
+              AND group_conversation_id = ?
+              AND speaker_type = 'user'
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (user_id, group_conversation_id),
+        ).fetchone()
+        if not last_user:
+            return {"ok": False, "reason": "no_recent_user"}
+        if ts - int(last_user["created_at"] or 0) > GROUP_AUTONOMOUS_USER_WINDOW_SECONDS:
+            return {"ok": False, "reason": "user_window_expired"}
+        persona_count = db.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM group_messages
+            WHERE user_id = ?
+              AND group_conversation_id = ?
+              AND speaker_type = 'persona'
+              AND id > ?
+            """,
+            (user_id, group_conversation_id, int(last_user["id"])),
+        ).fetchone()
+    if int(persona_count["count"] or 0) >= MAX_PERSONA_MESSAGES_AFTER_USER:
+        return {"ok": False, "reason": "turn_cap"}
+    return {"ok": True, "reason": ""}
 
 
 def _group_turn_messages_for_user_message(user_id: int, group_conversation_id: int, user_message_id: int) -> list[dict]:

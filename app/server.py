@@ -34,6 +34,7 @@ from .db_chat import db_chat, normalize_existing_assistant_messages
 from .expression_assets import active_expression_labels, expression_assets_public, update_expression_asset_setting
 from .group_chat import (
     add_group_member,
+    autonomous_group_turn,
     create_group_conversation,
     group_chat,
     group_messages,
@@ -237,6 +238,10 @@ class GroupConversationUpdateRequest(BaseModel):
 
 class GroupMemberRequest(BaseModel):
     persona_id: int = Field(..., ge=1)
+
+
+class GroupAutonomousTurnRequest(BaseModel):
+    client_message_id: str | None = Field(default=None, max_length=80)
 
 
 class GroupChatRequest(BaseModel):
@@ -2789,6 +2794,27 @@ def group_chat_endpoint(req: GroupChatRequest, user: dict = Depends(current_user
             user_id=int(user["id"]),
             group_conversation_id=int(req.group_conversation_id),
             message=req.message,
+            client_message_id=req.client_message_id,
+        )
+    except ValueError as exc:
+        status_code = 404 if "not found" in str(exc) else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    except LLMProviderError as exc:
+        raise HTTPException(status_code=503, detail=exc.user_message) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="group chat service unavailable") from exc
+
+
+@app.post("/api/group-conversations/{group_conversation_id}/autonomous-turn")
+def group_autonomous_turn_endpoint(
+    group_conversation_id: int,
+    req: GroupAutonomousTurnRequest,
+    user: dict = Depends(current_user),
+):
+    try:
+        return autonomous_group_turn(
+            user_id=int(user["id"]),
+            group_conversation_id=int(group_conversation_id),
             client_message_id=req.client_message_id,
         )
     except ValueError as exc:

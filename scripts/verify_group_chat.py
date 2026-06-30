@@ -320,6 +320,38 @@ def verify_group_chat_flow() -> None:
     assert quiet["route"]["speakers"] == []
     assert quiet["replies"] == []
 
+    autonomous_calls: list[str] = []
+
+    def autonomous_llm(messages, task="chat"):
+        joined = "\n".join(str(item.get("content") or "") for item in messages)
+        assert "Recent group messages" in joined
+        autonomous_calls.append("turn")
+        return json.dumps(
+            {"messages": [{"persona_id": persona_ids[1], "content": "I can add one thought.", "reason": "continue"}]},
+            ensure_ascii=False,
+        )
+
+    group_chat.call_llm_api = autonomous_llm
+    autonomous = group_chat.autonomous_group_turn(
+        user_id=user_id,
+        group_conversation_id=group["id"],
+        client_message_id="group-auto-1",
+        min_idle_seconds=0,
+    )
+    assert autonomous_calls == ["turn"]
+    assert autonomous["skipped"] is False
+    assert len(autonomous["replies"]) == 1
+    assert autonomous["replies"][0]["speaker_persona_id"] == persona_ids[1]
+    repeated_auto = group_chat.autonomous_group_turn(
+        user_id=user_id,
+        group_conversation_id=group["id"],
+        client_message_id="group-auto-1",
+        min_idle_seconds=0,
+    )
+    assert autonomous_calls == ["turn"]
+    assert repeated_auto["reason"] == "reused"
+    assert repeated_auto["messages"][0]["id"] == autonomous["messages"][0]["id"]
+
     archived = server.patch_group_conversation(
         group["id"],
         server.GroupConversationUpdateRequest(status="archived"),

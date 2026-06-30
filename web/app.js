@@ -1,6 +1,11 @@
 const app = document.getElementById("app");
 const TAB_SESSION_MODE_KEY = "mnemosyne:tab-session-mode";
 const TAB_SESSION_TOKEN_KEY = "mnemosyne:tab-session-token";
+const GROUP_AUTO_CHECK_MS = 30000;
+const GROUP_AUTO_MIN_IDLE_SECONDS = 75;
+const GROUP_AUTO_USER_WINDOW_SECONDS = 600;
+
+const groupAutoCooldowns = new Map();
 
 const text = {
   appName: "忆界树",
@@ -2856,6 +2861,48 @@ async function markGroupConversationRead(groupConversationId) {
   }
 }
 
+async function maybeRequestGroupAutonomousTurn() {
+  if (
+    state.view !== "group"
+    || !state.activeGroupConversationId
+    || state.sending
+    || state.groupSettingsOpen
+    || document.hidden
+  ) {
+    return;
+  }
+  const messages = state.groupMessages || [];
+  if (!messages.length) return;
+  const now = nowSeconds();
+  const latest = messages[messages.length - 1];
+  if (now - Number(latest.created_at || 0) < GROUP_AUTO_MIN_IDLE_SECONDS) return;
+  const latestUser = [...messages].reverse().find((message) => message.speaker_type === "user");
+  if (!latestUser || now - Number(latestUser.created_at || 0) > GROUP_AUTO_USER_WINDOW_SECONDS) return;
+
+  const groupId = Number(state.activeGroupConversationId);
+  const cooldownKey = String(groupId);
+  const lastAttempt = Number(groupAutoCooldowns.get(cooldownKey) || 0);
+  if (now - lastAttempt < GROUP_AUTO_MIN_IDLE_SECONDS) return;
+  groupAutoCooldowns.set(cooldownKey, now);
+
+  try {
+    const data = await api(`/api/group-conversations/${groupId}/autonomous-turn`, {
+      method: "POST",
+      body: JSON.stringify({ client_message_id: createClientMessageId() }),
+    });
+    if (state.view !== "group" || Number(state.activeGroupConversationId) !== groupId) return;
+    if ((data.messages || []).length) {
+      state.groupMessages.push(...data.messages);
+      await markGroupConversationRead(groupId);
+      await loadMainData();
+      renderShell();
+      scrollChat();
+    }
+  } catch {
+    // Autonomous turns are opportunistic; visible errors belong to user-sent messages.
+  }
+}
+
 function renderChatEmpty() {
   const persona = state.activePersona || {};
   return h("div", { class: "chat-empty" }, [
@@ -3420,6 +3467,7 @@ function resetClientState() {
     threadPanelOpen: false,
     deletedPanelOpen: false,
     groupCreateOpen: false,
+    groupSettingsOpen: false,
     editingConversationId: null,
     showArchived: false,
     showArchivedGroups: false,
@@ -3452,6 +3500,16 @@ document.addEventListener("keydown", (event) => {
     state.view = "chat";
     state.editingPersona = false;
     renderShell();
+  }
+});
+
+setInterval(() => {
+  maybeRequestGroupAutonomousTurn();
+}, GROUP_AUTO_CHECK_MS);
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    maybeRequestGroupAutonomousTurn();
   }
 });
 

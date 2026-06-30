@@ -768,7 +768,7 @@ def init_db() -> None:
             """
             CREATE INDEX IF NOT EXISTS idx_group_messages_client_message_id
             ON group_messages(user_id, group_conversation_id, client_message_id)
-            WHERE speaker_type = 'user' AND client_message_id <> ''
+            WHERE client_message_id <> ''
             """
         )
         db.execute(
