@@ -841,7 +841,9 @@ small {
 }
 
 .group-settings-modal {
-  width: min(620px, 100%);
+  width: min(480px, 100%);
+  gap: 12px;
+  padding: 14px;
 }
 
 .group-settings-card summary {
@@ -872,7 +874,7 @@ small {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  align-items: end;
+  align-items: center;
 }
 
 .group-settings-row label {
@@ -905,21 +907,24 @@ small {
 
 .group-settings-members {
   display: grid;
-  gap: 8px;
-  margin-top: 8px;
+  gap: 6px;
+  margin-top: 2px;
 }
 
 .group-member-strip {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
+  max-height: 112px;
+  overflow-y: auto;
+  padding-right: 2px;
 }
 
 .group-member-pill {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 8px 5px 5px;
+  padding: 4px 7px 4px 4px;
   border: 1px solid var(--line);
   border-radius: 999px;
   background: rgba(23, 28, 37, 0.03);
@@ -962,7 +967,7 @@ small {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  margin-top: 4px;
+  margin-top: 0;
 }
 
 .danger-soft {
@@ -2449,6 +2454,10 @@ small {
     max-height: min(84dvh, calc(100dvh - 18px));
     padding: 14px 14px 20px;
     border-radius: 8px 8px 0 0;
+  }
+
+  .group-settings-modal {
+    max-height: min(72dvh, calc(100dvh - 48px));
   }
 
   .birthday-selects,
