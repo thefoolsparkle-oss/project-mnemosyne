@@ -2768,17 +2768,22 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
   scrollChat();
 }
 
-async function sendGroupChatMessage(content) {
+async function sendGroupChatMessage(content, { retryLocalId = "", clientMessageId = "" } = {}) {
   if (!content || !state.activeGroupConversationId || state.sending) return;
   const requestGroupId = Number(state.activeGroupConversationId);
-  const outgoingClientMessageId = createClientMessageId();
+  const outgoingClientMessageId = clientMessageId || createClientMessageId();
   state.sending = true;
-  state.groupMessages.push({
-    speaker_type: "user",
-    content,
-    client_message_id: outgoingClientMessageId,
-    created_at: nowSeconds(),
-  });
+  if (retryLocalId) {
+    state.groupMessages = state.groupMessages.filter((message) => message.local_id !== retryLocalId);
+  }
+  if (!clientMessageId) {
+    state.groupMessages.push({
+      speaker_type: "user",
+      content,
+      client_message_id: outgoingClientMessageId,
+      created_at: nowSeconds(),
+    });
+  }
   renderShell();
   scrollChat();
   try {
@@ -2794,12 +2799,19 @@ async function sendGroupChatMessage(content) {
     if (stillViewingGroup) {
       state.groupMessages = state.groupMessages.filter((message) => message.client_message_id !== outgoingClientMessageId);
       state.groupMessages.push(...(data.messages || []));
-      if (data.degraded && !(data.replies || []).length) {
+      const hasStoredRetryNotice = (data.messages || []).some((message) => (
+        message.speaker_type === "user"
+        && message.client_message_id === outgoingClientMessageId
+        && ["error", "generating"].includes(message.reply_status)
+      ));
+      if (data.degraded && !(data.replies || []).length && !hasStoredRetryNotice) {
         state.groupMessages.push({
           speaker_type: "system",
           role: "notice",
           content: data.error_message || "这轮群聊暂时没有成功接上。稍后再试一次。",
           status: "error",
+          retry_content: content,
+          retry_client_message_id: outgoingClientMessageId,
           local_id: `group-degraded-${Date.now()}`,
           created_at: nowSeconds(),
         });
@@ -2814,6 +2826,8 @@ async function sendGroupChatMessage(content) {
         role: "notice",
         content: friendlyChatError(err.message),
         status: "error",
+        retry_content: content,
+        retry_client_message_id: outgoingClientMessageId,
         local_id: `group-error-${Date.now()}`,
         created_at: nowSeconds(),
       });
@@ -3001,6 +3015,9 @@ function renderGroupMessageList(messages) {
       lastDateKey = dateKey;
     }
     nodes.push(renderGroupMessage(message));
+    if (isFailedGroupUserMessage(message)) {
+      nodes.push(renderFailedGroupReplyNotice(message));
+    }
   }
   return nodes;
 }
@@ -3013,11 +3030,25 @@ function renderGroupMessage(message) {
     ? state.profile?.avatar_url
     : message.speaker_avatar_url || groupMemberAvatar(message.speaker_persona_id);
   const content = String(message.content || "").trim();
+  const bubbleChildren = [content];
+  if (isNotice && ["error", "pending"].includes(message.status) && message.retry_content) {
+    bubbleChildren.push(
+      h("button", {
+        type: "button",
+        class: "retry-btn",
+        text: "重试",
+        onclick: () => sendGroupChatMessage(message.retry_content, {
+          retryLocalId: message.local_id,
+          clientMessageId: message.retry_client_message_id || "",
+        }),
+      })
+    );
+  }
   return h("article", { class: `message group-message ${isUser ? "user" : isNotice ? "notice" : "assistant"}` }, [
     !isUser && !isNotice ? avatar(speakerName, speakerAvatar) : null,
     h("div", { class: "message-stack" }, [
       !isUser && !isNotice ? h("small", { class: "group-speaker-name", text: speakerName }) : null,
-      h("div", { class: `bubble ${message.status || ""}` }, [content]),
+      h("div", { class: `bubble ${message.status || ""}` }, bubbleChildren),
       !isUser && !isNotice && Array.isArray(message.expressions) && message.expressions.length
         ? renderExpressionStrip(message.expressions)
         : null,
@@ -3033,6 +3064,27 @@ function renderGroupMessage(message) {
     ]),
     isUser ? avatar(speakerName, speakerAvatar) : null,
   ]);
+}
+
+function isFailedGroupUserMessage(message) {
+  return (
+    message.speaker_type === "user"
+    && ["error", "generating"].includes(message.reply_status)
+    && Boolean(message.client_message_id)
+  );
+}
+
+function renderFailedGroupReplyNotice(userMessage) {
+  return renderGroupMessage({
+    speaker_type: "system",
+    role: "notice",
+    content: userMessage.reply_error || "这句话还没有等到群聊回复，可以重试一次。",
+    status: userMessage.reply_status === "generating" ? "pending" : "error",
+    retry_content: userMessage.content,
+    retry_client_message_id: userMessage.client_message_id,
+    local_id: `group-stored-error-${userMessage.id}`,
+    created_at: userMessage.created_at,
+  });
 }
 
 function renderFailedReplyNotice(userMessage) {

@@ -117,6 +117,19 @@ def verify_group_chat_flow() -> None:
     assert result["replies"][0]["expressions"][0]["label"] == "点头"
     assert result["replies"][1]["expressions"][0]["label"] == "微笑"
 
+    repeated = server.group_chat_endpoint(
+        server.GroupChatRequest(
+            group_conversation_id=group["id"],
+            message=result["messages"][0]["content"],
+            client_message_id="group-chat-1",
+        ),
+        {"id": user_id},
+    )
+    assert calls == ["turn"]
+    assert repeated["user_message_id"] == result["user_message_id"]
+    assert len(repeated["replies"]) == 2
+    assert [item["id"] for item in repeated["messages"]] == [item["id"] for item in result["messages"]]
+
     messages = server.group_conversation_messages(group["id"], {"id": user_id})["messages"]
     assert [item["speaker_type"] for item in messages] == ["user", "persona", "persona"]
     assert messages[1]["speaker_name"] == "观澜"
@@ -225,6 +238,32 @@ def verify_group_chat_flow() -> None:
     assert fallback["error_message"]
     assert len(fallback["messages"]) == 1
     assert fallback["messages"][0]["speaker_type"] == "user"
+    assert fallback["messages"][0]["reply_status"] == "error"
+
+    recovery_calls: list[str] = []
+
+    def recovered_llm(messages, task="chat"):
+        recovery_calls.append("turn")
+        return json.dumps(
+            {"messages": [{"persona_id": persona_ids[0], "content": "recovered group reply", "reason": "retry"}]},
+            ensure_ascii=False,
+        )
+
+    group_chat.call_llm_api = recovered_llm
+    recovered = server.group_chat_endpoint(
+        server.GroupChatRequest(
+            group_conversation_id=group["id"],
+            message=fallback["messages"][0]["content"],
+            client_message_id="group-chat-fallback",
+        ),
+        {"id": user_id},
+    )
+    assert recovery_calls == ["turn"]
+    assert recovered["degraded"] is False
+    assert recovered["user_message_id"] == fallback["user_message_id"]
+    assert len(recovered["replies"]) == 1
+    assert recovered["messages"][0]["id"] == fallback["messages"][0]["id"]
+    assert recovered["messages"][1]["content"] == "recovered group reply"
 
     route_failure_calls: list[str] = []
 

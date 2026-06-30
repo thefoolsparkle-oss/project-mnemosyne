@@ -766,6 +766,13 @@ def init_db() -> None:
         )
         db.execute(
             """
+            CREATE INDEX IF NOT EXISTS idx_group_messages_client_message_id
+            ON group_messages(user_id, group_conversation_id, client_message_id)
+            WHERE speaker_type = 'user' AND client_message_id <> ''
+            """
+        )
+        db.execute(
+            """
             CREATE TRIGGER IF NOT EXISTS trg_memory_links_delete_user
             AFTER DELETE ON users
             BEGIN

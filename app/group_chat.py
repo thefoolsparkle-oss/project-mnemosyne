@@ -315,22 +315,40 @@ def group_chat(
 
     ts = now_ts()
     client_message_id = str(client_message_id or "").strip()[:80]
-    with get_db() as db:
-        cursor = db.execute(
-            """
-            INSERT INTO group_messages (
-                group_conversation_id, user_id, speaker_type, content,
-                reply_status, client_message_id, created_at
+    existing_user_message = _group_user_message_by_client_id(user_id, group_conversation_id, client_message_id)
+    if existing_user_message:
+        if str(existing_user_message.get("content") or "").strip() != content:
+            raise ValueError("client message id already used for another group message")
+        user_message_id = int(existing_user_message["id"])
+        existing_messages = _group_turn_messages_for_user_message(user_id, group_conversation_id, user_message_id)
+        existing_replies = [message for message in existing_messages if message.get("speaker_type") == "persona"]
+        if existing_replies or str(existing_user_message.get("reply_status") or "") == "answered":
+            return {
+                "group_conversation_id": group_conversation_id,
+                "user_message_id": user_message_id,
+                "route": _route_from_group_replies(existing_replies),
+                "replies": existing_replies,
+                "messages": existing_messages,
+                "degraded": False,
+                "error_message": "",
+            }
+    else:
+        with get_db() as db:
+            cursor = db.execute(
+                """
+                INSERT INTO group_messages (
+                    group_conversation_id, user_id, speaker_type, content,
+                    reply_status, client_message_id, created_at
+                )
+                VALUES (?, ?, 'user', ?, 'generating', ?, ?)
+                """,
+                (group_conversation_id, user_id, content, client_message_id, ts),
             )
-            VALUES (?, ?, 'user', ?, 'answered', ?, ?)
-            """,
-            (group_conversation_id, user_id, content, client_message_id, ts),
-        )
-        user_message_id = int(cursor.lastrowid)
-        db.execute(
-            "UPDATE group_conversations SET updated_at = ? WHERE id = ?",
-            (ts, group_conversation_id),
-        )
+            user_message_id = int(cursor.lastrowid)
+            db.execute(
+                "UPDATE group_conversations SET updated_at = ? WHERE id = ?",
+                (ts, group_conversation_id),
+            )
 
     history = _recent_group_messages(user_id, group_conversation_id)
     turn = _generate_group_turn(user_id, group_conversation_id, members, history, content)
@@ -350,6 +368,16 @@ def group_chat(
 
     route = {"speakers": [{"persona_id": item["persona_id"], "reason": item.get("reason", "")} for item in planned_messages]}
     degraded = bool(turn.get("degraded"))
+    error_message = _group_degraded_message(turn) if degraded else ""
+    with get_db() as db:
+        db.execute(
+            """
+            UPDATE group_messages
+            SET reply_status = ?, reply_error = ?
+            WHERE id = ? AND user_id = ? AND speaker_type = 'user'
+            """,
+            ("error" if degraded and not replies else "answered", error_message if degraded and not replies else "", user_message_id, user_id),
+        )
     return {
         "group_conversation_id": group_conversation_id,
         "user_message_id": user_message_id,
@@ -357,7 +385,7 @@ def group_chat(
         "replies": replies,
         "messages": [*_messages_for_ids(user_id, [user_message_id]), *replies],
         "degraded": degraded,
-        "error_message": _group_degraded_message(turn) if degraded else "",
+        "error_message": error_message,
     }
 
 
@@ -514,6 +542,80 @@ def _recent_group_messages(user_id: int, group_conversation_id: int) -> list[dic
             (group_conversation_id, user_id, GROUP_HISTORY_LIMIT),
         ).fetchall()
     return list(reversed([dict_from_row(row) for row in rows]))
+
+
+def _group_user_message_by_client_id(user_id: int, group_conversation_id: int, client_message_id: str) -> dict | None:
+    if not client_message_id:
+        return None
+    with get_db() as db:
+        row = db.execute(
+            """
+            SELECT *
+            FROM group_messages
+            WHERE user_id = ?
+              AND group_conversation_id = ?
+              AND speaker_type = 'user'
+              AND client_message_id = ?
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+            (user_id, group_conversation_id, client_message_id),
+        ).fetchone()
+    return dict_from_row(row) if row else None
+
+
+def _group_turn_messages_for_user_message(user_id: int, group_conversation_id: int, user_message_id: int) -> list[dict]:
+    with get_db() as db:
+        next_user = db.execute(
+            """
+            SELECT MIN(id) AS next_id
+            FROM group_messages
+            WHERE user_id = ?
+              AND group_conversation_id = ?
+              AND speaker_type = 'user'
+              AND id > ?
+            """,
+            (user_id, group_conversation_id, user_message_id),
+        ).fetchone()
+        upper_bound = int(next_user["next_id"] or 0) if next_user else 0
+        if upper_bound:
+            rows = db.execute(
+                """
+                SELECT group_messages.*, personas.name AS speaker_name, personas.avatar_url AS speaker_avatar_url
+                FROM group_messages
+                LEFT JOIN personas ON personas.id = group_messages.speaker_persona_id
+                WHERE group_messages.user_id = ?
+                  AND group_messages.group_conversation_id = ?
+                  AND group_messages.id >= ?
+                  AND group_messages.id < ?
+                ORDER BY group_messages.id ASC
+                """,
+                (user_id, group_conversation_id, user_message_id, upper_bound),
+            ).fetchall()
+        else:
+            rows = db.execute(
+                """
+                SELECT group_messages.*, personas.name AS speaker_name, personas.avatar_url AS speaker_avatar_url
+                FROM group_messages
+                LEFT JOIN personas ON personas.id = group_messages.speaker_persona_id
+                WHERE group_messages.user_id = ?
+                  AND group_messages.group_conversation_id = ?
+                  AND group_messages.id >= ?
+                ORDER BY group_messages.id ASC
+                """,
+                (user_id, group_conversation_id, user_message_id),
+            ).fetchall()
+    return _attach_group_expressions(user_id, [dict_from_row(row) for row in rows])
+
+
+def _route_from_group_replies(replies: list[dict]) -> dict:
+    return {
+        "speakers": [
+            {"persona_id": int(reply["speaker_persona_id"]), "reason": "reused"}
+            for reply in replies
+            if reply.get("speaker_persona_id")
+        ]
+    }
 
 
 def _messages_for_ids(user_id: int, message_ids: list[int]) -> list[dict]:
