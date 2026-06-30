@@ -369,6 +369,11 @@ def group_chat(
             ),
         }
         replies.append(_store_persona_group_reply(user_id, group_conversation_id, persona, reply))
+    _update_group_member_relations(
+        user_id,
+        group_conversation_id,
+        [int(reply["speaker_persona_id"]) for reply in replies if reply.get("speaker_persona_id")],
+    )
 
     route = {"speakers": [{"persona_id": item["persona_id"], "reason": item.get("reason", "")} for item in planned_messages]}
     degraded = bool(turn.get("degraded"))
@@ -457,6 +462,11 @@ def autonomous_group_turn(
                 client_message_id=client_message_id if index == 0 else "",
             )
         )
+    previous_speaker_id = _last_persona_speaker_id(history)
+    relation_sequence = ([previous_speaker_id] if previous_speaker_id else []) + [
+        int(reply["speaker_persona_id"]) for reply in replies if reply.get("speaker_persona_id")
+    ]
+    _update_group_member_relations(user_id, group_conversation_id, relation_sequence)
 
     degraded = bool(turn.get("degraded"))
     return {
@@ -478,7 +488,11 @@ def _generate_group_turn(
     history: list[dict],
     user_message: str,
 ) -> dict:
-    member_lines = [_group_member_prompt_context(member) for member in members]
+    relation_context = _group_relation_context_by_persona(user_id, group_conversation_id)
+    member_lines = [
+        _group_member_prompt_context(member, relation_context.get(int(member["persona_id"]), []))
+        for member in members
+    ]
     messages = [
         {
             "role": "system",
@@ -543,7 +557,11 @@ def _generate_group_autonomous_turn(
     members: list[dict],
     history: list[dict],
 ) -> dict:
-    member_lines = [_group_member_prompt_context(member) for member in members]
+    relation_context = _group_relation_context_by_persona(user_id, group_conversation_id)
+    member_lines = [
+        _group_member_prompt_context(member, relation_context.get(int(member["persona_id"]), []))
+        for member in members
+    ]
     messages = [
         {
             "role": "system",
@@ -598,7 +616,7 @@ def _generate_group_autonomous_turn(
     return {"messages": planned}
 
 
-def _group_member_prompt_context(member: dict) -> dict:
+def _group_member_prompt_context(member: dict, relations: list[str] | None = None) -> dict:
     return {
         "persona_id": int(member["persona_id"]),
         "name": member.get("display_name") or member.get("name") or "",
@@ -607,6 +625,7 @@ def _group_member_prompt_context(member: dict) -> dict:
         "speaking_style": member.get("speaking_style") or "",
         "turn_count": int(member.get("turn_count") or 0),
         "last_spoke_at": int(member.get("last_spoke_at") or 0),
+        "group_relations": relations or [],
         "persona_prompt": _safe_context(str(member.get("prompt") or ""))[:360],
     }
 
@@ -840,6 +859,78 @@ def _route_from_group_replies(replies: list[dict]) -> dict:
             if reply.get("speaker_persona_id")
         ]
     }
+
+
+def _group_relation_context_by_persona(user_id: int, group_conversation_id: int) -> dict[int, list[str]]:
+    with get_db() as db:
+        rows = db.execute(
+            """
+            SELECT group_member_relations.persona_id,
+                   group_member_relations.affinity,
+                   group_member_relations.tension,
+                   group_member_relations.note,
+                   personas.name AS other_name
+            FROM group_member_relations
+            JOIN personas ON personas.id = group_member_relations.other_persona_id
+            WHERE group_member_relations.user_id = ?
+              AND group_member_relations.group_conversation_id = ?
+            ORDER BY group_member_relations.updated_at DESC
+            LIMIT 24
+            """,
+            (user_id, group_conversation_id),
+        ).fetchall()
+    result: dict[int, list[str]] = {}
+    for row in rows:
+        persona_id = int(row["persona_id"])
+        text = (
+            f"With {row['other_name']}: familiarity {int(row['affinity'] or 0)}, "
+            f"tension {int(row['tension'] or 0)}"
+        )
+        note = str(row["note"] or "").strip()
+        if note:
+            text += f"; {note}"
+        result.setdefault(persona_id, []).append(text)
+    return result
+
+
+def _last_persona_speaker_id(history: list[dict]) -> int | None:
+    for message in reversed(history):
+        if message.get("speaker_type") == "persona" and message.get("speaker_persona_id"):
+            return int(message["speaker_persona_id"])
+    return None
+
+
+def _update_group_member_relations(user_id: int, group_conversation_id: int, speaker_ids: list[int]) -> None:
+    sequence = [int(persona_id) for persona_id in speaker_ids if persona_id]
+    pairs: list[tuple[int, int]] = []
+    for left, right in zip(sequence, sequence[1:]):
+        if left != right:
+            pairs.append((left, right))
+            pairs.append((right, left))
+    if not pairs:
+        return
+    ts = now_ts()
+    note = "recently exchanged turns in this group"
+    with get_db() as db:
+        db.executemany(
+            """
+            INSERT INTO group_member_relations (
+                group_conversation_id, user_id, persona_id, other_persona_id,
+                affinity, tension, note, updated_at
+            )
+            VALUES (?, ?, ?, ?, 1, 0, ?, ?)
+            ON CONFLICT(group_conversation_id, persona_id, other_persona_id)
+            DO UPDATE SET
+                affinity = MIN(20, group_member_relations.affinity + 1),
+                tension = MAX(0, group_member_relations.tension - 1),
+                note = excluded.note,
+                updated_at = excluded.updated_at
+            """,
+            [
+                (group_conversation_id, user_id, persona_id, other_persona_id, note, ts)
+                for persona_id, other_persona_id in pairs
+            ],
+        )
 
 
 def _messages_for_ids(user_id: int, message_ids: list[int]) -> list[dict]:

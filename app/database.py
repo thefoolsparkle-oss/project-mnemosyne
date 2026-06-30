@@ -289,6 +289,23 @@ def init_db() -> None:
                 FOREIGN KEY (speaker_persona_id) REFERENCES personas(id) ON DELETE SET NULL
             );
 
+            CREATE TABLE IF NOT EXISTS group_member_relations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_conversation_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                persona_id INTEGER NOT NULL,
+                other_persona_id INTEGER NOT NULL,
+                affinity INTEGER NOT NULL DEFAULT 0,
+                tension INTEGER NOT NULL DEFAULT 0,
+                note TEXT NOT NULL DEFAULT '',
+                updated_at INTEGER NOT NULL,
+                UNIQUE(group_conversation_id, persona_id, other_persona_id),
+                FOREIGN KEY (group_conversation_id) REFERENCES group_conversations(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE CASCADE,
+                FOREIGN KEY (other_persona_id) REFERENCES personas(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS group_message_expressions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 group_message_id INTEGER NOT NULL,
@@ -769,6 +786,12 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_group_messages_client_message_id
             ON group_messages(user_id, group_conversation_id, client_message_id)
             WHERE client_message_id <> ''
+            """
+        )
+        db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_group_member_relations_group
+            ON group_member_relations(user_id, group_conversation_id, persona_id)
             """
         )
         db.execute(
