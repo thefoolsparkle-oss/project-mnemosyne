@@ -33,11 +33,13 @@ from .database import dict_from_row, get_db, init_db, now_ts
 from .db_chat import db_chat, normalize_existing_assistant_messages
 from .expression_assets import active_expression_labels, expression_assets_public, update_expression_asset_setting
 from .group_chat import (
+    add_group_member,
     create_group_conversation,
     group_chat,
     group_messages,
     list_group_conversations,
     mark_group_conversation_read,
+    remove_group_member,
     update_group_conversation,
 )
 from .conversation_memory import refresh_conversation_summary
@@ -231,6 +233,10 @@ class GroupConversationUpdateRequest(BaseModel):
     title: str | None = Field(default=None, max_length=80)
     status: str | None = Field(default=None, max_length=20)
     pinned: bool | None = None
+
+
+class GroupMemberRequest(BaseModel):
+    persona_id: int = Field(..., ge=1)
 
 
 class GroupChatRequest(BaseModel):
@@ -2745,6 +2751,32 @@ def patch_group_conversation(
                 pinned=req.pinned,
             )
         }
+    except ValueError as exc:
+        status_code = 404 if "not found" in str(exc) else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
+@app.post("/api/group-conversations/{group_conversation_id}/members")
+def add_group_conversation_member(
+    group_conversation_id: int,
+    req: GroupMemberRequest,
+    user: dict = Depends(current_user),
+):
+    try:
+        return {"group_conversation": add_group_member(int(user["id"]), group_conversation_id, int(req.persona_id))}
+    except ValueError as exc:
+        status_code = 404 if "not found" in str(exc) else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
+@app.delete("/api/group-conversations/{group_conversation_id}/members/{persona_id}")
+def remove_group_conversation_member(
+    group_conversation_id: int,
+    persona_id: int,
+    user: dict = Depends(current_user),
+):
+    try:
+        return {"group_conversation": remove_group_member(int(user["id"]), group_conversation_id, int(persona_id))}
     except ValueError as exc:
         status_code = 404 if "not found" in str(exc) else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc

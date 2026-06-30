@@ -1477,6 +1477,18 @@ function renderGroupChat() {
 function renderGroupSettingsModal(group) {
   const input = h("input", { value: groupConversationTitle(group), maxlength: "80" });
   const status = h("small", { class: "save-status" });
+  const activeMembers = group.members || [];
+  const activeMemberIds = new Set(activeMembers.map((member) => Number(member.persona_id)));
+  const candidatePersonas = (state.personas || []).filter((persona) => !activeMemberIds.has(Number(persona.id)));
+  const memberSelect = h("select", {}, candidatePersonas.map((persona) => (
+    h("option", { value: persona.id, text: persona.name || "TA" })
+  )));
+  const applyGroupUpdate = async (data) => {
+    state.activeGroupConversation = data.group_conversation;
+    state.activeGroupConversationId = data.group_conversation?.id || state.activeGroupConversationId;
+    await loadMainData();
+    renderShell();
+  };
   const close = () => {
     state.groupSettingsOpen = false;
     renderShell();
@@ -1516,6 +1528,31 @@ function renderGroupSettingsModal(group) {
       status.textContent = err.message;
     }
   };
+  const addMember = async () => {
+    const personaId = Number(memberSelect.value);
+    if (!personaId) return;
+    try {
+      status.textContent = "正在加入...";
+      const data = await api(`/api/group-conversations/${group.id}/members`, {
+        method: "POST",
+        body: JSON.stringify({ persona_id: personaId }),
+      });
+      await applyGroupUpdate(data);
+    } catch (err) {
+      status.textContent = err.message;
+    }
+  };
+  const removeMember = async (personaId) => {
+    try {
+      status.textContent = "正在移除...";
+      const data = await api(`/api/group-conversations/${group.id}/members/${personaId}`, {
+        method: "DELETE",
+      });
+      await applyGroupUpdate(data);
+    } catch (err) {
+      status.textContent = err.message;
+    }
+  };
   return h("div", { class: "profile-modal-backdrop", onclick: (event) => {
     if (event.target.classList.contains("profile-modal-backdrop")) close();
   } }, [
@@ -1551,12 +1588,32 @@ function renderGroupSettingsModal(group) {
       ]),
       h("div", { class: "group-settings-members" }, [
         h("strong", { text: "群成员" }),
-        h("div", { class: "group-member-strip" }, (group.members || []).map((member) => (
+        h("div", { class: "group-member-strip" }, activeMembers.map((member) => (
           h("span", { class: "group-member-pill" }, [
             avatar(member.display_name || member.name || "TA", member.avatar_url),
             h("span", { text: member.display_name || member.name || "TA" }),
+            h("button", {
+              type: "button",
+              class: "group-member-remove",
+              title: activeMembers.length <= 2 ? "群聊至少保留两位成员" : "移出群聊",
+              text: "×",
+              disabled: activeMembers.length <= 2 ? "disabled" : null,
+              onclick: () => removeMember(member.persona_id),
+            }),
           ])
         ))),
+      ]),
+      h("div", { class: "group-member-add" }, [
+        candidatePersonas.length
+          ? memberSelect
+          : h("small", { text: "没有可加入的其他人格。" }),
+        h("button", {
+          type: "button",
+          class: "ghost compact",
+          text: "加入群聊",
+          disabled: candidatePersonas.length ? null : "disabled",
+          onclick: addMember,
+        }),
       ]),
       status,
     ]),

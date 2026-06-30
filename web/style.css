@@ -893,6 +893,16 @@ small {
   color: var(--text);
 }
 
+.group-member-add select {
+  min-height: 34px;
+  min-width: 180px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-3);
+  color: var(--text);
+}
+
 .group-settings-members {
   display: grid;
   gap: 8px;
@@ -921,6 +931,38 @@ small {
   width: 24px;
   height: 24px;
   font-size: 10px;
+}
+
+.group-member-remove {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.group-member-remove:hover:not(:disabled) {
+  background: rgba(159, 58, 56, 0.08);
+  color: #9f3a38;
+}
+
+.group-member-remove:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+.group-member-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
 }
 
 .danger-soft {

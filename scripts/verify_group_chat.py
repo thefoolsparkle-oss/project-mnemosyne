@@ -182,6 +182,19 @@ def verify_group_chat_flow() -> None:
     read = server.mark_group_read(group["id"], {"id": user_id})
     assert read["last_read_group_message_id"] == messages[-1]["id"]
 
+    removed = server.remove_group_conversation_member(group["id"], persona_ids[2], {"id": user_id})[
+        "group_conversation"
+    ]
+    assert len(removed["members"]) == 2
+    assert persona_ids[2] not in {int(member["persona_id"]) for member in removed["members"]}
+    restored = server.add_group_conversation_member(
+        group["id"],
+        server.GroupMemberRequest(persona_id=persona_ids[2]),
+        {"id": user_id},
+    )["group_conversation"]
+    assert len(restored["members"]) == 3
+    assert persona_ids[2] in {int(member["persona_id"]) for member in restored["members"]}
+
     fallback_calls: list[str] = []
 
     def flaky_llm(messages, task="chat"):

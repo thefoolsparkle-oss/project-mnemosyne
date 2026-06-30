@@ -197,6 +197,78 @@ def update_group_conversation(
     return group_conversation(user_id, group_conversation_id)
 
 
+def add_group_member(user_id: int, group_conversation_id: int, persona_id: int) -> dict:
+    group = group_conversation(user_id, group_conversation_id)
+    if group.get("status") != "active":
+        raise ValueError("group conversation not active")
+    active_count = sum(1 for member in group.get("members") or [] if int(member.get("is_active") or 0))
+    if active_count >= MAX_GROUP_MEMBERS:
+        raise ValueError(f"group chat can include at most {MAX_GROUP_MEMBERS} personas")
+    persona = _persona_for_user(user_id, int(persona_id))
+    ts = now_ts()
+    with get_db() as db:
+        existing = db.execute(
+            """
+            SELECT id, is_active
+            FROM group_members
+            WHERE group_conversation_id = ? AND user_id = ? AND persona_id = ?
+            """,
+            (group_conversation_id, user_id, int(persona_id)),
+        ).fetchone()
+        if existing and int(existing["is_active"] or 0):
+            raise ValueError("persona already in group")
+        if existing:
+            db.execute(
+                """
+                UPDATE group_members
+                SET is_active = 1, display_name = ?, joined_at = ?
+                WHERE id = ?
+                """,
+                (str(persona.get("name") or "").strip(), ts, int(existing["id"])),
+            )
+        else:
+            db.execute(
+                """
+                INSERT INTO group_members (
+                    group_conversation_id, user_id, persona_id, display_name, joined_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (group_conversation_id, user_id, int(persona_id), str(persona.get("name") or "").strip(), ts),
+            )
+        db.execute(
+            "UPDATE group_conversations SET updated_at = ? WHERE id = ? AND user_id = ?",
+            (ts, group_conversation_id, user_id),
+        )
+    return group_conversation(user_id, group_conversation_id)
+
+
+def remove_group_member(user_id: int, group_conversation_id: int, persona_id: int) -> dict:
+    group = group_conversation(user_id, group_conversation_id)
+    if group.get("status") != "active":
+        raise ValueError("group conversation not active")
+    active_members = [member for member in group.get("members") or [] if int(member.get("is_active") or 0)]
+    if int(persona_id) not in {int(member["persona_id"]) for member in active_members}:
+        raise ValueError("persona not in group")
+    if len(active_members) <= 2:
+        raise ValueError("group chat needs at least two active personas")
+    ts = now_ts()
+    with get_db() as db:
+        db.execute(
+            """
+            UPDATE group_members
+            SET is_active = 0
+            WHERE group_conversation_id = ? AND user_id = ? AND persona_id = ?
+            """,
+            (group_conversation_id, user_id, int(persona_id)),
+        )
+        db.execute(
+            "UPDATE group_conversations SET updated_at = ? WHERE id = ? AND user_id = ?",
+            (ts, group_conversation_id, user_id),
+        )
+    return group_conversation(user_id, group_conversation_id)
+
+
 def mark_group_conversation_read(user_id: int, group_conversation_id: int) -> dict:
     ts = now_ts()
     with get_db() as db:
@@ -473,6 +545,7 @@ def _with_group_members(group: dict) -> dict:
             FROM group_members
             JOIN personas ON personas.id = group_members.persona_id
             WHERE group_members.group_conversation_id = ?
+              AND group_members.is_active = 1
               AND personas.status = 'active'
             ORDER BY group_members.id ASC
             """,
