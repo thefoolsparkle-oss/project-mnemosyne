@@ -1265,6 +1265,21 @@ def admin_persona_growth(
     }
 
 
+@app.post("/api/admin/persona-versions/{version}/restore")
+def admin_restore_persona_version(
+    version: int,
+    req: PersonaVersionRestoreRequest,
+    admin: dict = Depends(current_admin),
+    target_user_id: int | None = None,
+    persona_id: int | None = None,
+):
+    owner_id = _admin_target_user_id(admin, target_user_id)
+    if persona_id is None:
+        raise HTTPException(status_code=400, detail="persona_id is required")
+    _assert_persona_owner(owner_id, persona_id)
+    return restore_persona_version(persona_id, version, req, {"id": owner_id})
+
+
 @app.post("/api/admin/persona-growth/feedback/resolve")
 def admin_resolve_persona_growth_feedback(
     req: PersonaGrowthFeedbackResolutionRequest,

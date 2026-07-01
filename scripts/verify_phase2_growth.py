@@ -332,6 +332,17 @@ def verify_growth_chain(server, sculptor, chat, user_id: int) -> None:
     assert restored_version["change_type"] == "user_version_restore"
     assert "v1" in json.loads(restored_version["change_notes_json"])[0]
 
+    admin_restored = server.admin_restore_persona_version(
+        2,
+        server.PersonaVersionRestoreRequest(note="管理员恢复审核版本"),
+        {"id": user_id},
+        target_user_id=user_id,
+        persona_id=persona_id,
+    )
+    assert admin_restored["restored_from_version"] == 2
+    assert admin_restored["version"] == 5
+    assert admin_restored["persona"]["speaking_style"] == "更简短自然"
+
 
 def verify_chat_feedback_queues_candidate(server, sculptor, chat, archivist, user_id: int) -> None:
     original_forge = server.forge_persona

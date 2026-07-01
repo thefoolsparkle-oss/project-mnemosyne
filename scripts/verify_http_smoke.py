@@ -52,6 +52,40 @@ def verify_avatar_route(base_url: str) -> None:
                     (user_id, ts, ts),
                 ).lastrowid
             )
+            db.execute(
+                """
+                INSERT INTO persona_versions (
+                    persona_id, version, name, summary, prompt, traits_json,
+                    relationship, speaking_style, boundaries_json,
+                    psychological_profile_json, psychological_fit_notes,
+                    appearance_description, desired_image, growth_notes,
+                    reason, change_type, change_notes_json, created_at
+                )
+                VALUES (?, 1, 'Smoke', 'quiet smoke persona', 'chat naturally', '[]',
+                        'tester', 'short', '[]', '{}', '', '', 'blue gray local avatar', '',
+                        'initial smoke', 'initial_forge', '[]', ?)
+                """,
+                (persona_id, ts),
+            )
+            db.execute(
+                """
+                INSERT INTO persona_versions (
+                    persona_id, version, name, summary, prompt, traits_json,
+                    relationship, speaking_style, boundaries_json,
+                    psychological_profile_json, psychological_fit_notes,
+                    appearance_description, desired_image, growth_notes,
+                    reason, change_type, change_notes_json, created_at
+                )
+                VALUES (?, 2, 'Smoke', 'changed smoke persona', 'chat naturally', '[]',
+                        'tester', 'longer', '[]', '{}', '', '', 'blue gray local avatar', '',
+                        'changed smoke', 'user_profile_update', '[]', ?)
+                """,
+                (persona_id, ts),
+            )
+            db.execute(
+                "UPDATE personas SET summary = 'changed smoke persona', speaking_style = 'longer', version = 2 WHERE id = ?",
+                (persona_id,),
+            )
         generated = post_json(
             opener,
             base_url,
@@ -61,6 +95,14 @@ def verify_avatar_route(base_url: str) -> None:
         if not generated.get("ok") or not str(generated.get("url") or "").endswith(".svg"):
             raise AssertionError("avatar generation route did not return an svg url")
         fetch_status(base_url, generated["url"])
+        restored = post_json(
+            opener,
+            base_url,
+            f"/api/personas/{persona_id}/versions/1/restore",
+            {"note": "smoke restore"},
+        )
+        if restored.get("version") != 3 or restored.get("persona", {}).get("summary") != "quiet smoke persona":
+            raise AssertionError("persona version restore route did not restore v1")
     finally:
         with database.get_db() as db:
             db.execute("DELETE FROM users WHERE id = ?", (user_id,))

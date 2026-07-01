@@ -867,6 +867,26 @@ async function dismissStaleRevisions() {
   render();
 }
 
+async function restoreAdminPersonaVersion(version) {
+  if (!state.selectedUserId || !state.selectedPersonaId) return;
+  state.error = "";
+  state.revisionNotice = "";
+  try {
+    const result = await api(
+      `/api/admin/persona-versions/${version}/restore?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ note: "管理员从版本历史恢复" }),
+      },
+    );
+    state.revisionNotice = `已恢复 v${version}，当前保存为 v${result.version}`;
+    await loadPersonas();
+  } catch (err) {
+    state.error = err.message;
+  }
+  render();
+}
+
 function renderInsight(insight) {
   const topic = insight.topic_model || {};
   const guidance = insight.guidance || {};
@@ -1208,6 +1228,7 @@ async function resolveGrowthFeedback(reviewedVersion, note = "") {
 }
 
 function renderVersionList(items) {
+  const currentVersion = Math.max(0, ...items.map((item) => Number(item.version || 0)));
   const versions = new Map(items.map((item) => [Number(item.version), item]));
   return h("div", { class: "version-list" }, items.map((item) => {
     const previous = versions.get(Number(item.version) - 1);
@@ -1217,6 +1238,16 @@ function renderVersionList(items) {
       h("strong", { text: `v${item.version}` }),
       h("span", { text: item.name || "未命名" }),
       h("small", { text: versionTypeLabel(item) }),
+      Number(item.version) < currentVersion ? h("button", {
+        type: "button",
+        class: "ghost",
+        text: "恢复此版",
+        onclick: (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          restoreAdminPersonaVersion(item.version);
+        },
+      }) : null,
     ]),
     h("div", { class: "version-body" }, [
       growthLine("摘要", item.summary),
@@ -1239,6 +1270,7 @@ function versionTypeLabel(item) {
     initial_forge: "初始创建",
     user_profile_update: "用户编辑资料",
     sculptor_review: "审核应用的人格调整",
+    user_version_restore: "恢复历史版本",
   };
   return types[item.change_type] || item.reason || "历史版本";
 }
