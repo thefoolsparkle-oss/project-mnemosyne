@@ -209,6 +209,10 @@ class PersonaAvatarGenerateRequest(BaseModel):
     desired_image: str | None = Field(default=None, max_length=2000)
 
 
+class PersonaVersionRestoreRequest(BaseModel):
+    note: str | None = Field(default="", max_length=500)
+
+
 class PersonaDeleteRequest(BaseModel):
     confirm_name: str = Field(..., min_length=1, max_length=40)
 
@@ -1727,6 +1731,7 @@ def persona_growth(persona_id: int, user: dict = Depends(current_user)):
     reviewed_changes = [
         {
             "version": int(item["reviewed_version"]["version"]),
+            "previous_version": int(item["previous_version"]["version"]) if item.get("previous_version") else None,
             "created_at": int(item["reviewed_version"]["created_at"]),
             "highlights": _public_review_highlights(item["previous_version"], item["reviewed_version"]),
             "feedback": _public_growth_feedback(item["feedback"]),
@@ -2297,6 +2302,118 @@ def update_persona(persona_id: int, req: PersonaUpdateRequest, user: dict = Depe
     public_persona = _public_persona(persona)
     public_persona["expression_preference"] = _expression_preference_public(user_id, persona_id)
     return {"persona": public_persona}
+
+
+@app.post("/api/personas/{persona_id}/versions/{version}/restore")
+def restore_persona_version(
+    persona_id: int,
+    version: int,
+    req: PersonaVersionRestoreRequest,
+    user: dict = Depends(current_user),
+):
+    user_id = int(user["id"])
+    if version < 1:
+        raise HTTPException(status_code=400, detail="invalid persona version")
+    note = scrub_identity_text((req.note or "").strip())[:500]
+    ts = now_ts()
+    with get_db() as db:
+        current = dict_from_row(
+            db.execute(
+                "SELECT * FROM personas WHERE id = ? AND user_id = ? AND status = 'active'",
+                (persona_id, user_id),
+            ).fetchone()
+        )
+        if not current:
+            raise HTTPException(status_code=404, detail="persona not found")
+        target = dict_from_row(
+            db.execute(
+                """
+                SELECT *
+                FROM persona_versions
+                WHERE persona_id = ? AND version = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (persona_id, version),
+            ).fetchone()
+        )
+        if not target:
+            raise HTTPException(status_code=404, detail="persona version not found")
+        current_version = int(current.get("version", 1) or 1)
+        if int(target.get("version", 0) or 0) == current_version:
+            raise HTTPException(status_code=400, detail="persona is already at that version")
+        restored = _public_persona(target)
+        restored["id"] = persona_id
+        restored["user_id"] = user_id
+        restored["avatar_url"] = current.get("avatar_url")
+        restored["prompt"] = build_prompt(restored)
+        next_version = current_version + 1
+        db.execute(
+            """
+            UPDATE personas
+            SET name = ?, summary = ?, prompt = ?, traits_json = ?, relationship = ?,
+                speaking_style = ?, boundaries_json = ?, psychological_profile_json = ?,
+                psychological_fit_notes = ?, appearance_description = ?, desired_image = ?,
+                growth_notes = ?, version = ?, updated_at = ?
+            WHERE id = ? AND user_id = ?
+            """,
+            (
+                restored.get("name", ""),
+                restored.get("summary", ""),
+                restored.get("prompt", ""),
+                json.dumps(restored.get("traits", []), ensure_ascii=False),
+                restored.get("relationship", ""),
+                restored.get("speaking_style", ""),
+                json.dumps(restored.get("boundaries", []), ensure_ascii=False),
+                json.dumps(restored.get("psychological_profile", {}), ensure_ascii=False),
+                restored.get("psychological_fit_notes", ""),
+                restored.get("appearance_description", ""),
+                restored.get("desired_image", ""),
+                restored.get("growth_notes", ""),
+                next_version,
+                ts,
+                persona_id,
+                user_id,
+            ),
+        )
+        change_note = f"恢复到 v{version}"
+        if note:
+            change_note = f"{change_note}：{note}"
+        db.execute(
+            """
+            INSERT INTO persona_versions (
+                persona_id, version, name, summary, prompt, traits_json,
+                relationship, speaking_style, boundaries_json,
+                psychological_profile_json, psychological_fit_notes,
+                appearance_description, desired_image, growth_notes,
+                reason, change_type, change_notes_json, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                persona_id,
+                next_version,
+                restored.get("name", ""),
+                restored.get("summary", ""),
+                restored.get("prompt", ""),
+                json.dumps(restored.get("traits", []), ensure_ascii=False),
+                restored.get("relationship", ""),
+                restored.get("speaking_style", ""),
+                json.dumps(restored.get("boundaries", []), ensure_ascii=False),
+                json.dumps(restored.get("psychological_profile", {}), ensure_ascii=False),
+                restored.get("psychological_fit_notes", ""),
+                restored.get("appearance_description", ""),
+                restored.get("desired_image", ""),
+                restored.get("growth_notes", ""),
+                "persona version restore",
+                "user_version_restore",
+                json.dumps([change_note], ensure_ascii=False),
+                ts,
+            ),
+        )
+        persona = _public_persona(dict_from_row(db.execute("SELECT * FROM personas WHERE id = ?", (persona_id,)).fetchone()))
+    persona["expression_preference"] = _expression_preference_public(user_id, persona_id)
+    return {"persona": persona, "restored_from_version": version, "version": next_version}
 
 
 @app.patch("/api/personas/{persona_id}/expression-preference")

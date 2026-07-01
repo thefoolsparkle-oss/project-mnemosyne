@@ -148,6 +148,7 @@ def verify_growth_chain(server, sculptor, chat, user_id: int) -> None:
     assert growth["reviewed_changes"] == [
         {
             "version": 2,
+            "previous_version": 1,
             "created_at": growth["latest_reviewed_change"]["created_at"],
             "highlights": ["回应方式更贴近你的偏好"],
             "feedback": None,
@@ -308,6 +309,28 @@ def verify_growth_chain(server, sculptor, chat, user_id: int) -> None:
         raise AssertionError("stale suggestion should not overwrite a newer persona version")
     except ValueError as exc:
         assert "当前人格已为 v3" in str(exc)
+
+    restored = server.restore_persona_version(
+        persona_id,
+        1,
+        server.PersonaVersionRestoreRequest(note="回到初始相处方式"),
+        {"id": user_id},
+    )
+    assert restored["restored_from_version"] == 1
+    assert restored["version"] == 4
+    assert restored["persona"]["summary"] == forged_persona()["summary"]
+    assert restored["persona"]["speaking_style"] == forged_persona()["speaking_style"]
+    with database.get_db() as db:
+        restored_version = db.execute(
+            """
+            SELECT change_type, change_notes_json
+            FROM persona_versions
+            WHERE persona_id = ? AND version = 4
+            """,
+            (persona_id,),
+        ).fetchone()
+    assert restored_version["change_type"] == "user_version_restore"
+    assert "v1" in json.loads(restored_version["change_notes_json"])[0]
 
 
 def verify_chat_feedback_queues_candidate(server, sculptor, chat, archivist, user_id: int) -> None:

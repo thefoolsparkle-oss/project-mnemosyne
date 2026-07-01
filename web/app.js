@@ -1889,6 +1889,26 @@ function applyPersonaExpressionPreference(personaId, preference) {
   }
 }
 
+function applyPersonaUpdate(updatedPersona) {
+  if (!updatedPersona?.id) return;
+  state.activePersona = state.activePersona && Number(state.activePersona.id) === Number(updatedPersona.id)
+    ? updatedPersona
+    : state.activePersona;
+  state.personas = state.personas.map((item) => (
+    Number(item.id) === Number(updatedPersona.id) ? updatedPersona : item
+  ));
+  state.conversations = state.conversations.map((item) => (
+    Number(item.persona_id) === Number(updatedPersona.id)
+      ? { ...item, persona_name: updatedPersona.name, persona_avatar_url: updatedPersona.avatar_url }
+      : item
+  ));
+  state.archivedConversations = state.archivedConversations.map((item) => (
+    Number(item.persona_id) === Number(updatedPersona.id)
+      ? { ...item, persona_name: updatedPersona.name, persona_avatar_url: updatedPersona.avatar_url }
+      : item
+  ));
+}
+
 function renderPersonaExpressionPreference(persona) {
   const mode = expressionPreferenceMode(persona);
   const enabled = mode !== "off";
@@ -1965,7 +1985,7 @@ function renderPersonaGrowth(persona) {
       : null,
     latestChange ? renderGrowthFeedback(personaId, latestChange, growth?.feedback_error) : null,
     renderPreferenceRequest(personaId, preferenceRequests, growth?.request_notice, growth?.request_error),
-    reviewedChanges.length ? renderReviewedChangeHistory(reviewedChanges) : null,
+    reviewedChanges.length ? renderReviewedChangeHistory(personaId, reviewedChanges) : null,
     h("p", {
       class: "persona-growth-hint",
       text: "想调整相处方式，可以直接说“回复短一点”或“少追问”；明确说“以后你就是我的女朋友”或“我以后叫你小舟”也会直接更新并留记录。",
@@ -2040,13 +2060,19 @@ function renderPreferenceRequest(personaId, requests, notice = "", errorText = "
   ]);
 }
 
-function renderReviewedChangeHistory(changes) {
+function renderReviewedChangeHistory(personaId, changes) {
   return h("details", { class: "persona-growth-history" }, [
     h("summary", { text: `已确认变化记录（${changes.length}）` }),
     h("div", { class: "persona-growth-history-list" }, changes.map((change) => h("article", { class: "persona-growth-history-item" }, [
       h("div", { class: "persona-growth-history-head" }, [
         h("strong", { text: `v${change.version}` }),
         change.created_at ? h("small", { text: formatListTime(change.created_at) }) : null,
+        Number(change.previous_version || 0) ? h("button", {
+          type: "button",
+          class: "ghost compact",
+          text: `恢复 v${change.previous_version}`,
+          onclick: () => restorePersonaVersion(personaId, change.previous_version),
+        }) : null,
       ]),
       h("p", { text: (change.highlights || []).join("；") || "相处方式完成了一次轻微调整" }),
       change.feedback?.reaction
@@ -2098,6 +2124,28 @@ async function withdrawPreferenceRequest(personaId, requestId) {
       request_error: "",
     };
     clearGrowthAction(personaId);
+  } catch (err) {
+    state.personaGrowth[personaId] = { ...growth, request_error: err.message, request_notice: "" };
+  }
+  renderShell();
+}
+
+async function restorePersonaVersion(personaId, version) {
+  const growth = state.personaGrowth[personaId] || {};
+  try {
+    const restored = await api(`/api/personas/${personaId}/versions/${version}/restore`, {
+      method: "POST",
+      body: JSON.stringify({ note: "从成长历史恢复" }),
+    });
+    if (restored.persona) {
+      applyPersonaUpdate(restored.persona);
+    }
+    const data = await api(`/api/personas/${personaId}/growth`);
+    state.personaGrowth[personaId] = {
+      ...data.growth,
+      request_notice: `已恢复到 v${version} 的状态，并保存为 v${restored.version}`,
+      request_error: "",
+    };
   } catch (err) {
     state.personaGrowth[personaId] = { ...growth, request_error: err.message, request_notice: "" };
   }
@@ -2286,23 +2334,6 @@ function renderPersonaEditForm(persona) {
     if (matched) deleteButton.removeAttribute("disabled");
     else deleteButton.setAttribute("disabled", "disabled");
   });
-  const applyPersonaUpdate = (updatedPersona) => {
-    state.activePersona = updatedPersona;
-    delete state.personaGrowth[Number(updatedPersona.id)];
-    state.personas = state.personas.map((item) => (
-      Number(item.id) === Number(updatedPersona.id) ? updatedPersona : item
-    ));
-    state.conversations = state.conversations.map((item) => (
-      Number(item.persona_id) === Number(updatedPersona.id)
-        ? { ...item, persona_name: updatedPersona.name, persona_avatar_url: updatedPersona.avatar_url }
-        : item
-    ));
-    state.archivedConversations = state.archivedConversations.map((item) => (
-      Number(item.persona_id) === Number(updatedPersona.id)
-        ? { ...item, persona_name: updatedPersona.name, persona_avatar_url: updatedPersona.avatar_url }
-        : item
-    ));
-  };
   const generateAvatar = async () => {
     status.textContent = "";
     try {
@@ -2356,6 +2387,7 @@ function renderPersonaEditForm(persona) {
             }),
           });
           applyPersonaUpdate(data.persona);
+          delete state.personaGrowth[Number(data.persona.id)];
           state.editingPersona = false;
           state.personaPanelOpen = false;
           renderShell();
