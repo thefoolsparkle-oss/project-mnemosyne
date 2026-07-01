@@ -212,6 +212,22 @@ def verify_chat_defers_summary_refresh(chat, server, user_id: int, persona_id: i
         server.refresh_conversation_summary = original_refresh
 
 
+def verify_local_avatar_generation(server, user_id: int, persona_id: int) -> None:
+    generated = server.generate_persona_avatar_placeholder(
+        persona_id,
+        server.PersonaAvatarGenerateRequest(desired_image="银色短发，安静的蓝灰色氛围"),
+        {"id": user_id},
+    )
+    assert generated["ok"] is True
+    assert generated["status"] == "generated"
+    assert generated["url"].endswith(".svg")
+    assert generated["persona"]["avatar_url"] == generated["url"]
+    assert generated["persona"]["desired_image"] == "银色短发，安静的蓝灰色氛围"
+    path = server.UPLOAD_DIR / str(user_id) / "generated" / Path(generated["url"]).name
+    assert path.exists()
+    assert "<svg" in path.read_text(encoding="utf-8")
+
+
 def verify_tab_scoped_login(server, auth) -> None:
     auth.create_user("cookie_user", "password-cookie", "普通页")
     auth.create_user("tab_user", "password-tab", "独立页")
@@ -256,12 +272,15 @@ def main() -> None:
         import app.persona_forge as forge
         import app.server as server
 
+        server.UPLOAD_DIR = Path(tmp) / "uploads"
+        server.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
         database.init_db()
         user_id, persona_id = seed_user()
         verify_relationship_authority(forge)
         verify_naming_and_restore(server, user_id)
         verify_chat_failure_and_idempotency(chat, server, user_id, persona_id)
         verify_chat_defers_summary_refresh(chat, server, user_id, persona_id)
+        verify_local_avatar_generation(server, user_id, persona_id)
         verify_tab_scoped_login(server, auth)
     print("Phase 1 ordinary-user flow verification passed")
 

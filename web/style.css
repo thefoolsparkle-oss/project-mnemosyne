@@ -434,6 +434,17 @@ small {
   gap: 12px;
 }
 
+.avatar-url-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.avatar-url-row button {
+  min-height: 34px;
+}
+
 .guest-convert {
   display: grid;
   gap: 12px;
@@ -2462,6 +2473,7 @@ small {
 
   .birthday-selects,
   .modal-actions,
+  .avatar-url-row,
   .rail-actions,
   .naming-fallback-actions {
     grid-template-columns: 1fr;

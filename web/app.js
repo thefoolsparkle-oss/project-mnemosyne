@@ -2286,6 +2286,38 @@ function renderPersonaEditForm(persona) {
     if (matched) deleteButton.removeAttribute("disabled");
     else deleteButton.setAttribute("disabled", "disabled");
   });
+  const applyPersonaUpdate = (updatedPersona) => {
+    state.activePersona = updatedPersona;
+    delete state.personaGrowth[Number(updatedPersona.id)];
+    state.personas = state.personas.map((item) => (
+      Number(item.id) === Number(updatedPersona.id) ? updatedPersona : item
+    ));
+    state.conversations = state.conversations.map((item) => (
+      Number(item.persona_id) === Number(updatedPersona.id)
+        ? { ...item, persona_name: updatedPersona.name, persona_avatar_url: updatedPersona.avatar_url }
+        : item
+    ));
+    state.archivedConversations = state.archivedConversations.map((item) => (
+      Number(item.persona_id) === Number(updatedPersona.id)
+        ? { ...item, persona_name: updatedPersona.name, persona_avatar_url: updatedPersona.avatar_url }
+        : item
+    ));
+  };
+  const generateAvatar = async () => {
+    status.textContent = "";
+    try {
+      status.textContent = "正在生成头像...";
+      const data = await api(`/api/personas/${persona.id}/avatar/generate`, {
+        method: "POST",
+        body: JSON.stringify({ desired_image: desired.value }),
+      });
+      avatarUrl.value = data.url || data.persona?.avatar_url || "";
+      if (data.persona) applyPersonaUpdate(data.persona);
+      status.textContent = "头像已生成";
+    } catch (err) {
+      status.textContent = err.message;
+    }
+  };
 
   return h("section", { class: "rail-section" }, [
     h("div", { class: "section-head" }, [
@@ -2323,21 +2355,7 @@ function renderPersonaEditForm(persona) {
               desired_image: desired.value,
             }),
           });
-          state.activePersona = data.persona;
-          delete state.personaGrowth[Number(data.persona.id)];
-          state.personas = state.personas.map((item) => (
-            Number(item.id) === Number(data.persona.id) ? data.persona : item
-          ));
-          state.conversations = state.conversations.map((item) => (
-            Number(item.persona_id) === Number(data.persona.id)
-              ? { ...item, persona_name: data.persona.name, persona_avatar_url: data.persona.avatar_url }
-              : item
-          ));
-          state.archivedConversations = state.archivedConversations.map((item) => (
-            Number(item.persona_id) === Number(data.persona.id)
-              ? { ...item, persona_name: data.persona.name, persona_avatar_url: data.persona.avatar_url }
-              : item
-          ));
+          applyPersonaUpdate(data.persona);
           state.editingPersona = false;
           state.personaPanelOpen = false;
           renderShell();
@@ -2351,7 +2369,10 @@ function renderPersonaEditForm(persona) {
       h("label", {}, ["说话方式", speakingStyle]),
       h("label", {}, ["摘要", summary]),
       h("label", {}, ["头像图片", avatarFile]),
-      h("label", {}, ["图片链接（可选）", avatarUrl]),
+      h("label", {}, ["图片链接（可选）", h("div", { class: "avatar-url-row" }, [
+        avatarUrl,
+        h("button", { type: "button", class: "ghost compact", text: "生成头像", onclick: generateAvatar }),
+      ])]),
       h("details", { class: "persona-edit-more" }, [
         h("summary", { text: "形象与更多资料" }),
         h("label", {}, ["外貌参考", appearance]),

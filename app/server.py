@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import html
 import json
 import uuid
 from pathlib import Path
@@ -2339,26 +2341,41 @@ def generate_persona_avatar_placeholder(
     user: dict = Depends(current_user),
 ):
     user_id = int(user["id"])
+    desired_image = scrub_identity_text(req.desired_image or "") if req.desired_image is not None else None
     with get_db() as db:
         row = db.execute(
-            "SELECT id, desired_image FROM personas WHERE id = ? AND user_id = ? AND status = 'active'",
+            "SELECT * FROM personas WHERE id = ? AND user_id = ? AND status = 'active'",
             (persona_id, user_id),
         ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="persona not found")
-        if req.desired_image is not None:
+        persona = _public_persona(dict_from_row(row))
+        if desired_image is not None:
+            persona["desired_image"] = desired_image
             db.execute(
                 """
                 UPDATE personas
                 SET desired_image = ?, updated_at = ?
                 WHERE id = ? AND user_id = ?
                 """,
-                (req.desired_image, now_ts(), persona_id, user_id),
+                (desired_image, now_ts(), persona_id, user_id),
             )
+        avatar_url = _generate_local_persona_avatar(user_id, persona)
+        db.execute(
+            """
+            UPDATE personas
+            SET avatar_url = ?, updated_at = ?
+            WHERE id = ? AND user_id = ?
+            """,
+            (avatar_url, now_ts(), persona_id, user_id),
+        )
+        persona = _public_persona(dict_from_row(db.execute("SELECT * FROM personas WHERE id = ?", (persona_id,)).fetchone()))
+    persona["expression_preference"] = _expression_preference_public(user_id, persona_id)
     return {
-        "ok": False,
-        "status": "reserved",
-        "message": "avatar generation endpoint is reserved; image generation is not connected yet",
+        "ok": True,
+        "status": "generated",
+        "url": avatar_url,
+        "persona": persona,
     }
 
 
@@ -2923,6 +2940,69 @@ def _public_persona(persona: dict | None) -> dict:
         except Exception:
             result["change_notes"] = []
     return result
+
+
+def _generate_local_persona_avatar(user_id: int, persona: dict) -> str:
+    persona_id = int(persona.get("id") or 0)
+    name = str(persona.get("name") or "TA").strip() or "TA"
+    image_hint = str(persona.get("desired_image") or persona.get("appearance_description") or persona.get("summary") or "").strip()
+    seed = f"{persona_id}:{name}:{image_hint}"
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
+    hue = int(digest[:2], 16) % 360
+    accent_hue = (hue + 42 + int(digest[2:4], 16) % 84) % 360
+    initial = _avatar_initial(name)
+    tag = _avatar_tag(image_hint or str(persona.get("relationship") or persona.get("speaking_style") or ""))
+    svg = _persona_avatar_svg(
+        initial=initial,
+        tag=tag,
+        hue=hue,
+        accent_hue=accent_hue,
+        shape_seed=int(digest[4:8], 16),
+    )
+    user_dir = UPLOAD_DIR / str(user_id) / "generated"
+    user_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"persona-{persona_id}-{digest[:12]}.svg"
+    path = user_dir / filename
+    path.write_text(svg, encoding="utf-8")
+    return f"/uploads/{user_id}/generated/{filename}"
+
+
+def _avatar_initial(name: str) -> str:
+    compact = "".join(ch for ch in str(name or "TA").strip() if not ch.isspace())
+    return compact[:2] or "TA"
+
+
+def _avatar_tag(text: str) -> str:
+    compact = "".join(ch for ch in str(text or "").strip() if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
+    return compact[:8]
+
+
+def _persona_avatar_svg(*, initial: str, tag: str, hue: int, accent_hue: int, shape_seed: int) -> str:
+    escaped_initial = html.escape(initial)
+    escaped_tag = html.escape(tag)
+    radius = 18 + shape_seed % 18
+    cx = 68 + shape_seed % 34
+    cy = 54 + (shape_seed // 7) % 42
+    tag_text = (
+        f'<text x="80" y="120" text-anchor="middle" font-size="10" '
+        f'font-family="Arial, sans-serif" fill="rgba(255,255,255,.76)">{escaped_tag}</text>'
+        if escaped_tag
+        else ""
+    )
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="hsl({hue}, 46%, 38%)"/>
+    <stop offset="1" stop-color="hsl({accent_hue}, 42%, 56%)"/>
+  </linearGradient>
+</defs>
+<rect width="160" height="160" rx="34" fill="url(#bg)"/>
+<circle cx="{cx}" cy="{cy}" r="{radius}" fill="rgba(255,255,255,.18)"/>
+<circle cx="{126 - cx // 3}" cy="{118 - cy // 5}" r="{max(12, radius - 6)}" fill="rgba(255,255,255,.1)"/>
+<text x="80" y="90" text-anchor="middle" font-size="48" font-weight="700" font-family="Arial, sans-serif" fill="white">{escaped_initial}</text>
+{tag_text}
+</svg>
+"""
 
 
 def _expression_preference_public(user_id: int, persona_id: int) -> dict[str, Any]:
