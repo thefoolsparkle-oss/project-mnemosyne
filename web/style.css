@@ -981,6 +981,21 @@ small {
   margin-top: 0;
 }
 
+.group-auto-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.group-auto-toggle input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
 .danger-soft {
   color: #9f3a38;
   border-color: rgba(159, 58, 56, 0.28);

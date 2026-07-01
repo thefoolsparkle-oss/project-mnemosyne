@@ -1488,6 +1488,14 @@ function renderGroupSettingsModal(group) {
   const memberSelect = h("select", {}, candidatePersonas.map((persona) => (
     h("option", { value: persona.id, text: persona.name || "TA" })
   )));
+  const autoTurnToggle = h("input", {
+    type: "checkbox",
+    checked: groupAutoTurnEnabled(group.id) ? "checked" : null,
+    onchange: (event) => {
+      setGroupAutoTurnEnabled(group.id, event.target.checked);
+      status.textContent = event.target.checked ? "自主续聊已开启" : "自主续聊已关闭";
+    },
+  });
   const applyGroupUpdate = async (data) => {
     state.activeGroupConversation = data.group_conversation;
     state.activeGroupConversationId = data.group_conversation?.id || state.activeGroupConversationId;
@@ -1619,6 +1627,10 @@ function renderGroupSettingsModal(group) {
           disabled: candidatePersonas.length ? null : "disabled",
           onclick: addMember,
         }),
+      ]),
+      h("label", { class: "group-auto-toggle" }, [
+        autoTurnToggle,
+        h("span", { text: "自主续聊" }),
       ]),
       status,
     ]),
@@ -2716,6 +2728,26 @@ function draftKey() {
   return `mnemosyne:draft:${personaId}:${conversationId}`;
 }
 
+function groupAutoTurnKey(groupId) {
+  return `mnemosyne:group-auto-turn:${groupId}`;
+}
+
+function groupAutoTurnEnabled(groupId) {
+  try {
+    return localStorage.getItem(groupAutoTurnKey(groupId)) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+function setGroupAutoTurnEnabled(groupId, enabled) {
+  try {
+    localStorage.setItem(groupAutoTurnKey(groupId), enabled ? "1" : "0");
+  } catch {
+    // Local storage may be unavailable in restricted browser modes.
+  }
+}
+
 function loadDraft() {
   try {
     return localStorage.getItem(draftKey()) || "";
@@ -2933,6 +2965,7 @@ async function maybeRequestGroupAutonomousTurn() {
   if (!latestUser || now - Number(latestUser.created_at || 0) > GROUP_AUTO_USER_WINDOW_SECONDS) return;
 
   const groupId = Number(state.activeGroupConversationId);
+  if (!groupAutoTurnEnabled(groupId)) return;
   const cooldownKey = String(groupId);
   const lastAttempt = Number(groupAutoCooldowns.get(cooldownKey) || 0);
   if (now - lastAttempt < GROUP_AUTO_MIN_IDLE_SECONDS) return;
