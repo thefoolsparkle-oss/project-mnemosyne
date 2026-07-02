@@ -1,8 +1,8 @@
 const app = document.getElementById("app");
 const TAB_SESSION_MODE_KEY = "mnemosyne:tab-session-mode";
 const TAB_SESSION_TOKEN_KEY = "mnemosyne:tab-session-token";
-const GROUP_AUTO_CHECK_MS = 30000;
-const GROUP_AUTO_MIN_IDLE_SECONDS = 75;
+const GROUP_AUTO_CHECK_MS = 15000;
+const GROUP_AUTO_MIN_IDLE_SECONDS = 45;
 const GROUP_AUTO_USER_WINDOW_SECONDS = 600;
 const GROUP_AUTO_FAILURE_BACKOFF_SECONDS = 300;
 
