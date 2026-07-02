@@ -5,6 +5,7 @@ const GROUP_AUTO_CHECK_MS = 15000;
 const GROUP_AUTO_MIN_IDLE_SECONDS = 45;
 const GROUP_AUTO_USER_WINDOW_SECONDS = 600;
 const GROUP_AUTO_FAILURE_BACKOFF_SECONDS = 300;
+const GROUP_MAX_MEMBERS = 6;
 
 const groupAutoCooldowns = new Map();
 
@@ -1496,6 +1497,7 @@ function renderGroupSettingsModal(group) {
   const activeMembers = group.members || [];
   const activeMemberIds = new Set(activeMembers.map((member) => Number(member.persona_id)));
   const candidatePersonas = (state.personas || []).filter((persona) => !activeMemberIds.has(Number(persona.id)));
+  const groupIsFull = activeMembers.length >= GROUP_MAX_MEMBERS;
   const memberSelect = h("select", {}, candidatePersonas.map((persona) => (
     h("option", { value: persona.id, text: persona.name || "TA" })
   )));
@@ -1553,6 +1555,10 @@ function renderGroupSettingsModal(group) {
     }
   };
   const addMember = async () => {
+    if (groupIsFull) {
+      status.textContent = `\u7fa4\u804a\u6700\u591a\u4fdd\u7559 ${GROUP_MAX_MEMBERS} \u4f4d\u6210\u5458`;
+      return;
+    }
     const personaId = Number(memberSelect.value);
     if (!personaId) return;
     try {
@@ -1629,14 +1635,16 @@ function renderGroupSettingsModal(group) {
         renderGroupRelationSummary(activeMembers),
       ]),
       h("div", { class: "group-member-add" }, [
-        candidatePersonas.length
+        groupIsFull
+          ? h("small", { text: `\u7fa4\u804a\u6700\u591a ${GROUP_MAX_MEMBERS} \u4f4d\u6210\u5458` })
+          : candidatePersonas.length
           ? memberSelect
-          : h("small", { text: "没有可加入的其他人格。" }),
+          : h("small", { text: "\u6ca1\u6709\u53ef\u52a0\u5165\u7684\u5176\u4ed6\u4eba\u683c\u3002" }),
         h("button", {
           type: "button",
           class: "ghost compact",
           text: "加入群聊",
-          disabled: candidatePersonas.length ? null : "disabled",
+          disabled: !groupIsFull && candidatePersonas.length ? null : "disabled",
           onclick: addMember,
         }),
       ]),
