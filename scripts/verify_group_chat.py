@@ -54,12 +54,25 @@ def verify_group_chat_flow() -> None:
     from app.llm_client import LLMProviderError
 
     user_id, persona_ids = seed_personas()
+    ts = database.now_ts()
+    with database.get_db() as db:
+        db.execute(
+            """
+            INSERT INTO memory_facts (
+                uid, user_id, persona_id, type, text, importance, confidence,
+                valid_from, created_at, updated_at
+            )
+            VALUES ('FACT-GROUP-MEMORY-1', ?, ?, 'identity', ?, 0.9, 0.9, ?, ?, ?)
+            """,
+            (user_id, persona_ids[1], "group memory anchor: likes quiet tea", ts, ts, ts),
+        )
     calls: list[str] = []
     def fake_llm(messages, task="chat"):
         assert task == "group_chat"
         joined = "\n".join(str(item.get("content") or "") for item in messages)
         assert "Group members" in joined
         assert "Recent group messages" in joined
+        assert "group memory anchor: likes quiet tea" in joined
         assert "Turn policy" in joined
         calls.append("turn")
         return json.dumps(
@@ -374,6 +387,7 @@ def verify_group_chat_flow() -> None:
         joined = "\n".join(str(item.get("content") or "") for item in messages)
         assert "Recent group messages" in joined
         assert "familiarity" in joined
+        assert "group memory anchor: likes quiet tea" in joined
         autonomous_calls.append("turn")
         return json.dumps(
             {"messages": [{"persona_id": persona_ids[1], "content": "I can add one thought.", "reason": "continue"}]},

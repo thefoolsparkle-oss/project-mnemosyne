@@ -14,6 +14,7 @@ from .db_chat import (
 )
 from .expression_assets import active_expression_labels
 from .identity import scrub_identity_text
+from .layered_memory import layered_memory_prompt, recall_layered_memory, summary_prompt
 from .llm_client import LLMProviderError, call_llm_api
 
 
@@ -24,6 +25,7 @@ MAX_PERSONA_MESSAGES_AFTER_USER = 4
 GROUP_HISTORY_LIMIT = 24
 GROUP_AUTONOMOUS_MIN_IDLE_SECONDS = 45
 GROUP_AUTONOMOUS_USER_WINDOW_SECONDS = 600
+GROUP_MEMBER_MEMORY_LIMIT = 520
 
 
 def create_group_conversation(user_id: int, persona_ids: list[int], title: str = "") -> dict:
@@ -495,7 +497,11 @@ def _generate_group_turn(
 ) -> dict:
     relation_context = _group_relation_context_by_persona(user_id, group_conversation_id)
     member_lines = [
-        _group_member_prompt_context(member, relation_context.get(int(member["persona_id"]), []))
+        _group_member_prompt_context(
+            member,
+            relation_context.get(int(member["persona_id"]), []),
+            _group_member_memory_context(user_id, int(member["persona_id"]), user_message),
+        )
         for member in members
     ]
     messages = [
@@ -571,8 +577,13 @@ def _generate_group_autonomous_turn(
     history: list[dict],
 ) -> dict:
     relation_context = _group_relation_context_by_persona(user_id, group_conversation_id)
+    memory_query = _format_group_history(history)[-1200:]
     member_lines = [
-        _group_member_prompt_context(member, relation_context.get(int(member["persona_id"]), []))
+        _group_member_prompt_context(
+            member,
+            relation_context.get(int(member["persona_id"]), []),
+            _group_member_memory_context(user_id, int(member["persona_id"]), memory_query),
+        )
         for member in members
     ]
     messages = [
@@ -629,7 +640,11 @@ def _generate_group_autonomous_turn(
     return {"messages": planned}
 
 
-def _group_member_prompt_context(member: dict, relations: list[str] | None = None) -> dict:
+def _group_member_prompt_context(
+    member: dict,
+    relations: list[str] | None = None,
+    memory_context: dict | None = None,
+) -> dict:
     return {
         "persona_id": int(member["persona_id"]),
         "name": member.get("display_name") or member.get("name") or "",
@@ -639,7 +654,24 @@ def _group_member_prompt_context(member: dict, relations: list[str] | None = Non
         "turn_count": int(member.get("turn_count") or 0),
         "last_spoke_at": int(member.get("last_spoke_at") or 0),
         "group_relations": relations or [],
+        "memory_context": memory_context or {},
         "persona_prompt": _safe_context(str(member.get("prompt") or ""))[:360],
+    }
+
+
+def _group_member_memory_context(user_id: int, persona_id: int, query: str) -> dict:
+    try:
+        stable_summary = _safe_context(summary_prompt(user_id, persona_id))[:GROUP_MEMBER_MEMORY_LIMIT]
+    except Exception:
+        stable_summary = "Stable memory summary: unavailable."
+    try:
+        layered = recall_layered_memory(user_id, persona_id, query, limit=8)
+        relevant_memory = _safe_context(layered_memory_prompt(layered))[:GROUP_MEMBER_MEMORY_LIMIT]
+    except Exception:
+        relevant_memory = "Layered long-term memory: unavailable."
+    return {
+        "stable_summary": stable_summary,
+        "relevant_memory": relevant_memory,
     }
 
 
