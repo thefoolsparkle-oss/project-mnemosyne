@@ -375,7 +375,7 @@ def group_chat(
     _update_group_member_relations(
         user_id,
         group_conversation_id,
-        [int(reply["speaker_persona_id"]) for reply in replies if reply.get("speaker_persona_id")],
+        planned_messages[:MAX_GROUP_MESSAGES_PER_TURN],
     )
 
     route = {"speakers": [{"persona_id": item["persona_id"], "reason": item.get("reason", "")} for item in planned_messages]}
@@ -469,8 +469,8 @@ def autonomous_group_turn(
             )
         )
     previous_speaker_id = _last_persona_speaker_id(history)
-    relation_sequence = ([previous_speaker_id] if previous_speaker_id else []) + [
-        int(reply["speaker_persona_id"]) for reply in replies if reply.get("speaker_persona_id")
+    relation_sequence = ([{"persona_id": previous_speaker_id}] if previous_speaker_id else []) + planned_messages[
+        :MAX_AUTONOMOUS_GROUP_MESSAGES
     ]
     _update_group_member_relations(user_id, group_conversation_id, relation_sequence)
 
@@ -1085,17 +1085,21 @@ def _last_persona_speaker_id(history: list[dict]) -> int | None:
     return None
 
 
-def _update_group_member_relations(user_id: int, group_conversation_id: int, speaker_ids: list[int]) -> None:
-    sequence = [int(persona_id) for persona_id in speaker_ids if persona_id]
-    pairs: list[tuple[int, int]] = []
+def _update_group_member_relations(user_id: int, group_conversation_id: int, speaker_turns: list[Any]) -> None:
+    sequence = _normalise_relation_turns(speaker_turns)
+    pairs: list[tuple[int, int, int, str]] = []
     for left, right in zip(sequence, sequence[1:]):
-        if left != right:
-            pairs.append((left, right))
-            pairs.append((right, left))
+        left_id = int(left["persona_id"])
+        right_id = int(right["persona_id"])
+        if left_id == right_id:
+            continue
+        tension_delta = 1 if _turn_suggests_relation_tension(right) else 0
+        note = "recently disagreed or added tension in this group" if tension_delta else "recently exchanged turns in this group"
+        pairs.append((left_id, right_id, tension_delta, note))
+        pairs.append((right_id, left_id, tension_delta, note))
     if not pairs:
         return
     ts = now_ts()
-    note = "recently exchanged turns in this group"
     with get_db() as db:
         db.executemany(
             """
@@ -1103,19 +1107,63 @@ def _update_group_member_relations(user_id: int, group_conversation_id: int, spe
                 group_conversation_id, user_id, persona_id, other_persona_id,
                 affinity, tension, note, updated_at
             )
-            VALUES (?, ?, ?, ?, 1, 0, ?, ?)
+            VALUES (?, ?, ?, ?, 1, ?, ?, ?)
             ON CONFLICT(group_conversation_id, persona_id, other_persona_id)
             DO UPDATE SET
                 affinity = MIN(20, group_member_relations.affinity + 1),
-                tension = MAX(0, group_member_relations.tension - 1),
+                tension = CASE
+                    WHEN excluded.tension > 0 THEN MIN(20, group_member_relations.tension + excluded.tension)
+                    ELSE MAX(0, group_member_relations.tension - 1)
+                END,
                 note = excluded.note,
                 updated_at = excluded.updated_at
             """,
             [
-                (group_conversation_id, user_id, persona_id, other_persona_id, note, ts)
-                for persona_id, other_persona_id in pairs
+                (group_conversation_id, user_id, persona_id, other_persona_id, tension_delta, note, ts)
+                for persona_id, other_persona_id, tension_delta, note in pairs
             ],
         )
+
+
+def _normalise_relation_turns(speaker_turns: list[Any]) -> list[dict]:
+    sequence: list[dict] = []
+    for item in speaker_turns:
+        if isinstance(item, dict):
+            persona_id = item.get("persona_id") or item.get("speaker_persona_id")
+            content = str(item.get("content") or "")
+            reason = str(item.get("reason") or "")
+        else:
+            persona_id = item
+            content = ""
+            reason = ""
+        try:
+            persona_id = int(persona_id)
+        except Exception:
+            continue
+        if not persona_id:
+            continue
+        sequence.append({"persona_id": persona_id, "content": content, "reason": reason})
+    return sequence
+
+
+def _turn_suggests_relation_tension(turn: dict) -> bool:
+    text = re.sub(r"\s+", "", f"{turn.get('content') or ''} {turn.get('reason') or ''}".lower())
+    if not text:
+        return False
+    markers = (
+        "but",
+        "however",
+        "disagree",
+        "different",
+        "\u4e0d\u8fc7",
+        "\u53ef\u662f",
+        "\u4f46\u662f",
+        "\u6211\u4e0d\u592a\u540c\u610f",
+        "\u4e0d\u540c\u610f",
+        "\u53cd\u800c",
+        "\u522b\u8fd9\u6837",
+    )
+    return any(marker in text for marker in markers)
 
 
 def _messages_for_ids(user_id: int, message_ids: list[int]) -> list[dict]:

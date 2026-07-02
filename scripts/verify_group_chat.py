@@ -177,6 +177,28 @@ def verify_group_chat_flow() -> None:
         for relation in member["group_relations"]
     } == {persona_ids[0], persona_ids[1]}
     assert {relation["status"] for member in related_members for relation in member["group_relations"]} == {"new"}
+    group_chat._update_group_member_relations(
+        user_id,
+        group["id"],
+        [
+            {"persona_id": persona_ids[0], "content": "I think so"},
+            {"persona_id": persona_ids[1], "content": "But I see it differently"},
+        ],
+    )
+    with database.get_db() as db:
+        tension_rows = db.execute(
+            """
+            SELECT tension, note
+            FROM group_member_relations
+            WHERE group_conversation_id = ?
+              AND persona_id IN (?, ?)
+              AND other_persona_id IN (?, ?)
+            """,
+            (group["id"], persona_ids[0], persona_ids[1], persona_ids[0], persona_ids[1]),
+        ).fetchall()
+    assert tension_rows
+    assert all(int(row["tension"] or 0) >= 1 for row in tension_rows)
+    assert all("tension" in str(row["note"] or "") for row in tension_rows)
     assert messages[1]["expressions"][0]["expression_type"] == "gesture"
     assert messages[1]["expressions"][0]["label"] == "点头"
     assert messages[2]["expressions"][0]["expression_type"] == "mood"
