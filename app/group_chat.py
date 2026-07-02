@@ -524,6 +524,7 @@ def _generate_group_turn(
         },
         {"role": "system", "content": "Group members:\n" + json.dumps(member_lines, ensure_ascii=False)},
         {"role": "system", "content": "Recent group messages:\n" + _format_group_history(history)},
+        {"role": "system", "content": "Turn policy:\n" + json.dumps(_group_turn_policy_context(user_message), ensure_ascii=False)},
         {"role": "user", "content": user_message},
     ]
     try:
@@ -697,6 +698,43 @@ def _group_user_message_expects_reply(user_message: str) -> bool:
     if any(marker in text for marker in explicit_markers):
         return True
     return len(text) >= 2
+
+
+def _group_turn_policy_context(user_message: str) -> dict[str, Any]:
+    text = re.sub(r"\s+", "", str(user_message or "").strip().lower())
+    multi_speaker_markers = (
+        "你们",
+        "大家",
+        "所有人",
+        "一起",
+        "都说",
+        "都来",
+        "你俩",
+        "你們",
+        "everyone",
+        "youall",
+        "together",
+        "both",
+    )
+    quiet_markers = (
+        "不用回",
+        "别回",
+        "不要回",
+        "安静",
+        "先别说",
+        "先不要说",
+        "quiet",
+        "silence",
+    )
+    return {
+        "expects_reply": _group_user_message_expects_reply(user_message),
+        "multi_speaker_invited": any(marker in text for marker in multi_speaker_markers),
+        "silence_allowed": any(marker in text for marker in quiet_markers),
+        "guidance": (
+            "If multi_speaker_invited is true and the topic is still open, prefer 2 distinct speakers. "
+            "If silence_allowed is true, an empty messages array is acceptable."
+        ),
+    }
 
 
 def _store_persona_group_reply(

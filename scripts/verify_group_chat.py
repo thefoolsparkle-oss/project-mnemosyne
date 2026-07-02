@@ -60,6 +60,7 @@ def verify_group_chat_flow() -> None:
         joined = "\n".join(str(item.get("content") or "") for item in messages)
         assert "Group members" in joined
         assert "Recent group messages" in joined
+        assert "Turn policy" in joined
         calls.append("turn")
         return json.dumps(
             {
@@ -88,6 +89,9 @@ def verify_group_chat_flow() -> None:
         return "group reply 2[[expression:mood:微笑]]"
 
     group_chat.call_llm_api = fake_llm
+
+    assert group_chat._group_turn_policy_context("你们怎么看？")["multi_speaker_invited"] is True
+    assert group_chat._group_turn_policy_context("我先安静一下")["silence_allowed"] is True
 
     group = server.create_group_conversation_endpoint(
         server.GroupConversationCreateRequest(title="小客厅", persona_ids=persona_ids),
