@@ -190,10 +190,11 @@ def verify_avatar_route_in_process(client) -> None:
 def verify_in_process() -> None:
     warnings.filterwarnings("ignore", message=r"Using `httpx` with `starlette\.testclient` is deprecated.*")
     from fastapi.testclient import TestClient
-    import app.server as server
 
     with tempfile.TemporaryDirectory() as tmp:
         database.DB_PATH = Path(tmp) / "http-smoke.db"
+        import app.server as server
+
         server.UPLOAD_DIR = Path(tmp) / "uploads"
         server.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
         for route in server.app.routes:

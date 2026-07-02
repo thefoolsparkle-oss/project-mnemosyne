@@ -56,6 +56,7 @@ try {
     Invoke-Checked "verify_group_chat" { & $Python scripts\verify_group_chat.py }
     Invoke-Checked "verify_http_smoke" { & $Python scripts\verify_http_smoke.py --in-process }
     Invoke-Checked "verify_llm_config" { & $Python scripts\verify_llm_config.py }
+    Invoke-Checked "diagnose_llm_env" { & $Python scripts\diagnose_llm_env.py }
     Invoke-Checked "node web app check" { node --check web\app.js }
     Invoke-Checked "node admin app check" { node --check admin_web\admin.js }
 } finally {

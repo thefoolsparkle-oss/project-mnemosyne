@@ -118,6 +118,12 @@ Windows 用户变量需要配置：
 
 配置后重新打开 PowerShell / VS Code 终端，让新环境变量生效。
 
+可用下面的本地诊断命令确认当前配置是否读到了环境变量；它只显示变量是否存在，不会打印 API Key：
+
+```powershell
+py scripts\diagnose_llm_env.py
+```
+
 ## 仓库与数据安全
 
 - 对外项目名称统一为 `忆界树 / Project Mnemosyne`，GitHub 仓库名称使用 `project-mnemosyne`。
