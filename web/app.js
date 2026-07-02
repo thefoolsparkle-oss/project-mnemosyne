@@ -1812,6 +1812,25 @@ function renderDeletedPersonasModal() {
 
 function renderDeletedPersonaItem(persona) {
   const status = h("small", { class: "save-status" });
+  const exportPersona = () => {
+    window.open(`/api/personas/${persona.id}/export`, "_blank", "noopener");
+  };
+  const purgePersona = async () => {
+    status.textContent = "";
+    const name = persona.name || "";
+    const confirmName = window.prompt(`\u5f7b\u5e95\u6e05\u9664\u540e\u65e0\u6cd5\u6062\u590d\u3002\u8bf7\u8f93\u5165\u300c${name}\u300d\u786e\u8ba4\u3002`);
+    if (confirmName === null) return;
+    try {
+      await api(`/api/personas/${persona.id}/purge`, {
+        method: "DELETE",
+        body: JSON.stringify({ confirm_name: confirmName }),
+      });
+      await loadMainData();
+      renderShell();
+    } catch (err) {
+      status.textContent = err.message;
+    }
+  };
   return h("div", { class: "deleted-persona-item" }, [
     avatar(persona.name || "忆", persona.avatar_url),
     h("span", {}, [
@@ -1819,6 +1838,18 @@ function renderDeletedPersonaItem(persona) {
       h("small", { text: persona.summary || persona.relationship || "资料仍被保留" }),
       status,
     ]),
+    h("button", {
+      type: "button",
+      class: "ghost compact",
+      text: "\u5bfc\u51fa",
+      onclick: exportPersona,
+    }),
+    h("button", {
+      type: "button",
+      class: "ghost compact danger-soft",
+      text: "\u5f7b\u5e95\u6e05\u9664",
+      onclick: purgePersona,
+    }),
     h("button", {
       type: "button",
       class: "ghost compact",

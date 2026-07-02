@@ -2539,6 +2539,35 @@ def delete_persona(persona_id: int, req: PersonaDeleteRequest, user: dict = Depe
     return {"ok": True, "persona_id": persona_id, "status": "deleted"}
 
 
+@app.delete("/api/personas/{persona_id}/purge")
+def purge_deleted_persona(persona_id: int, req: PersonaDeleteRequest, user: dict = Depends(current_user)):
+    user_id = int(user["id"])
+    with get_db() as db:
+        row = db.execute(
+            "SELECT id, name FROM personas WHERE id = ? AND user_id = ? AND status = 'deleted'",
+            (persona_id, user_id),
+        ).fetchone()
+        persona = dict_from_row(row)
+        if not persona:
+            raise HTTPException(status_code=404, detail="deleted persona not found")
+        if req.confirm_name.strip() != str(persona["name"]).strip():
+            raise HTTPException(status_code=400, detail="请输入完整的人格名字以确认彻底清除")
+        db.execute(
+            """
+            UPDATE group_messages
+            SET speaker_persona_id = NULL,
+                content = '这条来自已清除人格的群聊消息已移除。'
+            WHERE user_id = ? AND speaker_persona_id = ?
+            """,
+            (user_id, persona_id),
+        )
+        db.execute(
+            "DELETE FROM personas WHERE id = ? AND user_id = ? AND status = 'deleted'",
+            (persona_id, user_id),
+        )
+    return {"ok": True, "persona_id": persona_id, "status": "purged"}
+
+
 @app.get("/api/personas/{persona_id}/export")
 def export_persona_data(persona_id: int, user: dict = Depends(current_user)):
     user_id = int(user["id"])

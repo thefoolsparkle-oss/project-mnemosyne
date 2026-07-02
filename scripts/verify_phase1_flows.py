@@ -117,6 +117,28 @@ def verify_naming_and_restore(server, user_id: int) -> None:
                 """,
                 (conversation_id, user_id, persona_id, "\u5bfc\u51fa\u6d4b\u8bd5", ts),
             )
+            group_id = int(
+                db.execute(
+                    "INSERT INTO group_conversations (user_id, title, created_at, updated_at) VALUES (?, 'group', ?, ?)",
+                    (user_id, ts, ts),
+                ).lastrowid
+            )
+            db.execute(
+                """
+                INSERT INTO group_members (group_conversation_id, user_id, persona_id, display_name, joined_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (group_id, user_id, persona_id, "\u77e5\u9065", ts),
+            )
+            group_message_id = int(
+                db.execute(
+                    """
+                    INSERT INTO group_messages (group_conversation_id, user_id, speaker_type, speaker_persona_id, content, created_at)
+                    VALUES (?, ?, 'persona', ?, ?, ?)
+                    """,
+                    (group_id, user_id, persona_id, "\u7fa4\u804a\u5bfc\u51fa\u6d4b\u8bd5", ts),
+                ).lastrowid
+            )
         exported = server.export_persona_data(persona_id, user)
         exported_data = json.loads(exported.body.decode("utf-8"))
         assert exported_data["schema"] == "persona_export_v1"
@@ -129,6 +151,27 @@ def verify_naming_and_restore(server, user_id: int) -> None:
         server.restore_persona(persona_id, user)
         assert not any(int(item["id"]) == persona_id for item in server.deleted_personas(user)["personas"])
         assert any(int(item["id"]) == conversation_id for item in server.conversations(user)["conversations"])
+        server.delete_persona(persona_id, server.PersonaDeleteRequest(confirm_name="\u77e5\u9065"), user)
+        purged = server.purge_deleted_persona(persona_id, server.PersonaDeleteRequest(confirm_name="\u77e5\u9065"), user)
+        assert purged["status"] == "purged"
+        assert not any(int(item["id"]) == persona_id for item in server.deleted_personas(user)["personas"])
+        try:
+            server.export_persona_data(persona_id, user)
+            raise AssertionError("purged persona should not export")
+        except HTTPException as exc:
+            assert exc.status_code == 404
+        with database.get_db() as db:
+            group_message = db.execute(
+                "SELECT speaker_persona_id, content FROM group_messages WHERE id = ?",
+                (group_message_id,),
+            ).fetchone()
+            assert group_message is not None
+            assert group_message["speaker_persona_id"] is None
+            assert "\u5df2\u6e05\u9664\u4eba\u683c" in group_message["content"]
+            assert db.execute(
+                "SELECT COUNT(*) AS count FROM group_members WHERE persona_id = ?",
+                (persona_id,),
+            ).fetchone()["count"] == 0
     finally:
         server.forge_persona = original_forge
 
