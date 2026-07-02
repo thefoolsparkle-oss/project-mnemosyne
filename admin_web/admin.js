@@ -318,6 +318,7 @@ function renderExpressionUsage(data) {
   const recent = Array.isArray(data.recent) ? data.recent : [];
   const summary = data.summary || {};
   const insights = Array.isArray(data.insights) ? data.insights : [];
+  const reviewItems = Array.isArray(data.review_items) ? data.review_items : [];
   return h("div", { class: "expression-usage-panel" }, [
     h("div", { class: "expression-usage-head" }, [
       h("strong", { text: `当前模式：${modeLabel}` }),
@@ -339,6 +340,9 @@ function renderExpressionUsage(data) {
         text: item.text || "",
       })))
       : null,
+    reviewItems.length
+      ? renderExpressionReviewItems(reviewItems)
+      : null,
     counts.length
       ? h("div", { class: "expression-usage-counts" }, [
         h("small", { text: `标签计数基于 ${data.counted || counts.reduce((sum, item) => sum + Number(item.count || 0), 0)} 条历史` }),
@@ -351,6 +355,36 @@ function renderExpressionUsage(data) {
     recent.length
       ? h("div", { class: "expression-usage-list" }, recent.slice(0, 8).map(renderExpressionUsageItem))
       : null,
+  ]);
+}
+
+function renderExpressionReviewItems(items) {
+  return h("div", { class: "expression-review-list" }, [
+    h("strong", { text: "审查建议" }),
+    ...items.map((item) => h("article", { class: `expression-review-item ${item.severity || "watch"}` }, [
+      h("div", { class: "expression-review-main" }, [
+        h("span", { class: `expression-asset-risk ${item.risk_level || "unknown"}`, text: item.risk_level || "unknown" }),
+        h("strong", { text: `${item.display_text || item.label || item.tag} × ${item.count || 0}` }),
+        h("small", { text: `${item.group || "unknown"} / 占比 ${Math.round(Number(item.share || 0) * 100)}% / 冷却 ${item.cooldown_turns ?? 0} 轮` }),
+      ]),
+      h("p", { text: item.text || "" }),
+      h("div", { class: "expression-review-actions" }, [
+        Number.isFinite(Number(item.suggested_cooldown_turns))
+          ? h("button", {
+            type: "button",
+            class: "ghost compact",
+            text: `冷却到 ${item.suggested_cooldown_turns}`,
+            onclick: () => applyExpressionReviewCooldown(item),
+          })
+          : null,
+        h("button", {
+          type: "button",
+          class: "ghost compact",
+          text: "备注",
+          onclick: () => editExpressionReviewNote(item),
+        }),
+      ]),
+    ])),
   ]);
 }
 
@@ -466,6 +500,43 @@ async function editExpressionAssetCooldown(asset) {
           cooldown_turns: cooldown,
           admin_note: asset.admin_note || "",
         }),
+      }
+    );
+    state.expressionAssets = data.assets || [];
+    await loadReview();
+  } catch (err) {
+    state.error = err.message;
+  }
+  render();
+}
+
+async function applyExpressionReviewCooldown(item) {
+  const cooldown = Math.max(0, Math.min(20, Number.parseInt(item.suggested_cooldown_turns, 10)));
+  if (!Number.isFinite(cooldown)) return;
+  await updateExpressionAssetFromReview(item, {
+    enabled: item.asset_enabled !== false,
+    cooldown_turns: cooldown,
+    admin_note: `管理台审查建议：冷却调整到 ${cooldown}`,
+  });
+}
+
+async function editExpressionReviewNote(item) {
+  const note = window.prompt("表达资源审查备注", "");
+  if (note === null) return;
+  await updateExpressionAssetFromReview(item, {
+    enabled: item.asset_enabled !== false,
+    admin_note: note,
+  });
+}
+
+async function updateExpressionAssetFromReview(item, patch) {
+  state.error = "";
+  try {
+    const data = await api(
+      `/api/admin/expression-assets/${encodeURIComponent(item.expression_type)}/${encodeURIComponent(item.label)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(patch),
       }
     );
     state.expressionAssets = data.assets || [];

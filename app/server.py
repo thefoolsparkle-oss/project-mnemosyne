@@ -680,6 +680,7 @@ def admin_expression_usage(
                 "text": f"{top['display_text']} 占最近统计窗口 {share:.0%}，可考虑提高冷却或改写用途说明。",
                 "tag": top["tag"],
             })
+    review_items = _expression_review_items(sorted_counts, summary)
     preference = {"enabled": True, "mode": "normal", "explicit": False}
     if preference_row:
         row = dict_from_row(preference_row) or {}
@@ -697,8 +698,56 @@ def admin_expression_usage(
         "insights": insights,
         "recent": recent,
         "counts": sorted_counts,
+        "review_items": review_items,
         "counted": len(usage_rows),
     }
+
+
+def _expression_review_items(counts: list[dict[str, Any]], summary: dict[str, Any]) -> list[dict[str, Any]]:
+    window = max(1, int(summary.get("window") or 0))
+    items: list[dict[str, Any]] = []
+    for item in counts:
+        count = int(item.get("count") or 0)
+        if count <= 0:
+            continue
+        share = count / window
+        base = {
+            "tag": item.get("tag") or "",
+            "label": item.get("label") or "",
+            "display_text": item.get("display_text") or item.get("label") or item.get("tag") or "",
+            "expression_type": item.get("expression_type") or "gesture",
+            "count": count,
+            "share": round(share, 4),
+            "asset_enabled": item.get("asset_enabled", False),
+            "risk_level": item.get("risk_level") or "unknown",
+            "group": item.get("group") or "unknown",
+            "cooldown_turns": int(item.get("cooldown_turns") or 0),
+        }
+        if item.get("asset_enabled") is False:
+            items.append({
+                **base,
+                "kind": "disabled_asset_history",
+                "severity": "watch",
+                "text": f"{base['display_text']} 有 {count} 条历史来自当前已禁用资源，普通端已隐藏。",
+            })
+        if item.get("risk_level") == "medium":
+            items.append({
+                **base,
+                "kind": "medium_risk_tag",
+                "severity": "watch",
+                "suggested_cooldown_turns": min(20, max(int(base["cooldown_turns"]), 8)),
+                "text": f"{base['display_text']} 是中风险表达，最近出现 {count} 次，建议保持较长冷却并继续观察。",
+            })
+        if count >= 3 and share >= 0.5:
+            items.append({
+                **base,
+                "kind": "concentrated_label",
+                "severity": "tune",
+                "suggested_cooldown_turns": min(20, int(base["cooldown_turns"]) + 2),
+                "text": f"{base['display_text']} 占最近统计窗口 {share:.0%}，可提高冷却或改写用途说明。",
+            })
+    severity_order = {"tune": 0, "watch": 1}
+    return sorted(items, key=lambda item: (severity_order.get(str(item.get("severity")), 9), -int(item.get("count") or 0), str(item.get("tag") or "")))[:8]
 
 
 @app.post("/api/admin/rag/sync")

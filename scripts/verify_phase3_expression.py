@@ -250,6 +250,10 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     assert usage["summary"]["single"] >= 1
     assert usage["summary"]["disabled_asset"] >= 1
     assert any(item["kind"] == "disabled_asset_history" for item in usage["insights"])
+    assert any(
+        item["kind"] == "disabled_asset_history" and item["tag"] == "tone:轻声"
+        for item in usage["review_items"]
+    )
     hidden_usage_item = next(item for item in usage["recent"] if item["label"] == "轻声")
     assert hidden_usage_item["asset_enabled"] is False
     assert hidden_usage_item["asset_known"] is True

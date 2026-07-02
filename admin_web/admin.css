@@ -478,6 +478,51 @@ small {
   color: var(--accent);
 }
 
+.expression-review-list {
+  display: grid;
+  gap: 8px;
+}
+
+.expression-review-list > strong {
+  font-size: 13px;
+}
+
+.expression-review-item {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #15171a;
+}
+
+.expression-review-item.tune {
+  border-color: rgba(95, 125, 181, 0.42);
+}
+
+.expression-review-main,
+.expression-review-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.expression-review-main strong {
+  font-size: 13px;
+}
+
+.expression-review-main small,
+.expression-review-item p {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.expression-review-item p {
+  margin: 0;
+  line-height: 1.5;
+}
+
 .expression-asset-catalog {
   display: grid;
   gap: 10px;
