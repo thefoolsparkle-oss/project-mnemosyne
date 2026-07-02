@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import sys
 from http.cookies import SimpleCookie
@@ -109,6 +110,19 @@ def verify_naming_and_restore(server, user_id: int) -> None:
                     (user_id, persona_id, ts, ts),
                 ).lastrowid
             )
+            db.execute(
+                """
+                INSERT INTO messages (conversation_id, user_id, persona_id, role, content, created_at)
+                VALUES (?, ?, ?, 'user', ?, ?)
+                """,
+                (conversation_id, user_id, persona_id, "\u5bfc\u51fa\u6d4b\u8bd5", ts),
+            )
+        exported = server.export_persona_data(persona_id, user)
+        exported_data = json.loads(exported.body.decode("utf-8"))
+        assert exported_data["schema"] == "persona_export_v1"
+        assert exported_data["persona"]["id"] == persona_id
+        assert exported_data["conversations"][0]["id"] == conversation_id
+        assert exported_data["messages"][0]["content"] == "\u5bfc\u51fa\u6d4b\u8bd5"
         server.delete_persona(persona_id, server.PersonaDeleteRequest(confirm_name="\u77e5\u9065"), user)
         assert any(int(item["id"]) == persona_id for item in server.deleted_personas(user)["personas"])
         assert not any(int(item["id"]) == conversation_id for item in server.conversations(user)["conversations"])

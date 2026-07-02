@@ -2342,6 +2342,14 @@ function renderPersonaEditForm(persona) {
       }
     },
   });
+  const exportButton = h("button", {
+    type: "button",
+    class: "ghost",
+    text: "导出数据",
+    onclick: () => {
+      window.open(`/api/personas/${persona.id}/export`, "_blank", "noopener");
+    },
+  });
   deleteConfirm.addEventListener("input", () => {
     const matched = deleteConfirm.value.trim() === String(persona.name || "").trim();
     if (matched) deleteButton.removeAttribute("disabled");
@@ -2440,6 +2448,7 @@ function renderPersonaEditForm(persona) {
         h("summary", { text: "删除这个人格" }),
         h("p", { text: "删除后，TA 和相关聊天会从你的主界面隐藏。记忆与版本历史暂时保留，以便后续支持恢复或数据处理。" }),
         h("label", {}, ["输入人格名字确认", deleteConfirm]),
+        exportButton,
         deleteButton,
         deleteStatus,
       ]),

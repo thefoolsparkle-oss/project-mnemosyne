@@ -2539,6 +2539,149 @@ def delete_persona(persona_id: int, req: PersonaDeleteRequest, user: dict = Depe
     return {"ok": True, "persona_id": persona_id, "status": "deleted"}
 
 
+@app.get("/api/personas/{persona_id}/export")
+def export_persona_data(persona_id: int, user: dict = Depends(current_user)):
+    user_id = int(user["id"])
+    with get_db() as db:
+        persona = dict_from_row(
+            db.execute(
+                "SELECT * FROM personas WHERE id = ? AND user_id = ? AND status IN ('active', 'deleted')",
+                (persona_id, user_id),
+            ).fetchone()
+        )
+        if not persona:
+            raise HTTPException(status_code=404, detail="persona not found")
+        conversations = [
+            dict_from_row(row)
+            for row in db.execute(
+                """
+                SELECT *
+                FROM conversations
+                WHERE user_id = ? AND persona_id = ?
+                ORDER BY id ASC
+                """,
+                (user_id, persona_id),
+            ).fetchall()
+        ]
+        messages = [
+            dict_from_row(row)
+            for row in db.execute(
+                """
+                SELECT messages.*
+                FROM messages
+                JOIN conversations ON conversations.id = messages.conversation_id
+                WHERE messages.user_id = ? AND conversations.persona_id = ?
+                ORDER BY messages.conversation_id ASC, messages.id ASC
+                """,
+                (user_id, persona_id),
+            ).fetchall()
+        ]
+        versions = [
+            _public_persona(dict_from_row(row))
+            for row in db.execute(
+                """
+                SELECT *
+                FROM persona_versions
+                WHERE persona_id = ?
+                ORDER BY version ASC, id ASC
+                """,
+                (persona_id,),
+            ).fetchall()
+        ]
+        expression_preference = dict_from_row(
+            db.execute(
+                "SELECT * FROM expression_preferences WHERE user_id = ? AND persona_id = ?",
+                (user_id, persona_id),
+            ).fetchone()
+        )
+        expressions = [
+            dict_from_row(row)
+            for row in db.execute(
+                """
+                SELECT *
+                FROM message_expressions
+                WHERE user_id = ? AND persona_id = ?
+                ORDER BY id ASC
+                """,
+                (user_id, persona_id),
+            ).fetchall()
+        ]
+        group_memberships = [
+            dict_from_row(row)
+            for row in db.execute(
+                """
+                SELECT group_members.*, group_conversations.title, group_conversations.status
+                FROM group_members
+                JOIN group_conversations ON group_conversations.id = group_members.group_conversation_id
+                WHERE group_members.user_id = ? AND group_members.persona_id = ?
+                ORDER BY group_members.group_conversation_id ASC
+                """,
+                (user_id, persona_id),
+            ).fetchall()
+        ]
+        group_ids = [int(item["group_conversation_id"]) for item in group_memberships]
+        group_messages = []
+        if group_ids:
+            placeholders = ",".join("?" for _ in group_ids)
+            group_messages = [
+                dict_from_row(row)
+                for row in db.execute(
+                    f"""
+                    SELECT *
+                    FROM group_messages
+                    WHERE user_id = ? AND group_conversation_id IN ({placeholders})
+                    ORDER BY group_conversation_id ASC, id ASC
+                    """,
+                    [user_id, *group_ids],
+                ).fetchall()
+            ]
+        memories = {
+            "facts": [
+                dict_from_row(row)
+                for row in db.execute(
+                    """
+                    SELECT *
+                    FROM memory_facts
+                    WHERE user_id = ? AND persona_id = ?
+                    ORDER BY id ASC
+                    """,
+                    (user_id, persona_id),
+                ).fetchall()
+            ],
+            "relations": [
+                dict_from_row(row)
+                for row in db.execute(
+                    """
+                    SELECT *
+                    FROM memory_relations
+                    WHERE user_id = ? AND persona_id = ?
+                    ORDER BY id ASC
+                    """,
+                    (user_id, persona_id),
+                ).fetchall()
+            ],
+        }
+    payload = {
+        "exported_at": now_ts(),
+        "schema": "persona_export_v1",
+        "persona": _public_persona(persona),
+        "versions": versions,
+        "conversations": conversations,
+        "messages": messages,
+        "expression_preference": expression_preference,
+        "message_expressions": expressions,
+        "group_memberships": group_memberships,
+        "group_messages": group_messages,
+        "memories": memories,
+    }
+    filename = f"mnemosyne-persona-{persona_id}-export.json"
+    return Response(
+        content=json.dumps(payload, ensure_ascii=False, indent=2),
+        media_type="application/json; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.post("/api/personas/{persona_id}/restore")
 def restore_persona(persona_id: int, user: dict = Depends(current_user)):
     user_id = int(user["id"])
