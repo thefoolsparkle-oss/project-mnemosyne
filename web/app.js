@@ -4,6 +4,7 @@ const TAB_SESSION_TOKEN_KEY = "mnemosyne:tab-session-token";
 const GROUP_AUTO_CHECK_MS = 30000;
 const GROUP_AUTO_MIN_IDLE_SECONDS = 75;
 const GROUP_AUTO_USER_WINDOW_SECONDS = 600;
+const GROUP_AUTO_FAILURE_BACKOFF_SECONDS = 300;
 
 const groupAutoCooldowns = new Map();
 
@@ -2967,17 +2968,21 @@ async function maybeRequestGroupAutonomousTurn() {
   const groupId = Number(state.activeGroupConversationId);
   if (!groupAutoTurnEnabled(groupId)) return;
   const cooldownKey = String(groupId);
-  const lastAttempt = Number(groupAutoCooldowns.get(cooldownKey) || 0);
-  if (now - lastAttempt < GROUP_AUTO_MIN_IDLE_SECONDS) return;
-  groupAutoCooldowns.set(cooldownKey, now);
+  const nextAllowedAt = Number(groupAutoCooldowns.get(cooldownKey) || 0);
+  if (now < nextAllowedAt) return;
+  groupAutoCooldowns.set(cooldownKey, now + GROUP_AUTO_MIN_IDLE_SECONDS);
 
   try {
     const data = await api(`/api/group-conversations/${groupId}/autonomous-turn`, {
       method: "POST",
       body: JSON.stringify({ client_message_id: createClientMessageId() }),
     });
+    if (data.degraded) {
+      groupAutoCooldowns.set(cooldownKey, nowSeconds() + GROUP_AUTO_FAILURE_BACKOFF_SECONDS);
+    }
     if (state.view !== "group" || Number(state.activeGroupConversationId) !== groupId) return;
     if ((data.messages || []).length) {
+      groupAutoCooldowns.set(cooldownKey, nowSeconds() + GROUP_AUTO_MIN_IDLE_SECONDS);
       state.groupMessages.push(...data.messages);
       await markGroupConversationRead(groupId);
       await loadMainData();
@@ -2985,6 +2990,7 @@ async function maybeRequestGroupAutonomousTurn() {
       scrollChat();
     }
   } catch {
+    groupAutoCooldowns.set(cooldownKey, nowSeconds() + GROUP_AUTO_FAILURE_BACKOFF_SECONDS);
     // Autonomous turns are opportunistic; visible errors belong to user-sent messages.
   }
 }

@@ -57,6 +57,10 @@ def _get_env(name: str) -> str | None:
     return None
 
 
+def api_key_env_present(name: str) -> bool:
+    return bool(_get_env(str(name or "").strip()))
+
+
 def _call_ollama(messages: List[Message], llm_config: dict) -> str:
     base_url = str(llm_config.get("base_url") or "http://localhost:11434").rstrip("/")
     payload = {
@@ -88,9 +92,10 @@ def _call_chat_completions(
     default_model: str,
     include_temperature: bool = True,
 ) -> str:
-    api_key = _get_env(str(llm_config.get("api_key_env") or env_key))
+    configured_env_key = str(llm_config.get("api_key_env") or env_key)
+    api_key = _get_env(configured_env_key)
     if not api_key:
-        raise RuntimeError(f"{env_key} is not set, but config.yaml selects provider: {provider_name}")
+        raise LLMProviderError(f"{configured_env_key} is not set, but config.yaml selects provider: {provider_name}")
 
     configured_base_url = str(llm_config.get("base_url") or "").rstrip("/")
     if not configured_base_url or configured_base_url == "http://localhost:11434":
@@ -178,7 +183,7 @@ def call_llm_api(messages: List[Message], task: str = "default") -> str:
         elif provider in {"openai_compatible", "compatible"} or llm_config.get("api_key_env"):
             response = _call_compatible_provider(messages, llm_config)
         else:
-            raise ValueError(f"Unsupported LLM provider: {provider}")
+            raise LLMProviderError(f"Unsupported LLM provider: {provider}")
     except Exception as exc:
         _record_llm_call(
             task=task,
@@ -218,7 +223,7 @@ def _call_compatible_provider(messages: List[Message], llm_config: dict) -> str:
     provider_name = str(llm_config.get("provider_name") or llm_config.get("provider") or "openai_compatible")
     api_key_env = str(llm_config.get("api_key_env") or "")
     if not api_key_env:
-        raise RuntimeError("api_key_env is required for openai-compatible LLM providers")
+        raise LLMProviderError("api_key_env is required for openai-compatible LLM providers")
     return _call_chat_completions(
         messages,
         llm_config,

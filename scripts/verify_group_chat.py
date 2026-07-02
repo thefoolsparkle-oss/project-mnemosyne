@@ -56,6 +56,7 @@ def verify_group_chat_flow() -> None:
     user_id, persona_ids = seed_personas()
     calls: list[str] = []
     def fake_llm(messages, task="chat"):
+        assert task == "group_chat"
         joined = "\n".join(str(item.get("content") or "") for item in messages)
         assert "Group members" in joined
         assert "Recent group messages" in joined
@@ -332,6 +333,22 @@ def verify_group_chat_flow() -> None:
     assert quiet_calls == ["turn"]
     assert quiet["route"]["speakers"] == []
     assert quiet["replies"] == []
+    assert quiet["degraded"] is False
+
+    quiet_empty_expected = server.group_chat_endpoint(
+        server.GroupChatRequest(
+            group_conversation_id=group["id"],
+            message="你们怎么看？",
+            client_message_id="group-chat-empty-expected",
+        ),
+        {"id": user_id},
+    )
+    assert quiet_calls == ["turn", "turn"]
+    assert quiet_empty_expected["degraded"] is True
+    assert quiet_empty_expected["route"]["speakers"] == []
+    assert quiet_empty_expected["replies"] == []
+    assert len(quiet_empty_expected["messages"]) == 1
+    assert quiet_empty_expected["messages"][0]["reply_status"] == "error"
 
     autonomous_calls: list[str] = []
 

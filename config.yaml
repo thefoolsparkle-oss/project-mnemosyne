@@ -21,6 +21,14 @@ llm_routes:
     temperature: 0.75
     max_tokens: 700
     timeout: 45
+  group_chat:
+    provider: kimi
+    model: moonshot-v1-auto
+    base_url: https://api.moonshot.cn/v1
+    api_key_env: MOONSHOT_API_KEY
+    temperature: 0.7
+    max_tokens: 360
+    timeout: 25
   forge:
     provider: kimi
     model: kimi-k2.6

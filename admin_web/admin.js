@@ -1065,10 +1065,14 @@ function renderLlmRoutes() {
 }
 
 function renderLlmRoute(task, config = {}) {
+  const envName = config.api_key_env || "";
+  const envStatus = envName
+    ? (config.api_key_env_present ? "env ready" : "env missing")
+    : "no env key";
   return h("article", { class: "llm-route" }, [
     h("strong", { text: task }),
     h("p", { text: `${config.provider || "provider"} / ${config.model || "model"}` }),
-    h("small", { text: [config.base_url, config.api_key_env, config.temperature !== undefined ? `temp ${config.temperature}` : ""].filter(Boolean).join(" / ") }),
+    h("small", { text: [config.base_url, envName, envStatus, config.temperature !== undefined ? `temp ${config.temperature}` : "", config.timeout ? `timeout ${config.timeout}s` : "", config.max_tokens ? `max ${config.max_tokens}` : ""].filter(Boolean).join(" / ") }),
   ]);
 }
 

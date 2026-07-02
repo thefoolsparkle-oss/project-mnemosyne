@@ -102,7 +102,7 @@ SYSTEM_PLAN.md
 llm:
   provider: kimi
   model: kimi-k2.6
-  base_url: https://api.moonshot.ai/v1
+  base_url: https://api.moonshot.cn/v1
   api_key_env: MOONSHOT_API_KEY
   temperature: 0.75
 ```
@@ -537,4 +537,6 @@ node --check admin_web\admin.js
 py scripts\verify_phase1_flows.py
 py scripts\verify_phase2_growth.py
 py scripts\verify_phase3_expression.py
+py scripts\verify_group_chat.py
+py scripts\verify_llm_config.py
 ```

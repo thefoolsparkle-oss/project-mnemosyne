@@ -54,7 +54,7 @@ from .layered_memory import (
     refresh_memory_summaries,
     store_layered_memories,
 )
-from .llm_client import LLMProviderError
+from .llm_client import LLMProviderError, api_key_env_present
 from .memory_review import context_traces, get_memory_item, memory_review, update_memory_item
 from .memory_judge import update_judgement_status
 from .memory_conflicts import update_conflict_status
@@ -895,8 +895,12 @@ def admin_llm_routes(admin: dict = Depends(current_admin)):
 
 
 def _safe_llm_config(config: dict[str, Any]) -> dict[str, Any]:
-    allowed = ("provider", "provider_name", "model", "base_url", "api_key_env", "temperature")
-    return {key: config.get(key) for key in allowed if config.get(key) not in (None, "")}
+    allowed = ("provider", "provider_name", "model", "base_url", "api_key_env", "temperature", "max_tokens", "timeout")
+    safe = {key: config.get(key) for key in allowed if config.get(key) not in (None, "")}
+    env_name = str(safe.get("api_key_env") or "").strip()
+    if env_name:
+        safe["api_key_env_present"] = api_key_env_present(env_name)
+    return safe
 
 
 @app.get("/api/admin/memory/items/{uid}")

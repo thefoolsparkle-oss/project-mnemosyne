@@ -49,6 +49,8 @@ py -m compileall app scripts
 py scripts\verify_phase1_flows.py
 py scripts\verify_phase2_growth.py
 py scripts\verify_phase3_expression.py
+py scripts\verify_group_chat.py
+py scripts\verify_llm_config.py
 node --check web\app.js
 node --check admin_web\admin.js
 ```

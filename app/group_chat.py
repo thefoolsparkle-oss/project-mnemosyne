@@ -505,6 +505,11 @@ def _generate_group_turn(
                 "A normal turn may have one speaker, two speakers, or silence.\n"
                 "Let personas respond to each other when it feels natural: one may answer the user, another may add a "
                 "different angle, tease lightly, disagree gently, or ask another persona a follow-up.\n"
+                "If the user addresses the group, asks for everyone's view, says 'you all / everyone / together', "
+                "or leaves an opening, prefer 2 distinct speakers when it feels natural and let one persona react to "
+                "another instead of both answering the user in parallel.\n"
+                "Only return an empty messages array when the user's message clearly closes the topic, asks for quiet, "
+                "or no human group member would reasonably speak.\n"
                 "If the user says things like '你们聊', '你们怎么看', or leaves an opening, the personas may carry the "
                 "conversation for 2-3 short messages without waiting for another user prompt.\n"
                 "Do not write generic assistant filler. Do not repeat the same content across speakers.\n"
@@ -517,7 +522,7 @@ def _generate_group_turn(
         {"role": "user", "content": user_message},
     ]
     try:
-        raw = call_llm_api(messages, task="chat")
+        raw = call_llm_api(messages, task="group_chat")
     except LLMProviderError:
         return {"messages": [], "degraded": True, "reason": "turn_unavailable"}
     parsed = _parse_route_json(raw)
@@ -548,6 +553,8 @@ def _generate_group_turn(
             break
     if "messages" not in parsed:
         return {"messages": [], "degraded": True, "reason": "turn_parse_failed"}
+    if not planned and _group_user_message_expects_reply(user_message):
+        return {"messages": [], "degraded": True, "reason": "empty_expected_reply"}
     return {"messages": planned}
 
 
@@ -582,7 +589,7 @@ def _generate_group_autonomous_turn(
         {"role": "user", "content": "Continue only if the group would naturally say one more thing now."},
     ]
     try:
-        raw = call_llm_api(messages, task="chat")
+        raw = call_llm_api(messages, task="group_chat")
     except LLMProviderError:
         return {"messages": [], "degraded": True, "reason": "turn_unavailable"}
     parsed = _parse_route_json(raw)
@@ -634,6 +641,57 @@ def _group_degraded_message(turn: dict) -> str:
     if turn.get("reason") == "turn_parse_failed":
         return "群聊刚才说乱了格式，这句话已经留在当前会话里。稍后再试一次。"
     return "群聊暂时没有成功接上，这句话已经留在当前会话里。稍后再试一次。"
+
+
+def _group_user_message_expects_reply(user_message: str) -> bool:
+    text = re.sub(r"\s+", "", str(user_message or "").strip().lower())
+    if not text:
+        return False
+    quiet_markers = (
+        "不用回",
+        "别回",
+        "不要回",
+        "安静",
+        "先别说",
+        "先不要说",
+        "我先走",
+        "我先睡",
+        "晚安",
+        "再见",
+        "拜拜",
+        "quiet",
+        "silence",
+    )
+    if any(marker in text for marker in quiet_markers):
+        return False
+    explicit_markers = (
+        "?",
+        "？",
+        "吗",
+        "呢",
+        "谁",
+        "怎么",
+        "为什么",
+        "咋",
+        "如何",
+        "什么",
+        "你们",
+        "大家",
+        "一起",
+        "聊聊",
+        "说说",
+        "看看",
+        "接",
+        "有人",
+        "在吗",
+        "reply",
+        "answer",
+        "everyone",
+        "together",
+    )
+    if any(marker in text for marker in explicit_markers):
+        return True
+    return len(text) >= 2
 
 
 def _store_persona_group_reply(
