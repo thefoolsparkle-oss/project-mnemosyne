@@ -480,6 +480,28 @@ small {
 
 .expression-asset-catalog {
   display: grid;
+  gap: 10px;
+}
+
+.expression-asset-group {
+  display: grid;
+  gap: 8px;
+}
+
+.expression-asset-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+}
+
+.expression-asset-group-head strong {
+  color: var(--text);
+}
+
+.expression-asset-group-list {
+  display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 8px;
 }

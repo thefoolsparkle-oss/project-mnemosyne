@@ -324,7 +324,7 @@ function renderExpressionUsage(data) {
       h("small", { text: preference.explicit ? "用户已显式设置" : "默认" }),
     ]),
     assets.length
-      ? h("div", { class: "expression-asset-catalog" }, assets.map(renderExpressionAsset))
+      ? renderExpressionAssetCatalog(assets)
       : null,
     h("div", { class: "expression-usage-summary" }, [
       h("span", { text: `统计 ${summary.window || 0}` }),
@@ -352,6 +352,25 @@ function renderExpressionUsage(data) {
       ? h("div", { class: "expression-usage-list" }, recent.slice(0, 8).map(renderExpressionUsageItem))
       : null,
   ]);
+}
+
+function renderExpressionAssetCatalog(assets) {
+  const groups = new Map();
+  for (const asset of assets) {
+    const key = asset.group || "general";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(asset);
+  }
+  return h("div", { class: "expression-asset-catalog" }, [...groups.entries()].map(([group, items]) => {
+    const enabledCount = items.filter((item) => item.enabled !== false).length;
+    return h("section", { class: "expression-asset-group" }, [
+      h("div", { class: "expression-asset-group-head" }, [
+        h("strong", { text: group }),
+        h("small", { text: `${enabledCount}/${items.length} enabled` }),
+      ]),
+      h("div", { class: "expression-asset-group-list" }, items.map(renderExpressionAsset)),
+    ]);
+  }));
 }
 
 function renderExpressionAsset(asset) {
