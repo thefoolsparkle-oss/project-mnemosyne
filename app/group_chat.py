@@ -334,6 +334,7 @@ def group_chat(
                 "replies": existing_replies,
                 "messages": existing_messages,
                 "degraded": False,
+                "degraded_reason": "",
                 "error_message": "",
             }
     else:
@@ -394,6 +395,7 @@ def group_chat(
         "replies": replies,
         "messages": [*_messages_for_ids(user_id, [user_message_id]), *replies],
         "degraded": degraded,
+        "degraded_reason": str(turn.get("reason") or "") if degraded else "",
         "error_message": error_message,
     }
 
@@ -423,6 +425,7 @@ def autonomous_group_turn(
             "skipped": False,
             "reason": "reused",
             "degraded": False,
+            "degraded_reason": "",
             "error_message": "",
         }
 
@@ -436,6 +439,7 @@ def autonomous_group_turn(
             "skipped": True,
             "reason": eligibility["reason"],
             "degraded": False,
+            "degraded_reason": "",
             "error_message": "",
         }
 
@@ -477,6 +481,7 @@ def autonomous_group_turn(
         "skipped": not bool(replies),
         "reason": "quiet" if not replies and not degraded else "",
         "degraded": degraded,
+        "degraded_reason": str(turn.get("reason") or "") if degraded else "",
         "error_message": _group_degraded_message(turn) if degraded else "",
     }
 

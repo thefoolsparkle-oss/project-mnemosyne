@@ -296,6 +296,7 @@ def verify_group_chat_flow() -> None:
     )
     assert route_failure_calls == ["turn"]
     assert route_failed["degraded"] is True
+    assert route_failed["degraded_reason"] == "turn_parse_failed"
     assert route_failed["route"]["speakers"] == []
     assert route_failed["replies"] == []
     assert len(route_failed["messages"]) == 1
@@ -345,6 +346,7 @@ def verify_group_chat_flow() -> None:
     )
     assert quiet_calls == ["turn", "turn"]
     assert quiet_empty_expected["degraded"] is True
+    assert quiet_empty_expected["degraded_reason"] == "empty_expected_reply"
     assert quiet_empty_expected["route"]["speakers"] == []
     assert quiet_empty_expected["replies"] == []
     assert len(quiet_empty_expected["messages"]) == 1

@@ -42,6 +42,21 @@ def main() -> None:
                 pass
             else:
                 raise AssertionError("unsupported provider did not raise LLMProviderError")
+
+            from app.server import _safe_llm_config
+
+            safe = _safe_llm_config({
+                "provider": "kimi",
+                "model": "moonshot-v1-auto",
+                "base_url": "https://api.moonshot.cn/v1",
+                "api_key_env": "MNEMOSYNE_TEST_KEY_THAT_DOES_NOT_EXIST",
+                "max_tokens": 360,
+                "timeout": 25,
+            })
+            assert safe["api_key_env_present"] is False
+            assert safe["base_url"] == "https://api.moonshot.cn/v1"
+            assert safe["max_tokens"] == 360
+            assert safe["timeout"] == 25
     finally:
         llm.load_config = original_load_config
         database.DB_PATH = original_db_path
