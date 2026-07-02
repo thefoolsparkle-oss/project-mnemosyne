@@ -3248,6 +3248,8 @@ function renderGroupMessageList(messages) {
     nodes.push(renderGroupMessage(message));
     if (isFailedGroupUserMessage(message)) {
       nodes.push(renderFailedGroupReplyNotice(message));
+    } else if (isStalledGroupReply(message)) {
+      nodes.push(renderStalledGroupReplyNotice(message));
     }
   }
   return nodes;
@@ -3267,7 +3269,8 @@ function renderGroupMessage(message) {
       h("button", {
         type: "button",
         class: "retry-btn",
-        text: "重试",
+        text: state.sending ? "\u7b49\u5f85\u4e2d" : "\u91cd\u8bd5",
+        disabled: state.sending ? "disabled" : null,
         onclick: () => sendGroupChatMessage(message.retry_content, {
           retryLocalId: message.local_id,
           clientMessageId: message.retry_client_message_id || "",
@@ -3300,7 +3303,7 @@ function renderGroupMessage(message) {
 function isFailedGroupUserMessage(message) {
   return (
     message.speaker_type === "user"
-    && ["error", "generating"].includes(message.reply_status)
+    && message.reply_status === "error"
     && Boolean(message.client_message_id)
   );
 }
@@ -3314,6 +3317,28 @@ function renderFailedGroupReplyNotice(userMessage) {
     retry_content: userMessage.content,
     retry_client_message_id: userMessage.client_message_id,
     local_id: `group-stored-error-${userMessage.id}`,
+    created_at: userMessage.created_at,
+  });
+}
+
+function isStalledGroupReply(message) {
+  return (
+    message.speaker_type === "user"
+    && message.reply_status === "generating"
+    && Boolean(message.client_message_id)
+    && nowSeconds() - Number(message.created_at || 0) >= 120
+  );
+}
+
+function renderStalledGroupReplyNotice(userMessage) {
+  return renderGroupMessage({
+    speaker_type: "system",
+    role: "notice",
+    content: "\u8fd9\u53e5\u8bdd\u8fd8\u6ca1\u6709\u7b49\u5230\u7fa4\u804a\u56de\u590d\u3002\u53ef\u4ee5\u91cd\u65b0\u5c1d\u8bd5\u4e00\u6b21\u3002",
+    status: "pending",
+    retry_content: userMessage.content,
+    retry_client_message_id: userMessage.client_message_id,
+    local_id: `group-stalled-${userMessage.id}`,
     created_at: userMessage.created_at,
   });
 }
@@ -3375,7 +3400,8 @@ function renderMessage(message) {
             h("button", {
               type: "button",
               class: "retry-btn",
-              text: "重试",
+              text: state.sending ? "\u7b49\u5f85\u4e2d" : "\u91cd\u8bd5",
+              disabled: state.sending ? "disabled" : null,
               onclick: () => sendChatMessage(message.retry_content, {
                 retryLocalId: message.local_id,
                 retryUserMessageId: message.retry_user_message_id || null,

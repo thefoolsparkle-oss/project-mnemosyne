@@ -1599,6 +1599,11 @@ small {
   border-color: var(--accent);
 }
 
+.retry-btn:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
 .composer {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 88px;
