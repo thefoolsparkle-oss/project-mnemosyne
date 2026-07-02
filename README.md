@@ -531,6 +531,9 @@ pending -> dismissed
 ## 验证命令
 
 ```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\verify_all.ps1
+
+# 或手动分项运行：
 py -m compileall app scripts
 node --check web\app.js
 node --check admin_web\admin.js

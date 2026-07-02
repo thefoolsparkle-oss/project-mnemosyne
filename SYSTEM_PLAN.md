@@ -45,6 +45,9 @@ py -m uvicorn app.server:app --host 127.0.0.1 --port 8001
 每次改完至少运行：
 
 ```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\verify_all.ps1
+
+# 或手动分项运行：
 py -m compileall app scripts
 py scripts\verify_phase1_flows.py
 py scripts\verify_phase2_growth.py
