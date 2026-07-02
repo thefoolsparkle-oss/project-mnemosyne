@@ -1426,6 +1426,7 @@ function renderMain() {
 
 function renderGroupChat() {
   const group = state.activeGroupConversation || {};
+  const autoTurnEnabled = groupAutoTurnEnabled(group.id);
   return h("section", { class: "workspace group-workspace" }, [
     h("section", { class: "chat-panel" }, [
       h("header", { class: "chat-header group-chat-header" }, [
@@ -1438,9 +1439,18 @@ function renderGroupChat() {
         groupAvatar(group),
         h("div", { class: "chat-header-copy" }, [
           h("h2", { text: groupConversationTitle(group) }),
-          h("div", { class: "persona-status-line" }, (group.members || []).slice(0, 6).map((member) => (
-            h("span", { class: "status-pill", text: member.display_name || member.name || "TA" })
-          ))),
+          h("div", { class: "persona-status-line" }, [
+            ...(group.members || []).slice(0, 6).map((member) => (
+              h("span", { class: "status-pill", text: member.display_name || member.name || "TA" })
+            )),
+            h("span", {
+              class: `status-pill group-auto-status ${autoTurnEnabled ? "on" : "off"}`,
+              title: autoTurnEnabled
+                ? "\u7fa4\u804a\u5728\u5408\u9002\u95f4\u9694\u540e\u53ef\u4ee5\u81ea\u5df1\u63a5\u8bdd"
+                : "\u7fa4\u804a\u4e0d\u4f1a\u81ea\u4e3b\u7eed\u804a",
+              text: autoTurnEnabled ? "\u81ea\u4e3b\u7eed\u804a\u5f00" : "\u81ea\u4e3b\u7eed\u804a\u5173",
+            }),
+          ]),
           h("p", { text: "群聊模式：大家会视情况接话，也可以保持沉默。" }),
         ]),
         h("div", { class: "chat-header-actions" }, [

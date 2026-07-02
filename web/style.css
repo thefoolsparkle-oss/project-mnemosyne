@@ -852,7 +852,7 @@ small {
 }
 
 .group-settings-modal {
-  width: min(480px, 100%);
+  width: min(430px, calc(100vw - 36px));
   gap: 12px;
   padding: 14px;
 }
@@ -882,8 +882,8 @@ small {
 }
 
 .group-settings-row {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   gap: 8px;
   align-items: center;
 }
@@ -891,7 +891,7 @@ small {
 .group-settings-row label {
   display: grid;
   gap: 4px;
-  flex: 1 1 220px;
+  min-width: 0;
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
@@ -974,8 +974,8 @@ small {
 }
 
 .group-member-add {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   margin-top: 0;
@@ -1223,6 +1223,18 @@ small {
 
 .status-pill.quiet {
   color: rgba(23, 28, 37, 0.5);
+}
+
+.group-auto-status.on {
+  border-color: rgba(60, 126, 92, 0.32);
+  background: rgba(60, 126, 92, 0.08);
+  color: #2d6b4c;
+}
+
+.group-auto-status.off {
+  border-color: rgba(23, 28, 37, 0.08);
+  background: rgba(23, 28, 37, 0.02);
+  color: rgba(23, 28, 37, 0.46);
 }
 
 .chat-header p {
@@ -2370,7 +2382,7 @@ small {
     font-size: 11px;
   }
 
-  .chat-header .status-pill:not(.relation):not(.growth) {
+  .chat-header .status-pill:not(.relation):not(.growth):not(.group-auto-status) {
     display: none;
   }
 
@@ -2492,6 +2504,16 @@ small {
 
   .group-settings-modal {
     max-height: min(72dvh, calc(100dvh - 48px));
+  }
+
+  .group-settings-row,
+  .group-member-add {
+    grid-template-columns: 1fr;
+  }
+
+  .group-settings-row button,
+  .group-member-add button {
+    width: 100%;
   }
 
   .birthday-selects,
