@@ -33,19 +33,31 @@ function Resolve-PythonExecutable {
     throw "No working Python executable was found. Pass -Python with the full path to python.exe."
 }
 
+function Invoke-Checked {
+    param(
+        [string]$Label,
+        [scriptblock]$Command
+    )
+    & $Command
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Label failed with exit code $LASTEXITCODE."
+    }
+}
+
 $Python = Resolve-PythonExecutable $Python
 Write-Host "Using Python: $Python"
 
 Push-Location $projectRoot
 try {
-    & $Python -m compileall app scripts
-    & $Python scripts\verify_phase1_flows.py
-    & $Python scripts\verify_phase2_growth.py
-    & $Python scripts\verify_phase3_expression.py
-    & $Python scripts\verify_group_chat.py
-    & $Python scripts\verify_llm_config.py
-    node --check web\app.js
-    node --check admin_web\admin.js
+    Invoke-Checked "compileall" { & $Python -m compileall app scripts }
+    Invoke-Checked "verify_phase1_flows" { & $Python scripts\verify_phase1_flows.py }
+    Invoke-Checked "verify_phase2_growth" { & $Python scripts\verify_phase2_growth.py }
+    Invoke-Checked "verify_phase3_expression" { & $Python scripts\verify_phase3_expression.py }
+    Invoke-Checked "verify_group_chat" { & $Python scripts\verify_group_chat.py }
+    Invoke-Checked "verify_http_smoke" { & $Python scripts\verify_http_smoke.py --in-process }
+    Invoke-Checked "verify_llm_config" { & $Python scripts\verify_llm_config.py }
+    Invoke-Checked "node web app check" { node --check web\app.js }
+    Invoke-Checked "node admin app check" { node --check admin_web\admin.js }
 } finally {
     Pop-Location
 }
