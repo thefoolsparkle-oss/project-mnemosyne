@@ -525,12 +525,15 @@ def _generate_group_turn(
                 "conversation for 2-3 short messages without waiting for another user prompt.\n"
                 "Do not write generic assistant filler. Do not repeat the same content across speakers.\n"
                 "Each member object includes group_stance_hint. Use it to keep speakers distinct and avoid parallel duplicate answers.\n"
+                "Use the speaker rhythm context to avoid letting the same persona dominate. If there is a suggested next "
+                "speaker, strongly consider them unless the current message clearly belongs to someone else.\n"
                 "Each content must be a chat bubble from that persona only, usually one short sentence.\n"
                 "No speaker names inside content. No stage directions. No markdown.\n"
             ),
         },
         {"role": "system", "content": "Group members:\n" + json.dumps(member_lines, ensure_ascii=False)},
         {"role": "system", "content": "Recent group messages:\n" + _format_group_history(history)},
+        {"role": "system", "content": "Speaker rhythm:\n" + json.dumps(_group_speaker_rhythm_context(members, history), ensure_ascii=False)},
         {"role": "system", "content": "Turn policy:\n" + json.dumps(_group_turn_policy_context(user_message), ensure_ascii=False)},
         {"role": "user", "content": user_message},
     ]
@@ -598,6 +601,8 @@ def _generate_group_autonomous_turn(
                 f"Choose 0 to {MAX_AUTONOMOUS_GROUP_MESSAGES} messages. Prefer 0 if the conversation already feels complete.\n"
                 "Good autonomous turns can answer another persona, add a small different angle, lightly disagree, or let the topic rest.\n"
                 "Each member object includes group_stance_hint. Use it to keep speakers distinct and avoid parallel duplicate answers.\n"
+                "Use the speaker rhythm context to prefer someone who has not spoken in the current mini-thread, or let "
+                "the group rest if only the same speaker would repeat themselves.\n"
                 "Do not greet the user, do not ask 'are you still there', and do not force everyone to speak.\n"
                 "Each content must be a chat bubble from that persona only, usually one short sentence.\n"
                 "No speaker names inside content. No stage directions. No markdown.\n"
@@ -605,6 +610,7 @@ def _generate_group_autonomous_turn(
         },
         {"role": "system", "content": "Group members:\n" + json.dumps(member_lines, ensure_ascii=False)},
         {"role": "system", "content": "Recent group messages:\n" + _format_group_history(history)},
+        {"role": "system", "content": "Speaker rhythm:\n" + json.dumps(_group_speaker_rhythm_context(members, history), ensure_ascii=False)},
         {"role": "user", "content": "Continue only if the group would naturally say one more thing now."},
     ]
     try:
@@ -783,6 +789,58 @@ def _group_turn_policy_context(user_message: str) -> dict[str, Any]:
         "guidance": (
             "If multi_speaker_invited is true and the topic is still open, prefer 2 distinct speakers. "
             "If silence_allowed is true, an empty messages array is acceptable."
+        ),
+    }
+
+
+def _group_speaker_rhythm_context(members: list[dict], history: list[dict]) -> dict[str, Any]:
+    member_ids = [int(member["persona_id"]) for member in members if member.get("persona_id")]
+    member_set = set(member_ids)
+    recent_counts = {persona_id: 0 for persona_id in member_ids}
+    current_thread_counts = {persona_id: 0 for persona_id in member_ids}
+    last_persona_id: int | None = None
+    last_user_index = -1
+    for index, message in enumerate(history):
+        if message.get("speaker_type") == "user":
+            last_user_index = index
+        if message.get("speaker_type") != "persona" or not message.get("speaker_persona_id"):
+            continue
+        persona_id = int(message["speaker_persona_id"])
+        if persona_id not in member_set:
+            continue
+        recent_counts[persona_id] = recent_counts.get(persona_id, 0) + 1
+        last_persona_id = persona_id
+    for message in history[last_user_index + 1 :]:
+        if message.get("speaker_type") != "persona" or not message.get("speaker_persona_id"):
+            continue
+        persona_id = int(message["speaker_persona_id"])
+        if persona_id in member_set:
+            current_thread_counts[persona_id] = current_thread_counts.get(persona_id, 0) + 1
+    ranked = sorted(
+        members,
+        key=lambda member: (
+            current_thread_counts.get(int(member["persona_id"]), 0),
+            recent_counts.get(int(member["persona_id"]), 0),
+            int(member.get("turn_count") or 0),
+        ),
+    )
+    suggested = [int(member["persona_id"]) for member in ranked if int(member["persona_id"]) != last_persona_id]
+    if not suggested and ranked:
+        suggested = [int(ranked[0]["persona_id"])]
+    quiet_member_ids = [
+        persona_id
+        for persona_id in member_ids
+        if current_thread_counts.get(persona_id, 0) == 0
+    ]
+    return {
+        "last_persona_id": last_persona_id,
+        "recent_persona_counts": recent_counts,
+        "current_thread_persona_counts": current_thread_counts,
+        "quiet_member_ids_in_current_thread": quiet_member_ids,
+        "suggested_next_persona_ids": suggested[:2],
+        "guidance": (
+            "Prefer a quiet or lower-count member when the user addressed the group. "
+            "If the last persona already answered fully, another persona should react to them or stay silent."
         ),
     }
 

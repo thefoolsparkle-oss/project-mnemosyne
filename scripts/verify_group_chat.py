@@ -74,6 +74,7 @@ def verify_group_chat_flow() -> None:
         assert "Recent group messages" in joined
         assert "group memory anchor: likes quiet tea" in joined
         assert "group_stance_hint" in joined
+        assert "Speaker rhythm" in joined
         assert "Turn policy" in joined
         calls.append("turn")
         return json.dumps(
@@ -153,6 +154,13 @@ def verify_group_chat_flow() -> None:
     assert [item["speaker_type"] for item in messages] == ["user", "persona", "persona"]
     assert messages[1]["speaker_name"] == "观澜"
     assert messages[2]["speaker_name"] == "栖夏"
+    refreshed_group = server.group_conversations({"id": user_id})["group_conversations"][0]
+    rhythm = group_chat._group_speaker_rhythm_context(refreshed_group["members"], messages)
+    assert rhythm["last_persona_id"] == persona_ids[0]
+    assert rhythm["current_thread_persona_counts"][persona_ids[0]] == 1
+    assert rhythm["current_thread_persona_counts"][persona_ids[1]] == 1
+    assert persona_ids[2] in rhythm["quiet_member_ids_in_current_thread"]
+    assert rhythm["suggested_next_persona_ids"][0] == persona_ids[2]
     with database.get_db() as db:
         relation_rows = db.execute(
             """
@@ -166,7 +174,6 @@ def verify_group_chat_flow() -> None:
     assert len(relation_rows) == 2
     assert {int(row["persona_id"]) for row in relation_rows} == {persona_ids[0], persona_ids[1]}
     assert all(int(row["affinity"] or 0) >= 1 for row in relation_rows)
-    refreshed_group = server.group_conversations({"id": user_id})["group_conversations"][0]
     related_members = [
         member for member in refreshed_group["members"]
         if int(member["persona_id"]) in {persona_ids[0], persona_ids[1]}
@@ -412,6 +419,7 @@ def verify_group_chat_flow() -> None:
         assert "familiarity" in joined
         assert "group memory anchor: likes quiet tea" in joined
         assert "group_stance_hint" in joined
+        assert "Speaker rhythm" in joined
         autonomous_calls.append("turn")
         return json.dumps(
             {"messages": [{"persona_id": persona_ids[1], "content": "I can add one thought.", "reason": "continue"}]},
