@@ -524,6 +524,7 @@ def _generate_group_turn(
                 "If the user says things like '你们聊', '你们怎么看', or leaves an opening, the personas may carry the "
                 "conversation for 2-3 short messages without waiting for another user prompt.\n"
                 "Do not write generic assistant filler. Do not repeat the same content across speakers.\n"
+                "Each member object includes group_stance_hint. Use it to keep speakers distinct and avoid parallel duplicate answers.\n"
                 "Each content must be a chat bubble from that persona only, usually one short sentence.\n"
                 "No speaker names inside content. No stage directions. No markdown.\n"
             ),
@@ -596,6 +597,7 @@ def _generate_group_autonomous_turn(
                 "{\"messages\":[{\"persona_id\":123,\"content\":\"short natural message\",\"reason\":\"short\"}]}.\n"
                 f"Choose 0 to {MAX_AUTONOMOUS_GROUP_MESSAGES} messages. Prefer 0 if the conversation already feels complete.\n"
                 "Good autonomous turns can answer another persona, add a small different angle, lightly disagree, or let the topic rest.\n"
+                "Each member object includes group_stance_hint. Use it to keep speakers distinct and avoid parallel duplicate answers.\n"
                 "Do not greet the user, do not ask 'are you still there', and do not force everyone to speak.\n"
                 "Each content must be a chat bubble from that persona only, usually one short sentence.\n"
                 "No speaker names inside content. No stage directions. No markdown.\n"
@@ -655,8 +657,24 @@ def _group_member_prompt_context(
         "last_spoke_at": int(member.get("last_spoke_at") or 0),
         "group_relations": relations or [],
         "memory_context": memory_context or {},
+        "group_stance_hint": _group_member_stance_hint(member),
         "persona_prompt": _safe_context(str(member.get("prompt") or ""))[:360],
     }
+
+
+def _group_member_stance_hint(member: dict) -> str:
+    name = str(member.get("display_name") or member.get("name") or "TA").strip()
+    summary = str(member.get("summary") or "").strip()
+    style = str(member.get("speaking_style") or "").strip()
+    relationship = str(member.get("relationship") or "").strip()
+    pieces = [
+        f"Speak from {name}'s own angle.",
+        f"summary={summary}" if summary else "",
+        f"relationship={relationship}" if relationship else "",
+        f"style={style}" if style else "",
+        "If another member already covered the main answer, react to that member or add a distinct angle instead of repeating.",
+    ]
+    return _safe_context(" ".join(piece for piece in pieces if piece))[:260]
 
 
 def _group_member_memory_context(user_id: int, persona_id: int, query: str) -> dict:

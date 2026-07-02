@@ -73,6 +73,7 @@ def verify_group_chat_flow() -> None:
         assert "Group members" in joined
         assert "Recent group messages" in joined
         assert "group memory anchor: likes quiet tea" in joined
+        assert "group_stance_hint" in joined
         assert "Turn policy" in joined
         calls.append("turn")
         return json.dumps(
@@ -410,6 +411,7 @@ def verify_group_chat_flow() -> None:
         assert "Recent group messages" in joined
         assert "familiarity" in joined
         assert "group memory anchor: likes quiet tea" in joined
+        assert "group_stance_hint" in joined
         autonomous_calls.append("turn")
         return json.dumps(
             {"messages": [{"persona_id": persona_ids[1], "content": "I can add one thought.", "reason": "continue"}]},
