@@ -2684,7 +2684,10 @@ function forgeGroups() {
 function renderComposer() {
   const input = h("textarea", { rows: "1", maxlength: "8000", placeholder: text.messagePlaceholder });
   const button = h("button", { type: "submit", text: state.sending ? "等待" : text.send, disabled: state.sending ? "disabled" : null });
-  const form = h("form", { class: "composer" }, [input, button]);
+  const status = state.sending
+    ? h("small", { class: "composer-status", "aria-live": "polite", text: state.view === "group" ? "群聊正在接话..." : "正在等回复..." })
+    : null;
+  const form = h("form", { class: "composer" }, [input, button, status]);
   input.value = loadDraft();
   requestAnimationFrame(() => {
     autoResizeTextarea(input);
