@@ -663,24 +663,36 @@ def _group_member_prompt_context(
         "last_spoke_at": int(member.get("last_spoke_at") or 0),
         "group_relations": relations or [],
         "memory_context": memory_context or {},
-        "group_stance_hint": _group_member_stance_hint(member),
+        "group_stance_hint": _group_member_stance_hint(member, relations or []),
         "persona_prompt": _safe_context(str(member.get("prompt") or ""))[:360],
     }
 
 
-def _group_member_stance_hint(member: dict) -> str:
+def _group_member_stance_hint(member: dict, relations: list[str] | None = None) -> str:
     name = str(member.get("display_name") or member.get("name") or "TA").strip()
     summary = str(member.get("summary") or "").strip()
     style = str(member.get("speaking_style") or "").strip()
     relationship = str(member.get("relationship") or "").strip()
+    relation_hint = _group_relation_stance_hint(relations or [])
     pieces = [
         f"Speak from {name}'s own angle.",
         f"summary={summary}" if summary else "",
         f"relationship={relationship}" if relationship else "",
         f"style={style}" if style else "",
+        relation_hint,
         "If another member already covered the main answer, react to that member or add a distinct angle instead of repeating.",
     ]
-    return _safe_context(" ".join(piece for piece in pieces if piece))[:260]
+    return _safe_context(" ".join(piece for piece in pieces if piece))[:360]
+
+
+def _group_relation_stance_hint(relations: list[str]) -> str:
+    relation_text = " | ".join(str(item or "").strip() for item in relations[:2] if str(item or "").strip())
+    if not relation_text:
+        return "group_relation_stance=no established member dynamic yet; keep the first exchange light."
+    return (
+        "group_relation_stance="
+        f"{relation_text}. Build on familiar members, and if tension is present, disagree in a specific but non-hostile way."
+    )
 
 
 def _group_member_memory_context(user_id: int, persona_id: int, query: str) -> dict:

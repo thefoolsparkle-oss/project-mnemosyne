@@ -74,6 +74,7 @@ def verify_group_chat_flow() -> None:
         assert "Recent group messages" in joined
         assert "group memory anchor: likes quiet tea" in joined
         assert "group_stance_hint" in joined
+        assert "group_relation_stance" in joined
         assert "Speaker rhythm" in joined
         assert "Turn policy" in joined
         calls.append("turn")
@@ -207,6 +208,14 @@ def verify_group_chat_flow() -> None:
     assert tension_rows
     assert all(int(row["tension"] or 0) >= 1 for row in tension_rows)
     assert all("tension" in str(row["note"] or "") for row in tension_rows)
+    relation_context = group_chat._group_relation_context_by_persona(user_id, group["id"])
+    stance_context = group_chat._group_member_prompt_context(
+        refreshed_group["members"][0],
+        relation_context.get(int(refreshed_group["members"][0]["persona_id"]), []),
+        {},
+    )
+    assert "group_relation_stance" in stance_context["group_stance_hint"]
+    assert "tension" in stance_context["group_stance_hint"]
     assert messages[1]["expressions"][0]["expression_type"] == "gesture"
     assert messages[1]["expressions"][0]["label"] == "点头"
     assert messages[2]["expressions"][0]["expression_type"] == "mood"
@@ -419,6 +428,7 @@ def verify_group_chat_flow() -> None:
         assert "familiarity" in joined
         assert "group memory anchor: likes quiet tea" in joined
         assert "group_stance_hint" in joined
+        assert "group_relation_stance" in joined
         assert "Speaker rhythm" in joined
         autonomous_calls.append("turn")
         return json.dumps(
