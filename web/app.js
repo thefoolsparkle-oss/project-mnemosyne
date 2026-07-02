@@ -1626,6 +1626,7 @@ function renderGroupSettingsModal(group) {
             }),
           ])
         ))),
+        renderGroupRelationSummary(activeMembers),
       ]),
       h("div", { class: "group-member-add" }, [
         candidatePersonas.length
@@ -1646,6 +1647,44 @@ function renderGroupSettingsModal(group) {
       status,
     ]),
   ]);
+}
+
+function renderGroupRelationSummary(members) {
+  const rows = [];
+  for (const member of members || []) {
+    const name = member.display_name || member.name || "TA";
+    for (const relation of (member.group_relations || []).slice(0, 2)) {
+      rows.push({ name, relation });
+      if (rows.length >= 6) break;
+    }
+    if (rows.length >= 6) break;
+  }
+  if (!rows.length) {
+    return h("small", {
+      class: "group-relation-empty",
+      text: "\u6210\u5458\u4e92\u76f8\u63a5\u8bdd\u540e\uff0c\u8fd9\u91cc\u4f1a\u663e\u793a\u7fa4\u5185\u5173\u7cfb\u72b6\u6001\u3002",
+    });
+  }
+  return h("div", { class: "group-relation-list" }, rows.map(({ name, relation }) => (
+    h("div", { class: `group-relation-row ${relation.status || "new"}` }, [
+      h("strong", { text: name }),
+      h("small", { text: groupRelationText(relation) }),
+    ])
+  )));
+}
+
+function groupRelationText(relation) {
+  const other = relation.other_name || "TA";
+  const status = {
+    close: "\u5f88\u719f",
+    familiar: "\u6b63\u5728\u719f\u8d77\u6765",
+    careful: "\u6709\u70b9\u8c28\u614e",
+    tense: "\u6709\u5f20\u529b",
+    new: "\u521a\u63a5\u4e0a\u8bdd",
+  }[relation.status] || "\u521a\u63a5\u4e0a\u8bdd";
+  const affinity = Number(relation.affinity || 0);
+  const tension = Number(relation.tension || 0);
+  return `${status} · ${other} · \u719f\u6089 ${affinity} / \u5f20\u529b ${tension}`;
 }
 
 function renderGroupChatEmpty() {

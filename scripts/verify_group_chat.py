@@ -152,6 +152,18 @@ def verify_group_chat_flow() -> None:
     assert len(relation_rows) == 2
     assert {int(row["persona_id"]) for row in relation_rows} == {persona_ids[0], persona_ids[1]}
     assert all(int(row["affinity"] or 0) >= 1 for row in relation_rows)
+    refreshed_group = server.group_conversations({"id": user_id})["group_conversations"][0]
+    related_members = [
+        member for member in refreshed_group["members"]
+        if int(member["persona_id"]) in {persona_ids[0], persona_ids[1]}
+    ]
+    assert all(member["group_relations"] for member in related_members)
+    assert {
+        int(relation["other_persona_id"])
+        for member in related_members
+        for relation in member["group_relations"]
+    } == {persona_ids[0], persona_ids[1]}
+    assert {relation["status"] for member in related_members for relation in member["group_relations"]} == {"new"}
     assert messages[1]["expressions"][0]["expression_type"] == "gesture"
     assert messages[1]["expressions"][0]["label"] == "点头"
     assert messages[2]["expressions"][0]["expression_type"] == "mood"

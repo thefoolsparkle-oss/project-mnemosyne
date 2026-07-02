@@ -994,6 +994,58 @@ def _group_relation_context_by_persona(user_id: int, group_conversation_id: int)
     return result
 
 
+def _group_relation_state_by_persona(user_id: int, group_conversation_id: int) -> dict[int, list[dict]]:
+    with get_db() as db:
+        rows = db.execute(
+            """
+            SELECT group_member_relations.persona_id,
+                   group_member_relations.other_persona_id,
+                   group_member_relations.affinity,
+                   group_member_relations.tension,
+                   group_member_relations.note,
+                   group_member_relations.updated_at,
+                   personas.name AS other_name
+            FROM group_member_relations
+            JOIN personas ON personas.id = group_member_relations.other_persona_id
+            WHERE group_member_relations.user_id = ?
+              AND group_member_relations.group_conversation_id = ?
+              AND personas.status = 'active'
+            ORDER BY group_member_relations.updated_at DESC, group_member_relations.id DESC
+            LIMIT 48
+            """,
+            (user_id, group_conversation_id),
+        ).fetchall()
+    result: dict[int, list[dict]] = {}
+    for row in rows:
+        persona_id = int(row["persona_id"])
+        affinity = int(row["affinity"] or 0)
+        tension = int(row["tension"] or 0)
+        result.setdefault(persona_id, []).append(
+            {
+                "other_persona_id": int(row["other_persona_id"]),
+                "other_name": str(row["other_name"] or ""),
+                "affinity": affinity,
+                "tension": tension,
+                "status": _group_relation_status(affinity, tension),
+                "note": str(row["note"] or "").strip(),
+                "updated_at": int(row["updated_at"] or 0),
+            }
+        )
+    return result
+
+
+def _group_relation_status(affinity: int, tension: int) -> str:
+    if tension >= 6 and affinity <= 2:
+        return "tense"
+    if tension >= 4:
+        return "careful"
+    if affinity >= 8:
+        return "close"
+    if affinity >= 3:
+        return "familiar"
+    return "new"
+
+
 def _last_persona_speaker_id(history: list[dict]) -> int | None:
     for message in reversed(history):
         if message.get("speaker_type") == "persona" and message.get("speaker_persona_id"):
@@ -1070,7 +1122,13 @@ def _with_group_members(group: dict) -> dict:
             (int(group["id"]),),
         ).fetchall()
     result = dict(group)
-    result["members"] = [dict_from_row(row) for row in rows]
+    relation_state = _group_relation_state_by_persona(int(group["user_id"]), int(group["id"]))
+    members = []
+    for row in rows:
+        member = dict_from_row(row)
+        member["group_relations"] = relation_state.get(int(member["persona_id"]), [])
+        members.append(member)
+    result["members"] = members
     return result
 
 
