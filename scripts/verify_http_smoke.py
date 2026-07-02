@@ -220,7 +220,7 @@ def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "--in-process":
         verify_in_process()
         return
-    base_url = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8001"
+    base_url = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8000"
     checks = {
         "/": 200,
         "/admin": 200,

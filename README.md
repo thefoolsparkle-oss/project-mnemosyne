@@ -459,8 +459,8 @@ py -m app.admin set-user 用户名
 
 短期优先级：
 
-- 本机开发：`127.0.0.1:8001`。
-- 跨城市/跨省测试：用临时隧道工具把本机 `8001` 暴露成一个临时 HTTPS 地址，例如 Cloudflare Tunnel / ngrok / frp 这类方案。
+- 本机开发：`127.0.0.1:8000`。
+- 跨城市/跨省测试：用临时隧道工具把本机 `8000` 暴露成一个临时 HTTPS 地址，例如 Cloudflare Tunnel / ngrok / frp 这类方案。
 - 当前项目已提供临时隧道脚本：
 
 ```powershell

@@ -1,5 +1,5 @@
 param(
-    [int]$Port = 8001,
+    [int]$Port = 8000,
     [string]$Python = "C:\Users\Yue\AppData\Local\Programs\Python\Python314\python.exe"
 )
 
