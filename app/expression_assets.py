@@ -110,6 +110,9 @@ def expression_assets_public(
         setting = settings.get(_asset_key(asset))
         lifecycle_status = _normalize_lifecycle_status(None if setting is None else setting.get("lifecycle_status"))
         asset["lifecycle_status"] = lifecycle_status
+        asset["media_url"] = str(asset.get("media_url") or "")
+        asset["thumbnail_url"] = str(asset.get("thumbnail_url") or asset.get("media_url") or "")
+        asset["alt_text"] = str(asset.get("alt_text") or asset.get("display_text") or asset.get("label") or "")
         asset["enabled"] = (True if setting is None else bool(int(setting.get("enabled", 1) or 0))) and lifecycle_status == "active"
         configured_cooldown = -1 if setting is None else int(setting.get("cooldown_turns", -1) or -1)
         asset["cooldown_turns"] = configured_cooldown if configured_cooldown >= 0 else int(asset.get("cooldown_turns") or 0)

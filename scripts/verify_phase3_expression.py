@@ -66,6 +66,7 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     assert {item["label"] for item in assets} >= {"微笑", "轻笑", "担心", "轻声", "停顿", "点头"}
     assert chat.STRUCTURED_EXPRESSION_LABELS["mood"] >= {"微笑", "轻笑", "担心"}
     assert all(item["asset_kind"] == "text_badge" for item in assets)
+    assert all("media_url" in item and "thumbnail_url" in item and "alt_text" in item for item in assets)
     assert all("admin_note" not in item for item in assets)
     smile_asset = next(item for item in assets if item["label"] == "微笑")
     concern_asset = next(item for item in assets if item["label"] == "担心")

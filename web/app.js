@@ -3507,12 +3507,15 @@ function renderExpressionPill(item) {
   const label = asset?.display_text || item.label || item.source_text || "";
   const icon = asset?.icon || "";
   const assetKind = asset?.asset_kind || "text_badge";
+  const mediaUrl = asset?.thumbnail_url || asset?.media_url || "";
   const intensity = asset?.intensity ? `intensity-${asset.intensity}` : "intensity-1";
   return h("span", {
     class: `expression-pill ${type} ${assetKind} ${intensity}`,
     title: asset?.description || label,
   }, [
-    icon ? h("span", { class: "expression-icon", text: icon }) : null,
+    mediaUrl ? h("img", { class: "expression-media", src: mediaUrl, alt: asset?.alt_text || label, loading: "lazy" }) : (
+      icon ? h("span", { class: "expression-icon", text: icon }) : null
+    ),
     h("span", { text: label }),
   ]);
 }

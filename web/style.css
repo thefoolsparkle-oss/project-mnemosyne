@@ -1499,6 +1499,20 @@ small {
   opacity: 0.8;
 }
 
+.expression-media {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  object-fit: cover;
+  flex: 0 0 auto;
+}
+
+.expression-pill.image,
+.expression-pill.gif,
+.expression-pill.avatar_expression {
+  padding: 3px 7px 3px 4px;
+}
+
 .expression-pill.mood {
   border-color: rgba(83, 109, 150, 0.32);
   background: rgba(83, 109, 150, 0.08);

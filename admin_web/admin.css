@@ -581,6 +581,14 @@ small {
   font-weight: 800;
 }
 
+.expression-asset-media {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: rgba(95, 125, 181, 0.14);
+}
+
 .expression-asset-item strong,
 .expression-asset-item small,
 .expression-asset-item p {

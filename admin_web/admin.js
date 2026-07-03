@@ -422,8 +422,11 @@ function renderExpressionAsset(asset) {
   const enabled = asset.enabled !== false;
   const lifecycle = asset.lifecycle_status || "active";
   const archived = lifecycle === "archived";
+  const mediaUrl = asset.thumbnail_url || asset.media_url || "";
   return h("article", { class: `expression-asset-item ${asset.expression_type || "gesture"} ${enabled ? "enabled" : "disabled"}` }, [
-    h("span", { class: "expression-asset-icon", text: asset.icon || "" }),
+    mediaUrl
+      ? h("img", { class: "expression-asset-media", src: mediaUrl, alt: asset.alt_text || asset.display_text || asset.label || "", loading: "lazy" })
+      : h("span", { class: "expression-asset-icon", text: asset.icon || "" }),
     h("span", {}, [
       h("strong", { text: asset.display_text || asset.label || "" }),
       h("small", { text: `${asset.expression_type || ""} / ${asset.group || "general"} / 强度 ${asset.intensity || 1} / 冷却 ${asset.cooldown_turns ?? 0} 轮 / ${enabled ? "启用" : "禁用"} / ${lifecycle}` }),
