@@ -549,6 +549,7 @@ def db_chat(
     )
     expression_policy = _recent_expression_policy(user_id, persona_id, int(conversation["id"]))
     expression_policy.update(_expression_scene_context(message))
+    expression_policy.update(_persona_expression_style_context(persona))
     expression_policy_context = _expression_policy_prompt(expression_policy)
     active_preference_context = _active_preference_prompt(user_id, persona_id)
     profile_usage_context = _profile_usage_prompt(message)
@@ -1078,9 +1079,12 @@ def _active_preference_prompt(user_id: int, persona_id: int) -> str:
 
 def _expression_policy_prompt(policy: dict) -> str:
     scene_prompt = _expression_scene_prompt(policy)
+    style_prompt = _expression_persona_style_prompt(policy)
     if policy.get("disabled_by_user"):
         return (
             scene_prompt
+            + "\n"
+            + style_prompt
             + "\n"
             "Light expression preference: the user has explicitly turned off expression labels. "
             "Do not output [[expression:...]] tags, bracketed actions, emoji-like stage directions, "
@@ -1091,11 +1095,15 @@ def _expression_policy_prompt(policy: dict) -> str:
             return (
                 scene_prompt
                 + "\n"
+                + style_prompt
+                + "\n"
                 "本轮轻表达节奏约束：用户选择了克制轻表达，且近期已经展示过非语言提示，"
                 "本轮不得输出 expression 标签，也不要用括号动作替代。"
             )
         return (
             scene_prompt
+            + "\n"
+            + style_prompt
             + "\n"
             "本轮轻表达节奏约束：上一条回复刚显示过非语言提示，"
             "本轮不得输出 expression 标签，也不要用括号动作替代。"
@@ -1103,6 +1111,8 @@ def _expression_policy_prompt(policy: dict) -> str:
     if policy.get("subtle_mode"):
         return (
             scene_prompt
+            + "\n"
+            + style_prompt
             + "\n"
             "本轮轻表达节奏约束：用户选择了克制轻表达。只有在明显需要安慰、确认或停顿时，"
             "才可使用至多一个 expression 标签；普通闲聊不要添加。"
@@ -1112,10 +1122,12 @@ def _expression_policy_prompt(policy: dict) -> str:
         return (
             scene_prompt
             + "\n"
+            + style_prompt
+            + "\n"
             "本轮轻表达节奏约束：近期已经展示过这些标签："
             f"{'、'.join(recent_labels)}。本轮不得重复这些标签；没有真正必要的新提示时不要添加标签。"
         )
-    return scene_prompt + "\n本轮轻表达节奏约束：近期没有已展示的提示；即便如此，也仅在确有必要时使用至多一个标签。"
+    return scene_prompt + "\n" + style_prompt + "\n本轮轻表达节奏约束：近期没有已展示的提示；即便如此，也仅在确有必要时使用至多一个标签。"
 
 
 def _expression_scene_context(user_text: str) -> dict:
@@ -1157,11 +1169,59 @@ def _expression_scene_prompt(policy: dict) -> str:
     return "本轮轻表达场景：unspecified。按总体节奏约束保持稀少。"
 
 
+def _persona_expression_style_context(persona: dict) -> dict:
+    text = re.sub(
+        r"\s+",
+        "",
+        " ".join(
+            str(persona.get(field) or "").lower()
+            for field in ("summary", "relationship", "speaking_style", "growth_notes")
+        ),
+    )
+    if any(marker in text for marker in ("安静", "简短", "克制", "慢", "少说", "沉稳", "可靠")):
+        return {
+            "expression_persona_style": "restrained",
+            "expression_persona_preferred_groups": ["support", "acknowledgement"],
+            "expression_persona_avoid_labels": ["轻笑"],
+        }
+    if any(marker in text for marker in ("活泼", "打趣", "俏皮", "开朗", "玩笑", "轻松")):
+        return {
+            "expression_persona_style": "playful",
+            "expression_persona_preferred_groups": ["warmth", "acknowledgement"],
+            "expression_persona_avoid_labels": ["担心"],
+        }
+    if any(marker in text for marker in ("恋人", "亲密", "陪伴", "温柔")):
+        return {
+            "expression_persona_style": "warm",
+            "expression_persona_preferred_groups": ["warmth", "support"],
+            "expression_persona_avoid_labels": [],
+        }
+    return {
+        "expression_persona_style": "neutral",
+        "expression_persona_preferred_groups": [],
+        "expression_persona_avoid_labels": [],
+    }
+
+
+def _expression_persona_style_prompt(policy: dict) -> str:
+    style = str(policy.get("expression_persona_style") or "neutral")
+    preferred = "、".join(str(item) for item in policy.get("expression_persona_preferred_groups") or [])
+    avoid = "、".join(str(item) for item in policy.get("expression_persona_avoid_labels") or [])
+    if style == "restrained":
+        return f"本轮人格轻表达风格：restrained。优先 {preferred or 'support、acknowledgement'}；避免 {avoid or '偏打趣标签'}。"
+    if style == "playful":
+        return f"本轮人格轻表达风格：playful。优先 {preferred or 'warmth、acknowledgement'}；避免 {avoid or '过度担心标签'}。"
+    if style == "warm":
+        return f"本轮人格轻表达风格：warm。优先 {preferred or 'warmth、support'}，但仍保持稀少。"
+    return "本轮人格轻表达风格：neutral。按当前场景和节奏选择，避免固定套路。"
+
+
 def _apply_expression_policy(expressions: list[dict], policy: dict) -> list[dict]:
     if policy.get("suppress_all"):
         return []
     scene = str(policy.get("expression_scene") or "")
     allowed_groups = {str(group) for group in policy.get("expression_allowed_groups") or [] if group}
+    avoid_labels = {str(label) for label in policy.get("expression_persona_avoid_labels") or [] if label}
     recent_labels = {str(label) for label in policy.get("recent_labels") or [] if label}
     recent_label_distances = {
         str(label): int(distance)
@@ -1171,6 +1231,8 @@ def _apply_expression_policy(expressions: list[dict], policy: dict) -> list[dict
     kept: list[dict] = []
     for item in expressions:
         label = str(item.get("label") or "")
+        if label in avoid_labels:
+            continue
         asset = expression_asset(str(item.get("type") or ""), label)
         cooldown_turns = int((asset or {}).get("cooldown_turns") or EXPRESSION_RECENT_WINDOW)
         if label in recent_label_distances and recent_label_distances[label] < cooldown_turns:

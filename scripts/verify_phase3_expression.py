@@ -151,6 +151,18 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
             "expression_allowed_groups": ["support", "care", "warmth", "acknowledgement"],
         },
     )[0]["label"] == "担心"
+    assert chat._persona_expression_style_context(
+        {"summary": "安静而可靠", "relationship": "像朋友一样", "speaking_style": "简短自然"}
+    )["expression_persona_style"] == "restrained"
+    assert chat._apply_expression_policy(
+        [{"type": "mood", "label": "轻笑", "source_text": "[[expression:mood:轻笑]]"}],
+        {
+            "suppress_all": False,
+            "expression_scene": "playful",
+            "expression_allowed_groups": ["warmth", "acknowledgement"],
+            "expression_persona_avoid_labels": ["轻笑"],
+        },
+    ) == []
     cooldown_policy = {
         "suppress_all": False,
         "recent_labels": ["点头"],
@@ -238,6 +250,7 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     assert "至多一个程序标签" in prompt
     assert "轻表达资源目录" in prompt
     assert "support_needed" in prompt
+    assert "restrained" in prompt
     assert "近期没有已展示的提示" in prompt
 
     loaded = server.conversation_messages(conversation_id, {"id": user_id})["messages"]
