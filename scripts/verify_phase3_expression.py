@@ -135,6 +135,22 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
         [{"type": "mood", "label": "担心", "source_text": "[[expression:mood:担心]]"}],
         risk_policy,
     ) == []
+    assert chat._expression_scene_context("我今天有点累，陪我一下")["expression_scene"] == "support_needed"
+    assert chat._expression_scene_context("哈哈这个好好玩")["expression_scene"] == "playful"
+    assert chat._expression_scene_context("好。")["expression_scene"] == "ordinary"
+    assert chat._apply_expression_policy(
+        [{"type": "tone", "label": "轻声", "source_text": "[[expression:tone:轻声]]"}],
+        {"suppress_all": False, "expression_scene": "ordinary", "expression_allowed_groups": ["warmth", "acknowledgement"]},
+    ) == []
+    assert chat._apply_expression_policy(
+        [{"type": "mood", "label": "担心", "source_text": "[[expression:mood:担心]]"}],
+        {
+            "suppress_all": False,
+            "recent_labels": ["微笑"],
+            "expression_scene": "support_needed",
+            "expression_allowed_groups": ["support", "care", "warmth", "acknowledgement"],
+        },
+    )[0]["label"] == "担心"
     cooldown_policy = {
         "suppress_all": False,
         "recent_labels": ["点头"],
@@ -221,6 +237,7 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     assert "[[expression:mood:微笑]]" in prompt
     assert "至多一个程序标签" in prompt
     assert "轻表达资源目录" in prompt
+    assert "support_needed" in prompt
     assert "近期没有已展示的提示" in prompt
 
     loaded = server.conversation_messages(conversation_id, {"id": user_id})["messages"]
@@ -340,7 +357,10 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     policy = chat._recent_expression_policy(user_id, persona_id, conversation_id)
     assert policy["subtle_mode"] is True
     assert policy["suppress_all"] is False
-    assert "普通闲聊不要添加" in chat._expression_policy_prompt(policy)
+    policy.update(chat._expression_scene_context("嗯。"))
+    subtle_prompt = chat._expression_policy_prompt(policy)
+    assert "ordinary" in subtle_prompt
+    assert "普通闲聊不要添加" in subtle_prompt
     profile_disabled = server.update_persona_expression_preference(
         persona_id,
         server.ExpressionPreferenceUpdateRequest(mode="off"),

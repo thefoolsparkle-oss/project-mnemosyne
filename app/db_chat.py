@@ -124,6 +124,35 @@ EXPRESSION_ENABLE_PATTERNS = (
     "expressionon",
     "enableexpression",
 )
+EXPRESSION_SUPPORT_SCENE_MARKERS = (
+    "累",
+    "疲惫",
+    "难过",
+    "低落",
+    "崩溃",
+    "撑不住",
+    "害怕",
+    "焦虑",
+    "失眠",
+    "想哭",
+    "陪我",
+    "安慰",
+    "抱抱",
+    "不舒服",
+    "委屈",
+    "心烦",
+    "压力",
+)
+EXPRESSION_PLAYFUL_SCENE_MARKERS = (
+    "哈哈",
+    "笑死",
+    "好玩",
+    "有趣",
+    "开玩笑",
+    "逗",
+    "玩一下",
+    "调侃",
+)
 STAGE_DIRECTION_WORDS = (
     "托腮",
     "歪头",
@@ -519,6 +548,7 @@ def db_chat(
         "Conversation discovery policy: unavailable.",
     )
     expression_policy = _recent_expression_policy(user_id, persona_id, int(conversation["id"]))
+    expression_policy.update(_expression_scene_context(message))
     expression_policy_context = _expression_policy_prompt(expression_policy)
     active_preference_context = _active_preference_prompt(user_id, persona_id)
     profile_usage_context = _profile_usage_prompt(message)
@@ -1047,8 +1077,11 @@ def _active_preference_prompt(user_id: int, persona_id: int) -> str:
 
 
 def _expression_policy_prompt(policy: dict) -> str:
+    scene_prompt = _expression_scene_prompt(policy)
     if policy.get("disabled_by_user"):
         return (
+            scene_prompt
+            + "\n"
             "Light expression preference: the user has explicitly turned off expression labels. "
             "Do not output [[expression:...]] tags, bracketed actions, emoji-like stage directions, "
             "or substitute nonverbal cues. Reply only with natural chat text."
@@ -1056,30 +1089,79 @@ def _expression_policy_prompt(policy: dict) -> str:
     if policy.get("suppress_all"):
         if policy.get("subtle_mode"):
             return (
+                scene_prompt
+                + "\n"
                 "本轮轻表达节奏约束：用户选择了克制轻表达，且近期已经展示过非语言提示，"
                 "本轮不得输出 expression 标签，也不要用括号动作替代。"
             )
         return (
+            scene_prompt
+            + "\n"
             "本轮轻表达节奏约束：上一条回复刚显示过非语言提示，"
             "本轮不得输出 expression 标签，也不要用括号动作替代。"
         )
     if policy.get("subtle_mode"):
         return (
+            scene_prompt
+            + "\n"
             "本轮轻表达节奏约束：用户选择了克制轻表达。只有在明显需要安慰、确认或停顿时，"
             "才可使用至多一个 expression 标签；普通闲聊不要添加。"
         )
     recent_labels = [str(label) for label in policy.get("recent_labels") or [] if label]
     if recent_labels:
         return (
+            scene_prompt
+            + "\n"
             "本轮轻表达节奏约束：近期已经展示过这些标签："
             f"{'、'.join(recent_labels)}。本轮不得重复这些标签；没有真正必要的新提示时不要添加标签。"
         )
-    return "本轮轻表达节奏约束：近期没有已展示的提示；即便如此，也仅在确有必要时使用至多一个标签。"
+    return scene_prompt + "\n本轮轻表达节奏约束：近期没有已展示的提示；即便如此，也仅在确有必要时使用至多一个标签。"
+
+
+def _expression_scene_context(user_text: str) -> dict:
+    compact = re.sub(r"\s+", "", str(user_text or "").lower())
+    if any(marker in compact for marker in EXPRESSION_SUPPORT_SCENE_MARKERS):
+        return {
+            "expression_scene": "support_needed",
+            "expression_allowed_groups": ["support", "care", "warmth", "acknowledgement"],
+        }
+    if any(marker in compact for marker in EXPRESSION_PLAYFUL_SCENE_MARKERS):
+        return {
+            "expression_scene": "playful",
+            "expression_allowed_groups": ["warmth", "acknowledgement"],
+        }
+    return {
+        "expression_scene": "ordinary",
+        "expression_allowed_groups": ["warmth", "acknowledgement"],
+    }
+
+
+def _expression_scene_prompt(policy: dict) -> str:
+    scene = str(policy.get("expression_scene") or "unspecified")
+    allowed = "、".join(str(item) for item in policy.get("expression_allowed_groups") or [])
+    if scene == "support_needed":
+        return (
+            "本轮轻表达场景：support_needed（用户明显疲惫、低落、求陪伴或需要安慰）。"
+            f"如确实需要，优先从这些资源分组选择：{allowed}；中风险标签仍要克制。"
+        )
+    if scene == "playful":
+        return (
+            "本轮轻表达场景：playful（轻松、打趣或玩笑）。"
+            f"如确实需要，只从这些资源分组选择：{allowed}；不要使用担心类表达。"
+        )
+    if scene == "ordinary":
+        return (
+            "本轮轻表达场景：ordinary（普通信息、短确认或无明显情绪承接需求）。"
+            f"普通闲聊不要为了活泼硬加标签；如确实需要，只从这些资源分组选择：{allowed}。"
+        )
+    return "本轮轻表达场景：unspecified。按总体节奏约束保持稀少。"
 
 
 def _apply_expression_policy(expressions: list[dict], policy: dict) -> list[dict]:
     if policy.get("suppress_all"):
         return []
+    scene = str(policy.get("expression_scene") or "")
+    allowed_groups = {str(group) for group in policy.get("expression_allowed_groups") or [] if group}
     recent_labels = {str(label) for label in policy.get("recent_labels") or [] if label}
     recent_label_distances = {
         str(label): int(distance)
@@ -1093,7 +1175,10 @@ def _apply_expression_policy(expressions: list[dict], policy: dict) -> list[dict
         cooldown_turns = int((asset or {}).get("cooldown_turns") or EXPRESSION_RECENT_WINDOW)
         if label in recent_label_distances and recent_label_distances[label] < cooldown_turns:
             continue
-        if recent_labels and asset and asset.get("risk_level") == "medium":
+        asset_group = str((asset or {}).get("group") or "")
+        if scene and allowed_groups and asset_group and asset_group not in allowed_groups:
+            continue
+        if recent_labels and asset and asset.get("risk_level") == "medium" and scene != "support_needed":
             continue
         kept.append(item)
         break
