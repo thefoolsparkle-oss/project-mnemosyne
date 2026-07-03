@@ -203,6 +203,10 @@ class ExpressionAssetUpdateRequest(BaseModel):
     enabled: bool
     cooldown_turns: int | None = Field(default=None, ge=0, le=20)
     lifecycle_status: str | None = Field(default=None, max_length=20)
+    asset_kind: str | None = Field(default=None, max_length=40)
+    media_url: str | None = Field(default=None, max_length=500)
+    thumbnail_url: str | None = Field(default=None, max_length=500)
+    alt_text: str | None = Field(default=None, max_length=120)
     admin_note: str | None = Field(default="", max_length=500)
 
 
@@ -460,6 +464,10 @@ def admin_update_expression_asset(
             enabled=req.enabled,
             cooldown_turns=req.cooldown_turns,
             lifecycle_status=req.lifecycle_status,
+            asset_kind=req.asset_kind,
+            media_url=req.media_url,
+            thumbnail_url=req.thumbnail_url,
+            alt_text=req.alt_text,
             admin_note=req.admin_note or "",
             updated_by_user_id=int(admin["id"]),
         )

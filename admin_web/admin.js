@@ -456,6 +456,12 @@ function renderExpressionAsset(asset) {
       text: "冷却",
       onclick: () => editExpressionAssetCooldown(asset),
     }),
+    h("button", {
+      type: "button",
+      class: "ghost compact",
+      text: "媒体",
+      onclick: () => editExpressionAssetMedia(asset),
+    }),
     h("p", { text: asset.description || "" }),
     h("small", { class: `expression-asset-risk ${asset.risk_level || "low"}`, text: `风险：${asset.risk_level || "low"}` }),
     asset.admin_note ? h("small", { class: "expression-asset-note", text: `备注：${asset.admin_note}` }) : null,
@@ -543,6 +549,42 @@ async function editExpressionAssetCooldown(asset) {
         body: JSON.stringify({
           enabled: asset.enabled !== false,
           cooldown_turns: cooldown,
+          admin_note: asset.admin_note || "",
+        }),
+      }
+    );
+    state.expressionAssets = data.assets || [];
+    await loadReview();
+  } catch (err) {
+    state.error = err.message;
+  }
+  render();
+}
+
+async function editExpressionAssetMedia(asset) {
+  const mediaUrl = window.prompt("媒体 URL（留空恢复为文本徽标）", asset.media_url || "");
+  if (mediaUrl === null) return;
+  const assetKind = mediaUrl.trim()
+    ? window.prompt("媒体类型：image / gif / avatar_expression", asset.asset_kind === "text_badge" ? "image" : asset.asset_kind || "image")
+    : "text_badge";
+  if (assetKind === null) return;
+  const thumbnailUrl = mediaUrl.trim()
+    ? window.prompt("缩略图 URL（可留空使用媒体 URL）", asset.thumbnail_url || mediaUrl.trim())
+    : "";
+  if (thumbnailUrl === null) return;
+  state.error = "";
+  try {
+    const data = await api(
+      `/api/admin/expression-assets/${encodeURIComponent(asset.expression_type)}/${encodeURIComponent(asset.label)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          enabled: asset.enabled !== false,
+          lifecycle_status: asset.lifecycle_status || "active",
+          asset_kind: mediaUrl.trim() ? assetKind : "text_badge",
+          media_url: mediaUrl.trim(),
+          thumbnail_url: thumbnailUrl.trim(),
+          alt_text: asset.alt_text || asset.display_text || asset.label || "",
           admin_note: asset.admin_note || "",
         }),
       }

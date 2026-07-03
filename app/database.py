@@ -237,6 +237,10 @@ def init_db() -> None:
                 enabled INTEGER NOT NULL DEFAULT 1,
                 cooldown_turns INTEGER NOT NULL DEFAULT -1,
                 lifecycle_status TEXT NOT NULL DEFAULT 'active',
+                asset_kind TEXT NOT NULL DEFAULT '',
+                media_url TEXT NOT NULL DEFAULT '',
+                thumbnail_url TEXT NOT NULL DEFAULT '',
+                alt_text TEXT NOT NULL DEFAULT '',
                 admin_note TEXT NOT NULL DEFAULT '',
                 updated_by_user_id INTEGER,
                 updated_at INTEGER NOT NULL,
@@ -712,6 +716,10 @@ def init_db() -> None:
         _ensure_column(db, "expression_preferences", "mode", "TEXT NOT NULL DEFAULT 'normal'")
         _ensure_column(db, "expression_asset_settings", "cooldown_turns", "INTEGER NOT NULL DEFAULT -1")
         _ensure_column(db, "expression_asset_settings", "lifecycle_status", "TEXT NOT NULL DEFAULT 'active'")
+        _ensure_column(db, "expression_asset_settings", "asset_kind", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(db, "expression_asset_settings", "media_url", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(db, "expression_asset_settings", "thumbnail_url", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(db, "expression_asset_settings", "alt_text", "TEXT NOT NULL DEFAULT ''")
         for table in ("personas", "persona_versions"):
             _ensure_column(db, table, "psychological_profile_json", "TEXT NOT NULL DEFAULT '{}'")
             _ensure_column(db, table, "psychological_fit_notes", "TEXT NOT NULL DEFAULT ''")

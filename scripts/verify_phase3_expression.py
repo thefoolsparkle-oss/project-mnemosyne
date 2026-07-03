@@ -162,6 +162,41 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     assert restored_lifecycle["enabled"] is True
     assert restored_lifecycle["lifecycle_status"] == "active"
     assert "[[expression:tone:停顿]]" in chat.chat_rendering_rules_prompt()
+    media_asset = server.admin_update_expression_asset(
+        "mood",
+        "微笑",
+        server.ExpressionAssetUpdateRequest(
+            enabled=True,
+            asset_kind="image",
+            media_url="/uploads/expression/smile.png",
+            thumbnail_url="/uploads/expression/smile-thumb.png",
+            alt_text="微笑贴图",
+            admin_note="phase3 media",
+        ),
+        {"id": user_id, "role": "admin"},
+    )["asset"]
+    assert media_asset["asset_kind"] == "image"
+    assert media_asset["media_url"] == "/uploads/expression/smile.png"
+    assert media_asset["thumbnail_url"] == "/uploads/expression/smile-thumb.png"
+    assert media_asset["alt_text"] == "微笑贴图"
+    public_media_asset = next(item for item in server.expression_assets({"id": user_id})["assets"] if item["label"] == "微笑")
+    assert public_media_asset["asset_kind"] == "image"
+    assert public_media_asset["media_url"]
+    restored_media_asset = server.admin_update_expression_asset(
+        "mood",
+        "微笑",
+        server.ExpressionAssetUpdateRequest(
+            enabled=True,
+            asset_kind="text_badge",
+            media_url="",
+            thumbnail_url="",
+            alt_text="",
+            admin_note="phase3 media restore",
+        ),
+        {"id": user_id, "role": "admin"},
+    )["asset"]
+    assert restored_media_asset["asset_kind"] == "text_badge"
+    assert restored_media_asset["media_url"] == ""
     risk_policy = {"suppress_all": False, "recent_labels": ["微笑"]}
     assert chat._apply_expression_policy(
         [{"type": "mood", "label": "担心", "source_text": "[[expression:mood:担心]]"}],

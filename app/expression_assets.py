@@ -110,6 +110,14 @@ def expression_assets_public(
         setting = settings.get(_asset_key(asset))
         lifecycle_status = _normalize_lifecycle_status(None if setting is None else setting.get("lifecycle_status"))
         asset["lifecycle_status"] = lifecycle_status
+        if setting:
+            configured_asset_kind = str(setting.get("asset_kind") or "").strip()
+            if configured_asset_kind:
+                asset["asset_kind"] = _normalize_asset_kind(configured_asset_kind)
+            for field in ("media_url", "thumbnail_url", "alt_text"):
+                configured = str(setting.get(field) or "").strip()
+                if configured:
+                    asset[field] = configured
         asset["media_url"] = str(asset.get("media_url") or "")
         asset["thumbnail_url"] = str(asset.get("thumbnail_url") or asset.get("media_url") or "")
         asset["alt_text"] = str(asset.get("alt_text") or asset.get("display_text") or asset.get("label") or "")
@@ -188,6 +196,10 @@ def update_expression_asset_setting(
     admin_note: str = "",
     cooldown_turns: int | None = None,
     lifecycle_status: str | None = None,
+    asset_kind: str | None = None,
+    media_url: str | None = None,
+    thumbnail_url: str | None = None,
+    alt_text: str | None = None,
     updated_by_user_id: int | None = None,
 ) -> dict[str, Any]:
     expression_type = str(expression_type or "").strip()
@@ -199,7 +211,11 @@ def update_expression_asset_setting(
     ts = now_ts()
     with get_db() as db:
         existing = db.execute(
-            "SELECT cooldown_turns, lifecycle_status FROM expression_asset_settings WHERE expression_type = ? AND label = ?",
+            """
+            SELECT cooldown_turns, lifecycle_status, asset_kind, media_url, thumbnail_url, alt_text
+            FROM expression_asset_settings
+            WHERE expression_type = ? AND label = ?
+            """,
             (expression_type, label),
         ).fetchone()
         if cooldown_turns is None:
@@ -209,16 +225,28 @@ def update_expression_asset_setting(
         stored_lifecycle_status = _normalize_lifecycle_status(
             lifecycle_status if lifecycle_status is not None else (existing["lifecycle_status"] if existing else "active")
         )
+        stored_asset_kind = _normalize_asset_kind(
+            asset_kind if asset_kind is not None else (existing["asset_kind"] if existing else "")
+        )
+        stored_media_url = _stored_setting_text(media_url, existing, "media_url")
+        stored_thumbnail_url = _stored_setting_text(thumbnail_url, existing, "thumbnail_url")
+        stored_alt_text = _stored_setting_text(alt_text, existing, "alt_text")
         db.execute(
             """
             INSERT INTO expression_asset_settings (
-                expression_type, label, enabled, cooldown_turns, lifecycle_status, admin_note, updated_by_user_id, updated_at
+                expression_type, label, enabled, cooldown_turns, lifecycle_status,
+                asset_kind, media_url, thumbnail_url, alt_text,
+                admin_note, updated_by_user_id, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(expression_type, label) DO UPDATE SET
                 enabled = excluded.enabled,
                 cooldown_turns = excluded.cooldown_turns,
                 lifecycle_status = excluded.lifecycle_status,
+                asset_kind = excluded.asset_kind,
+                media_url = excluded.media_url,
+                thumbnail_url = excluded.thumbnail_url,
+                alt_text = excluded.alt_text,
                 admin_note = excluded.admin_note,
                 updated_by_user_id = excluded.updated_by_user_id,
                 updated_at = excluded.updated_at
@@ -229,6 +257,10 @@ def update_expression_asset_setting(
                 1 if enabled else 0,
                 stored_cooldown,
                 stored_lifecycle_status,
+                stored_asset_kind,
+                stored_media_url,
+                stored_thumbnail_url,
+                stored_alt_text,
                 str(admin_note or "")[:500],
                 updated_by_user_id,
                 ts,
@@ -256,7 +288,8 @@ def _expression_asset_settings() -> dict[tuple[str, str], dict[str, Any]]:
         with get_db() as db:
             rows = db.execute(
                 """
-                SELECT expression_type, label, enabled, cooldown_turns, lifecycle_status, admin_note, updated_at
+                SELECT expression_type, label, enabled, cooldown_turns, lifecycle_status,
+                       asset_kind, media_url, thumbnail_url, alt_text, admin_note, updated_at
                 FROM expression_asset_settings
                 """
             ).fetchall()
@@ -273,3 +306,18 @@ def _normalize_lifecycle_status(value: Any) -> str:
     if status not in {"active", "paused", "archived"}:
         return "active"
     return status
+
+
+def _normalize_asset_kind(value: Any) -> str:
+    kind = str(value or "").strip().lower()
+    if not kind:
+        return ""
+    if kind not in {"text_badge", "image", "gif", "avatar_expression"}:
+        return "text_badge"
+    return kind
+
+
+def _stored_setting_text(value: str | None, existing: Any, field: str) -> str:
+    if value is None:
+        return str(existing[field] or "") if existing else ""
+    return str(value or "").strip()[:500]
