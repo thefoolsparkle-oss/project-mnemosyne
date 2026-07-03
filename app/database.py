@@ -241,6 +241,8 @@ def init_db() -> None:
                 media_url TEXT NOT NULL DEFAULT '',
                 thumbnail_url TEXT NOT NULL DEFAULT '',
                 alt_text TEXT NOT NULL DEFAULT '',
+                media_source TEXT NOT NULL DEFAULT '',
+                media_source_detail TEXT NOT NULL DEFAULT '',
                 media_review_status TEXT NOT NULL DEFAULT 'approved',
                 media_review_note TEXT NOT NULL DEFAULT '',
                 admin_note TEXT NOT NULL DEFAULT '',
@@ -722,6 +724,8 @@ def init_db() -> None:
         _ensure_column(db, "expression_asset_settings", "media_url", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(db, "expression_asset_settings", "thumbnail_url", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(db, "expression_asset_settings", "alt_text", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(db, "expression_asset_settings", "media_source", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(db, "expression_asset_settings", "media_source_detail", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(db, "expression_asset_settings", "media_review_status", "TEXT NOT NULL DEFAULT 'approved'")
         _ensure_column(db, "expression_asset_settings", "media_review_note", "TEXT NOT NULL DEFAULT ''")
         for table in ("personas", "persona_versions"):

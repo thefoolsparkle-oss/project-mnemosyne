@@ -217,6 +217,7 @@ def verify_expression_asset_upload_in_process(client) -> None:
         assert asset.get("asset_kind") == "image"
         assert asset.get("media_url") == upload_url
         assert asset.get("thumbnail_url") == upload_url
+        assert asset.get("media_source") == "admin_upload"
         import_response = client.post(
             "/api/admin/expression-assets/media/import",
             json={
@@ -241,6 +242,7 @@ def verify_expression_asset_upload_in_process(client) -> None:
         assert imported.get("failed_count") == 1
         tone_asset = next(item for item in imported.get("assets", []) if item["expression_type"] == "tone" and item["label"] == "轻声")
         assert tone_asset["asset_kind"] == "gif"
+        assert tone_asset["media_source"] == "batch_import"
         assert tone_asset["media_review_status"] == "pending"
         assert tone_asset["media_url"] == "/uploads/expression-assets/soft.gif"
         public_assets = client.get("/api/expression-assets")

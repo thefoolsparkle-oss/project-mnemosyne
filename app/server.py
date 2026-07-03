@@ -215,6 +215,8 @@ class ExpressionAssetUpdateRequest(BaseModel):
     media_url: str | None = Field(default=None, max_length=500)
     thumbnail_url: str | None = Field(default=None, max_length=500)
     alt_text: str | None = Field(default=None, max_length=120)
+    media_source: str | None = Field(default=None, max_length=80)
+    media_source_detail: str | None = Field(default=None, max_length=500)
     media_review_status: str | None = Field(default=None, max_length=20)
     media_review_note: str | None = Field(default=None, max_length=500)
     admin_note: str | None = Field(default="", max_length=500)
@@ -227,6 +229,8 @@ class ExpressionAssetMediaImportItem(BaseModel):
     media_url: str | None = Field(default="", max_length=500)
     thumbnail_url: str | None = Field(default=None, max_length=500)
     alt_text: str | None = Field(default=None, max_length=120)
+    media_source: str | None = Field(default=None, max_length=80)
+    media_source_detail: str | None = Field(default=None, max_length=500)
     media_review_status: str | None = Field(default=None, max_length=20)
     media_review_note: str | None = Field(default=None, max_length=500)
     enabled: bool | None = None
@@ -497,6 +501,8 @@ def admin_update_expression_asset(
             media_url=req.media_url,
             thumbnail_url=req.thumbnail_url,
             alt_text=req.alt_text,
+            media_source=req.media_source,
+            media_source_detail=req.media_source_detail,
             media_review_status=req.media_review_status,
             media_review_note=req.media_review_note,
             admin_note=req.admin_note or "",
@@ -537,6 +543,8 @@ def admin_import_expression_asset_media(
                 media_url=media_url,
                 thumbnail_url=thumbnail_url,
                 alt_text=str(item.alt_text or asset.get("alt_text") or asset.get("display_text") or asset.get("label") or ""),
+                media_source=item.media_source or ("batch_import" if media_url else "manual_clear"),
+                media_source_detail=item.media_source_detail or media_url,
                 media_review_status=item.media_review_status or ("pending" if media_url else "approved"),
                 media_review_note=item.media_review_note or "批量导入后待审",
                 admin_note=str(item.admin_note or "批量导入媒体资源")[:500],
@@ -579,6 +587,8 @@ async def admin_upload_expression_asset_media(
             media_url=url,
             thumbnail_url=url,
             alt_text=str(asset.get("alt_text") or asset.get("display_text") or asset.get("label") or ""),
+            media_source="admin_upload",
+            media_source_detail=str(file.filename or ""),
             media_review_status="approved",
             media_review_note="管理员直接上传，自动批准",
             admin_note="管理台上传媒体资源",

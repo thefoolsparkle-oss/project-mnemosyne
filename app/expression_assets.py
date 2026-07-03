@@ -133,6 +133,8 @@ def expression_assets_public(
             asset["updated_at"] = 0 if setting is None else int(setting.get("updated_at") or 0)
             asset["cooldown_turns_override"] = configured_cooldown if configured_cooldown >= 0 else None
             asset["media_review_note"] = "" if setting is None else str(setting.get("media_review_note") or "")
+            asset["media_source"] = "" if setting is None else str(setting.get("media_source") or "")
+            asset["media_source_detail"] = "" if setting is None else str(setting.get("media_source_detail") or "")
         if include_disabled or asset["enabled"]:
             result.append(asset)
     return result
@@ -205,6 +207,8 @@ def update_expression_asset_setting(
     media_url: str | None = None,
     thumbnail_url: str | None = None,
     alt_text: str | None = None,
+    media_source: str | None = None,
+    media_source_detail: str | None = None,
     media_review_status: str | None = None,
     media_review_note: str | None = None,
     updated_by_user_id: int | None = None,
@@ -220,7 +224,7 @@ def update_expression_asset_setting(
         existing = db.execute(
             """
             SELECT cooldown_turns, lifecycle_status, asset_kind, media_url, thumbnail_url, alt_text,
-                   media_review_status, media_review_note
+                   media_source, media_source_detail, media_review_status, media_review_note
             FROM expression_asset_settings
             WHERE expression_type = ? AND label = ?
             """,
@@ -239,6 +243,8 @@ def update_expression_asset_setting(
         stored_media_url = _stored_setting_text(media_url, existing, "media_url")
         stored_thumbnail_url = _stored_setting_text(thumbnail_url, existing, "thumbnail_url")
         stored_alt_text = _stored_setting_text(alt_text, existing, "alt_text")
+        stored_media_source = _stored_setting_text(media_source, existing, "media_source")
+        stored_media_source_detail = _stored_setting_text(media_source_detail, existing, "media_source_detail")
         stored_media_review_status = _normalize_media_review_status(
             media_review_status if media_review_status is not None else (existing["media_review_status"] if existing else "approved")
         )
@@ -247,10 +253,11 @@ def update_expression_asset_setting(
             """
             INSERT INTO expression_asset_settings (
                 expression_type, label, enabled, cooldown_turns, lifecycle_status,
-                asset_kind, media_url, thumbnail_url, alt_text, media_review_status, media_review_note,
+                asset_kind, media_url, thumbnail_url, alt_text, media_source, media_source_detail,
+                media_review_status, media_review_note,
                 admin_note, updated_by_user_id, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(expression_type, label) DO UPDATE SET
                 enabled = excluded.enabled,
                 cooldown_turns = excluded.cooldown_turns,
@@ -259,6 +266,8 @@ def update_expression_asset_setting(
                 media_url = excluded.media_url,
                 thumbnail_url = excluded.thumbnail_url,
                 alt_text = excluded.alt_text,
+                media_source = excluded.media_source,
+                media_source_detail = excluded.media_source_detail,
                 media_review_status = excluded.media_review_status,
                 media_review_note = excluded.media_review_note,
                 admin_note = excluded.admin_note,
@@ -275,6 +284,8 @@ def update_expression_asset_setting(
                 stored_media_url,
                 stored_thumbnail_url,
                 stored_alt_text,
+                stored_media_source,
+                stored_media_source_detail,
                 stored_media_review_status,
                 stored_media_review_note,
                 str(admin_note or "")[:500],
@@ -305,8 +316,9 @@ def _expression_asset_settings() -> dict[tuple[str, str], dict[str, Any]]:
             rows = db.execute(
                 """
                 SELECT expression_type, label, enabled, cooldown_turns, lifecycle_status,
-                       asset_kind, media_url, thumbnail_url, alt_text, media_review_status,
-                       media_review_note, admin_note, updated_at
+                       asset_kind, media_url, thumbnail_url, alt_text, media_source,
+                       media_source_detail, media_review_status, media_review_note,
+                       admin_note, updated_at
                 FROM expression_asset_settings
                 """
             ).fetchall()

@@ -543,6 +543,7 @@ function renderExpressionAsset(asset) {
     h("small", { class: `expression-asset-risk ${asset.risk_level || "low"}`, text: `风险：${asset.risk_level || "low"}` }),
     asset.admin_note ? h("small", { class: "expression-asset-note", text: `备注：${asset.admin_note}` }) : null,
     asset.media_review_note ? h("small", { class: "expression-asset-note", text: `媒体审查：${asset.media_review_note}` }) : null,
+    asset.media_source ? h("small", { class: "expression-asset-note", text: `媒体来源：${asset.media_source}${asset.media_source_detail ? ` · ${asset.media_source_detail}` : ""}` }) : null,
   ]);
 }
 
@@ -671,6 +672,8 @@ async function editExpressionAssetMedia(asset) {
           media_url: mediaUrl.trim(),
           thumbnail_url: thumbnailUrl.trim(),
           alt_text: asset.alt_text || asset.display_text || asset.label || "",
+          media_source: mediaUrl.trim() ? "manual_url" : "manual_clear",
+          media_source_detail: mediaUrl.trim(),
           media_review_status: mediaUrl.trim() ? "approved" : "approved",
           media_review_note: mediaUrl.trim() ? "手动配置媒体 URL，自动批准" : "",
           admin_note: asset.admin_note || "",
@@ -703,6 +706,8 @@ async function updateExpressionAssetMediaReview(asset, status) {
           media_url: asset.media_url || "",
           thumbnail_url: asset.thumbnail_url || "",
           alt_text: asset.alt_text || asset.display_text || asset.label || "",
+          media_source: asset.media_source || "",
+          media_source_detail: asset.media_source_detail || "",
           media_review_status: status,
           media_review_note: note,
           admin_note: asset.admin_note || "",
