@@ -62,15 +62,32 @@ node --check admin_web\admin.js
 
 ```yaml
 llm:
-  provider: deepseek
-  model: deepseek-v4-flash
-  base_url: https://api.deepseek.com/v1
+  provider: kimi
+  model: kimi-k2.6
+  base_url: https://api.moonshot.cn/v1
+  api_key_env: MOONSHOT_API_KEY
+
+llm_routes:
+  chat:
+    provider: kimi
+    model: moonshot-v1-auto
+    base_url: https://api.moonshot.cn/v1
+    api_key_env: MOONSHOT_API_KEY
+    timeout: 45
+    max_tokens: 700
+  group_chat:
+    provider: kimi
+    model: moonshot-v1-auto
+    base_url: https://api.moonshot.cn/v1
+    api_key_env: MOONSHOT_API_KEY
+    timeout: 25
+    max_tokens: 360
 ```
 
 Windows 环境变量：
 
 ```text
-DEEPSEEK_API_KEY
+MOONSHOT_API_KEY
 ```
 
 ## GitHub 发布约定
