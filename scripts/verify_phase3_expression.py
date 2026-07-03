@@ -230,6 +230,38 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
             "expression_persona_avoid_labels": ["轻笑"],
         },
     ) == []
+    support_agent = chat._expression_selection_agent(
+        "我今天有点累，陪我一下",
+        "我在，先慢慢来。",
+        {
+            "suppress_all": False,
+            "expression_scene": "support_needed",
+            "expression_allowed_groups": ["support", "care", "warmth", "acknowledgement"],
+        },
+    )
+    assert support_agent[0]["label"] == "轻声"
+    assert support_agent[0]["source_text"] == "selection_agent:support_needed"
+    playful_agent = chat._expression_selection_agent(
+        "哈哈这个好好玩",
+        "确实有点好笑。",
+        {
+            "suppress_all": False,
+            "expression_scene": "playful",
+            "expression_allowed_groups": ["warmth", "acknowledgement"],
+            "expression_persona_avoid_labels": ["轻笑"],
+        },
+    )
+    assert playful_agent[0]["label"] == "微笑"
+    assert chat._expression_selection_agent(
+        "我们继续讨论一下今天要做的事情",
+        "好，我们慢慢拆。",
+        {"suppress_all": False, "expression_scene": "ordinary", "expression_allowed_groups": ["warmth", "acknowledgement"]},
+    ) == []
+    assert chat._expression_selection_agent(
+        "好",
+        "嗯，我在。",
+        {"suppress_all": True, "expression_scene": "ordinary", "expression_allowed_groups": ["warmth", "acknowledgement"]},
+    ) == []
     cooldown_policy = {
         "suppress_all": False,
         "recent_labels": ["点头"],

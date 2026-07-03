@@ -648,7 +648,8 @@ def db_chat(
 
     presentation = _extract_reply_presentation(reply)
     reply = presentation["content"]
-    expressions = _apply_expression_policy(presentation["expressions"], expression_policy)
+    candidate_expressions = presentation["expressions"] or _expression_selection_agent(message, reply, expression_policy)
+    expressions = _apply_expression_policy(candidate_expressions, expression_policy)
     ts = now_ts()
 
     with get_db() as db:
@@ -1234,6 +1235,8 @@ def _apply_expression_policy(expressions: list[dict], policy: dict) -> list[dict
         if label in avoid_labels:
             continue
         asset = expression_asset(str(item.get("type") or ""), label)
+        if not asset or asset.get("enabled") is False:
+            continue
         cooldown_turns = int((asset or {}).get("cooldown_turns") or EXPRESSION_RECENT_WINDOW)
         if label in recent_label_distances and recent_label_distances[label] < cooldown_turns:
             continue
@@ -1245,6 +1248,61 @@ def _apply_expression_policy(expressions: list[dict], policy: dict) -> list[dict
         kept.append(item)
         break
     return kept
+
+
+def _expression_selection_agent(user_text: str, reply_text: str, policy: dict) -> list[dict]:
+    if policy.get("disabled_by_user") or policy.get("suppress_all"):
+        return []
+    scene = str(policy.get("expression_scene") or "ordinary")
+    if policy.get("subtle_mode") and scene == "ordinary":
+        return []
+    if scene == "support_needed":
+        candidates = [("tone", "轻声"), ("mood", "担心"), ("gesture", "点头"), ("mood", "微笑")]
+    elif scene == "playful":
+        candidates = [("mood", "轻笑"), ("mood", "微笑"), ("gesture", "点头")]
+    elif _ordinary_expression_agent_should_emit(user_text, reply_text):
+        candidates = [("gesture", "点头"), ("mood", "微笑")]
+    else:
+        return []
+    allowed_groups = {str(group) for group in policy.get("expression_allowed_groups") or [] if group}
+    avoid_labels = {str(label) for label in policy.get("expression_persona_avoid_labels") or [] if label}
+    recent_label_distances = {
+        str(label): int(distance)
+        for label, distance in (policy.get("recent_label_distances") or {}).items()
+        if label
+    }
+    for expression_type, label in candidates:
+        if label not in active_expression_labels().get(expression_type, set()):
+            continue
+        if label in avoid_labels:
+            continue
+        asset = expression_asset(expression_type, label)
+        if not asset or asset.get("enabled") is False:
+            continue
+        asset_group = str(asset.get("group") or "")
+        if allowed_groups and asset_group and asset_group not in allowed_groups:
+            continue
+        cooldown_turns = int(asset.get("cooldown_turns") or EXPRESSION_RECENT_WINDOW)
+        if label in recent_label_distances and recent_label_distances[label] < cooldown_turns:
+            continue
+        if policy.get("recent_labels") and asset.get("risk_level") == "medium" and scene != "support_needed":
+            continue
+        return [
+            {
+                "type": expression_type,
+                "label": label,
+                "source_text": f"selection_agent:{scene}",
+            }
+        ]
+    return []
+
+
+def _ordinary_expression_agent_should_emit(user_text: str, reply_text: str) -> bool:
+    user_compact = re.sub(r"\s+", "", str(user_text or ""))
+    reply_compact = re.sub(r"\s+", "", str(reply_text or ""))
+    if len(user_compact) > 12:
+        return False
+    return any(marker in reply_compact for marker in ("嗯", "好", "知道了", "明白", "我在"))
 
 
 def _looks_like_stage_direction(text: str) -> bool:
