@@ -218,6 +218,23 @@ class ExpressionAssetUpdateRequest(BaseModel):
     admin_note: str | None = Field(default="", max_length=500)
 
 
+class ExpressionAssetMediaImportItem(BaseModel):
+    expression_type: str = Field(..., min_length=1, max_length=40)
+    label: str = Field(..., min_length=1, max_length=40)
+    asset_kind: str | None = Field(default=None, max_length=40)
+    media_url: str | None = Field(default="", max_length=500)
+    thumbnail_url: str | None = Field(default=None, max_length=500)
+    alt_text: str | None = Field(default=None, max_length=120)
+    enabled: bool | None = None
+    cooldown_turns: int | None = Field(default=None, ge=0, le=20)
+    lifecycle_status: str | None = Field(default=None, max_length=20)
+    admin_note: str | None = Field(default="", max_length=500)
+
+
+class ExpressionAssetMediaImportRequest(BaseModel):
+    items: list[ExpressionAssetMediaImportItem] = Field(default_factory=list)
+
+
 class ExpressionReviewBulkRequest(BaseModel):
     target_user_id: int | None = None
     persona_id: int | None = None
@@ -483,6 +500,50 @@ def admin_update_expression_asset(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {
         "asset": asset,
+        "assets": expression_assets_public(include_disabled=True, include_admin_metadata=True),
+    }
+
+
+@app.post("/api/admin/expression-assets/media/import")
+def admin_import_expression_asset_media(
+    req: ExpressionAssetMediaImportRequest,
+    admin: dict = Depends(current_admin),
+):
+    if not req.items:
+        raise HTTPException(status_code=400, detail="items are required")
+    if len(req.items) > 100:
+        raise HTTPException(status_code=400, detail="at most 100 assets can be imported at once")
+    imported: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for index, item in enumerate(req.items):
+        try:
+            asset = _find_expression_asset(item.expression_type, item.label)
+            media_url = str(item.media_url or "").strip()
+            thumbnail_url = str(item.thumbnail_url or media_url).strip()
+            kind = _imported_expression_asset_kind(item.asset_kind, media_url)
+            updated = update_expression_asset_setting(
+                item.expression_type,
+                item.label,
+                enabled=bool(asset.get("enabled", True)) if item.enabled is None else bool(item.enabled),
+                cooldown_turns=item.cooldown_turns,
+                lifecycle_status=item.lifecycle_status or str(asset.get("lifecycle_status") or "active"),
+                asset_kind=kind,
+                media_url=media_url,
+                thumbnail_url=thumbnail_url,
+                alt_text=str(item.alt_text or asset.get("alt_text") or asset.get("display_text") or asset.get("label") or ""),
+                admin_note=str(item.admin_note or "批量导入媒体资源")[:500],
+                updated_by_user_id=int(admin["id"]),
+            )
+            imported.append(updated)
+        except HTTPException as exc:
+            failures.append({"index": index, "label": item.label, "detail": exc.detail})
+        except ValueError as exc:
+            failures.append({"index": index, "label": item.label, "detail": str(exc)})
+    return {
+        "imported_count": len(imported),
+        "failed_count": len(failures),
+        "imported": imported,
+        "failures": failures,
         "assets": expression_assets_public(include_disabled=True, include_admin_metadata=True),
     }
 
@@ -3590,6 +3651,17 @@ def _uploaded_expression_asset_kind(content_type: str, requested_kind: str | Non
         return "gif" if content_type == "image/gif" else "image"
     if kind not in {"image", "gif", "avatar_expression"}:
         raise HTTPException(status_code=400, detail="asset_kind must be image, gif or avatar_expression")
+    return kind
+
+
+def _imported_expression_asset_kind(requested_kind: str | None, media_url: str) -> str:
+    kind = str(requested_kind or "").strip().lower()
+    if not kind:
+        if not media_url:
+            return "text_badge"
+        return "gif" if media_url.lower().split("?", 1)[0].endswith(".gif") else "image"
+    if kind not in {"text_badge", "image", "gif", "avatar_expression"}:
+        raise HTTPException(status_code=400, detail="asset_kind must be text_badge, image, gif or avatar_expression")
     return kind
 
 

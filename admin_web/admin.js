@@ -407,7 +407,7 @@ function renderExpressionAssetCatalog(assets) {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(asset);
   }
-  return h("div", { class: "expression-asset-catalog" }, [...groups.entries()].map(([group, items]) => {
+  const groupNodes = [...groups.entries()].map(([group, items]) => {
     const enabledCount = items.filter((item) => item.enabled !== false).length;
     return h("section", { class: "expression-asset-group" }, [
       h("div", { class: "expression-asset-group-head" }, [
@@ -416,7 +416,19 @@ function renderExpressionAssetCatalog(assets) {
       ]),
       h("div", { class: "expression-asset-group-list" }, items.map(renderExpressionAsset)),
     ]);
-  }));
+  });
+  return h("div", { class: "expression-asset-catalog" }, [
+    h("div", { class: "expression-asset-catalog-tools" }, [
+      h("strong", { text: "表达资源" }),
+      h("button", {
+        type: "button",
+        class: "ghost compact",
+        text: "批量导入媒体",
+        onclick: importExpressionAssetMediaBatch,
+      }),
+    ]),
+    ...groupNodes,
+  ]);
 }
 
 function renderExpressionAsset(asset) {
@@ -639,6 +651,45 @@ function uploadExpressionAssetMedia(asset) {
   };
   document.body.append(input);
   input.click();
+}
+
+async function importExpressionAssetMediaBatch() {
+  const example = JSON.stringify([
+    {
+      expression_type: "mood",
+      label: "微笑",
+      asset_kind: "image",
+      media_url: "/uploads/expression-assets/smile.png",
+      thumbnail_url: "/uploads/expression-assets/smile.png",
+      alt_text: "微笑贴图",
+    },
+  ], null, 2);
+  const text = window.prompt("批量导入媒体 JSON：可输入数组，或 {\"items\": [...]}。空 media_url 可恢复文本徽标。", example);
+  if (text === null) return;
+  let payload;
+  try {
+    const parsed = JSON.parse(text);
+    payload = Array.isArray(parsed) ? { items: parsed } : parsed;
+    if (!Array.isArray(payload.items)) throw new Error("items must be an array");
+  } catch (err) {
+    state.error = `JSON 无法解析：${err.message}`;
+    render();
+    return;
+  }
+  state.error = "";
+  try {
+    const data = await api("/api/admin/expression-assets/media/import", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    state.expressionAssets = data.assets || [];
+    await loadReview();
+    const failed = Number(data.failed_count || 0);
+    window.alert(`已导入 ${data.imported_count || 0} 条${failed ? `，失败 ${failed} 条` : ""}`);
+  } catch (err) {
+    state.error = err.message;
+  }
+  render();
 }
 
 async function applyExpressionReviewCooldown(item) {

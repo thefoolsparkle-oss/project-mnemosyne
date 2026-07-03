@@ -553,6 +553,13 @@ small {
   color: var(--text);
 }
 
+.expression-asset-catalog-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .expression-asset-group-list {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));

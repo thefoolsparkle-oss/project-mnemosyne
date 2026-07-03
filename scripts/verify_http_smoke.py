@@ -217,6 +217,31 @@ def verify_expression_asset_upload_in_process(client) -> None:
         assert asset.get("asset_kind") == "image"
         assert asset.get("media_url") == upload_url
         assert asset.get("thumbnail_url") == upload_url
+        import_response = client.post(
+            "/api/admin/expression-assets/media/import",
+            json={
+                "items": [
+                    {
+                        "expression_type": "tone",
+                        "label": "轻声",
+                        "media_url": "/uploads/expression-assets/soft.gif",
+                        "alt_text": "轻声动图",
+                    },
+                    {
+                        "expression_type": "mood",
+                        "label": "不存在",
+                        "media_url": "/uploads/expression-assets/missing.png",
+                    },
+                ]
+            },
+        )
+        assert import_response.status_code == 200, import_response.text
+        imported = import_response.json()
+        assert imported.get("imported_count") == 1
+        assert imported.get("failed_count") == 1
+        tone_asset = next(item for item in imported.get("assets", []) if item["expression_type"] == "tone" and item["label"] == "轻声")
+        assert tone_asset["asset_kind"] == "gif"
+        assert tone_asset["media_url"] == "/uploads/expression-assets/soft.gif"
     finally:
         with database.get_db() as db:
             db.execute("DELETE FROM users WHERE id = ?", (user_id,))
