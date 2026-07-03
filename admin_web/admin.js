@@ -420,17 +420,26 @@ function renderExpressionAssetCatalog(assets) {
 
 function renderExpressionAsset(asset) {
   const enabled = asset.enabled !== false;
+  const lifecycle = asset.lifecycle_status || "active";
+  const archived = lifecycle === "archived";
   return h("article", { class: `expression-asset-item ${asset.expression_type || "gesture"} ${enabled ? "enabled" : "disabled"}` }, [
     h("span", { class: "expression-asset-icon", text: asset.icon || "" }),
     h("span", {}, [
       h("strong", { text: asset.display_text || asset.label || "" }),
-      h("small", { text: `${asset.expression_type || ""} / ${asset.group || "general"} / 强度 ${asset.intensity || 1} / 冷却 ${asset.cooldown_turns ?? 0} 轮 / ${enabled ? "启用" : "禁用"}` }),
+      h("small", { text: `${asset.expression_type || ""} / ${asset.group || "general"} / 强度 ${asset.intensity || 1} / 冷却 ${asset.cooldown_turns ?? 0} 轮 / ${enabled ? "启用" : "禁用"} / ${lifecycle}` }),
     ]),
     h("button", {
       type: "button",
       class: enabled ? "ghost compact" : "compact",
       text: enabled ? "禁用" : "启用",
+      disabled: archived ? "disabled" : null,
       onclick: () => toggleExpressionAsset(asset),
+    }),
+    h("button", {
+      type: "button",
+      class: archived ? "compact" : "ghost compact",
+      text: archived ? "恢复" : "归档",
+      onclick: () => updateExpressionAssetLifecycle(asset, archived ? "active" : "archived"),
     }),
     h("button", {
       type: "button",
@@ -460,6 +469,28 @@ async function toggleExpressionAsset(asset) {
         body: JSON.stringify({
           enabled: asset.enabled === false,
           admin_note: asset.enabled === false ? "管理台重新启用" : "管理台禁用",
+        }),
+      }
+    );
+    state.expressionAssets = data.assets || [];
+    await loadReview();
+  } catch (err) {
+    state.error = err.message;
+  }
+  render();
+}
+
+async function updateExpressionAssetLifecycle(asset, lifecycleStatus) {
+  state.error = "";
+  try {
+    const data = await api(
+      `/api/admin/expression-assets/${encodeURIComponent(asset.expression_type)}/${encodeURIComponent(asset.label)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          enabled: lifecycleStatus === "active" ? true : asset.enabled !== false,
+          lifecycle_status: lifecycleStatus,
+          admin_note: lifecycleStatus === "archived" ? "管理台归档" : "管理台恢复为 active",
         }),
       }
     );

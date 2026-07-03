@@ -130,6 +130,37 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
         assert getattr(exc, "status_code", None) == 404
     else:
         assert False, "unknown expression asset should return 404"
+    archived_asset = server.admin_update_expression_asset(
+        "tone",
+        "停顿",
+        server.ExpressionAssetUpdateRequest(
+            enabled=True,
+            lifecycle_status="archived",
+            admin_note="phase3 archive",
+        ),
+        {"id": user_id, "role": "admin"},
+    )["asset"]
+    assert archived_asset["lifecycle_status"] == "archived"
+    assert archived_asset["enabled"] is False
+    public_after_archive = server.expression_assets({"id": user_id})["assets"]
+    assert "停顿" not in {item["label"] for item in public_after_archive}
+    assert "[[expression:tone:停顿]]" not in chat.chat_rendering_rules_prompt()
+    archived_direct = chat._extract_reply_presentation("先停一下。[[expression:tone:停顿]]")
+    assert archived_direct["content"] == "先停一下。"
+    assert archived_direct["expressions"] == []
+    restored_lifecycle = server.admin_update_expression_asset(
+        "tone",
+        "停顿",
+        server.ExpressionAssetUpdateRequest(
+            enabled=True,
+            lifecycle_status="active",
+            admin_note="phase3 unarchive",
+        ),
+        {"id": user_id, "role": "admin"},
+    )["asset"]
+    assert restored_lifecycle["enabled"] is True
+    assert restored_lifecycle["lifecycle_status"] == "active"
+    assert "[[expression:tone:停顿]]" in chat.chat_rendering_rules_prompt()
     risk_policy = {"suppress_all": False, "recent_labels": ["微笑"]}
     assert chat._apply_expression_policy(
         [{"type": "mood", "label": "担心", "source_text": "[[expression:mood:担心]]"}],

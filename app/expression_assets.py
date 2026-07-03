@@ -108,7 +108,9 @@ def expression_assets_public(
     for item in sorted(EXPRESSION_ASSETS, key=lambda asset: int(asset.get("sort_order") or 0)):
         asset = dict(item)
         setting = settings.get(_asset_key(asset))
-        asset["enabled"] = True if setting is None else bool(int(setting.get("enabled", 1) or 0))
+        lifecycle_status = _normalize_lifecycle_status(None if setting is None else setting.get("lifecycle_status"))
+        asset["lifecycle_status"] = lifecycle_status
+        asset["enabled"] = (True if setting is None else bool(int(setting.get("enabled", 1) or 0))) and lifecycle_status == "active"
         configured_cooldown = -1 if setting is None else int(setting.get("cooldown_turns", -1) or -1)
         asset["cooldown_turns"] = configured_cooldown if configured_cooldown >= 0 else int(asset.get("cooldown_turns") or 0)
         if include_admin_metadata:
@@ -182,6 +184,7 @@ def update_expression_asset_setting(
     enabled: bool,
     admin_note: str = "",
     cooldown_turns: int | None = None,
+    lifecycle_status: str | None = None,
     updated_by_user_id: int | None = None,
 ) -> dict[str, Any]:
     expression_type = str(expression_type or "").strip()
@@ -193,22 +196,26 @@ def update_expression_asset_setting(
     ts = now_ts()
     with get_db() as db:
         existing = db.execute(
-            "SELECT cooldown_turns FROM expression_asset_settings WHERE expression_type = ? AND label = ?",
+            "SELECT cooldown_turns, lifecycle_status FROM expression_asset_settings WHERE expression_type = ? AND label = ?",
             (expression_type, label),
         ).fetchone()
         if cooldown_turns is None:
             stored_cooldown = int(existing["cooldown_turns"]) if existing else -1
         else:
             stored_cooldown = max(0, min(int(cooldown_turns), 20))
+        stored_lifecycle_status = _normalize_lifecycle_status(
+            lifecycle_status if lifecycle_status is not None else (existing["lifecycle_status"] if existing else "active")
+        )
         db.execute(
             """
             INSERT INTO expression_asset_settings (
-                expression_type, label, enabled, cooldown_turns, admin_note, updated_by_user_id, updated_at
+                expression_type, label, enabled, cooldown_turns, lifecycle_status, admin_note, updated_by_user_id, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(expression_type, label) DO UPDATE SET
                 enabled = excluded.enabled,
                 cooldown_turns = excluded.cooldown_turns,
+                lifecycle_status = excluded.lifecycle_status,
                 admin_note = excluded.admin_note,
                 updated_by_user_id = excluded.updated_by_user_id,
                 updated_at = excluded.updated_at
@@ -218,6 +225,7 @@ def update_expression_asset_setting(
                 label,
                 1 if enabled else 0,
                 stored_cooldown,
+                stored_lifecycle_status,
                 str(admin_note or "")[:500],
                 updated_by_user_id,
                 ts,
@@ -245,7 +253,7 @@ def _expression_asset_settings() -> dict[tuple[str, str], dict[str, Any]]:
         with get_db() as db:
             rows = db.execute(
                 """
-                SELECT expression_type, label, enabled, cooldown_turns, admin_note, updated_at
+                SELECT expression_type, label, enabled, cooldown_turns, lifecycle_status, admin_note, updated_at
                 FROM expression_asset_settings
                 """
             ).fetchall()
@@ -255,3 +263,10 @@ def _expression_asset_settings() -> dict[tuple[str, str], dict[str, Any]]:
         }
     except Exception:
         return {}
+
+
+def _normalize_lifecycle_status(value: Any) -> str:
+    status = str(value or "active").strip().lower()
+    if status not in {"active", "paused", "archived"}:
+        return "active"
+    return status

@@ -202,6 +202,7 @@ class ExpressionPreferenceUpdateRequest(BaseModel):
 class ExpressionAssetUpdateRequest(BaseModel):
     enabled: bool
     cooldown_turns: int | None = Field(default=None, ge=0, le=20)
+    lifecycle_status: str | None = Field(default=None, max_length=20)
     admin_note: str | None = Field(default="", max_length=500)
 
 
@@ -458,6 +459,7 @@ def admin_update_expression_asset(
             label,
             enabled=req.enabled,
             cooldown_turns=req.cooldown_turns,
+            lifecycle_status=req.lifecycle_status,
             admin_note=req.admin_note or "",
             updated_by_user_id=int(admin["id"]),
         )
