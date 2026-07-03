@@ -241,6 +241,8 @@ def init_db() -> None:
                 media_url TEXT NOT NULL DEFAULT '',
                 thumbnail_url TEXT NOT NULL DEFAULT '',
                 alt_text TEXT NOT NULL DEFAULT '',
+                media_review_status TEXT NOT NULL DEFAULT 'approved',
+                media_review_note TEXT NOT NULL DEFAULT '',
                 admin_note TEXT NOT NULL DEFAULT '',
                 updated_by_user_id INTEGER,
                 updated_at INTEGER NOT NULL,
@@ -720,6 +722,8 @@ def init_db() -> None:
         _ensure_column(db, "expression_asset_settings", "media_url", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(db, "expression_asset_settings", "thumbnail_url", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(db, "expression_asset_settings", "alt_text", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(db, "expression_asset_settings", "media_review_status", "TEXT NOT NULL DEFAULT 'approved'")
+        _ensure_column(db, "expression_asset_settings", "media_review_note", "TEXT NOT NULL DEFAULT ''")
         for table in ("personas", "persona_versions"):
             _ensure_column(db, table, "psychological_profile_json", "TEXT NOT NULL DEFAULT '{}'")
             _ensure_column(db, table, "psychological_fit_notes", "TEXT NOT NULL DEFAULT ''")

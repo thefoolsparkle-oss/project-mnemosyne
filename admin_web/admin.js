@@ -442,7 +442,7 @@ function renderExpressionAsset(asset) {
       : h("span", { class: "expression-asset-icon", text: asset.icon || "" }),
     h("span", {}, [
       h("strong", { text: asset.display_text || asset.label || "" }),
-      h("small", { text: `${asset.expression_type || ""} / ${asset.group || "general"} / 强度 ${asset.intensity || 1} / 冷却 ${asset.cooldown_turns ?? 0} 轮 / ${enabled ? "启用" : "禁用"} / ${lifecycle}` }),
+      h("small", { text: `${asset.expression_type || ""} / ${asset.group || "general"} / 强度 ${asset.intensity || 1} / 冷却 ${asset.cooldown_turns ?? 0} 轮 / ${enabled ? "启用" : "禁用"} / ${lifecycle} / 媒体${mediaReviewLabel(asset.media_review_status)}` }),
     ]),
     h("div", { class: "expression-asset-actions" }, [
       h("button", {
@@ -482,11 +482,36 @@ function renderExpressionAsset(asset) {
         text: "上传",
         onclick: () => uploadExpressionAssetMedia(asset),
       }),
+      mediaUrl && asset.media_review_status !== "approved"
+        ? h("button", {
+          type: "button",
+          class: "ghost compact",
+          text: "通过",
+          onclick: () => updateExpressionAssetMediaReview(asset, "approved"),
+        })
+        : null,
+      mediaUrl && asset.media_review_status !== "rejected"
+        ? h("button", {
+          type: "button",
+          class: "ghost compact",
+          text: "驳回",
+          onclick: () => updateExpressionAssetMediaReview(asset, "rejected"),
+        })
+        : null,
     ]),
     h("p", { text: asset.description || "" }),
     h("small", { class: `expression-asset-risk ${asset.risk_level || "low"}`, text: `风险：${asset.risk_level || "low"}` }),
     asset.admin_note ? h("small", { class: "expression-asset-note", text: `备注：${asset.admin_note}` }) : null,
+    asset.media_review_note ? h("small", { class: "expression-asset-note", text: `媒体审查：${asset.media_review_note}` }) : null,
   ]);
+}
+
+function mediaReviewLabel(status) {
+  return {
+    pending: "待审",
+    approved: "已通过",
+    rejected: "已驳回",
+  }[status] || "已通过";
 }
 
 async function toggleExpressionAsset(asset) {
@@ -606,6 +631,40 @@ async function editExpressionAssetMedia(asset) {
           media_url: mediaUrl.trim(),
           thumbnail_url: thumbnailUrl.trim(),
           alt_text: asset.alt_text || asset.display_text || asset.label || "",
+          media_review_status: mediaUrl.trim() ? "approved" : "approved",
+          media_review_note: mediaUrl.trim() ? "手动配置媒体 URL，自动批准" : "",
+          admin_note: asset.admin_note || "",
+        }),
+      }
+    );
+    state.expressionAssets = data.assets || [];
+    await loadReview();
+  } catch (err) {
+    state.error = err.message;
+  }
+  render();
+}
+
+async function updateExpressionAssetMediaReview(asset, status) {
+  const note = status === "rejected"
+    ? window.prompt("驳回原因", asset.media_review_note || "")
+    : (asset.media_review_note || "管理台审核通过");
+  if (note === null) return;
+  state.error = "";
+  try {
+    const data = await api(
+      `/api/admin/expression-assets/${encodeURIComponent(asset.expression_type)}/${encodeURIComponent(asset.label)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          enabled: asset.enabled !== false,
+          lifecycle_status: asset.lifecycle_status || "active",
+          asset_kind: asset.asset_kind || "text_badge",
+          media_url: asset.media_url || "",
+          thumbnail_url: asset.thumbnail_url || "",
+          alt_text: asset.alt_text || asset.display_text || asset.label || "",
+          media_review_status: status,
+          media_review_note: note,
           admin_note: asset.admin_note || "",
         }),
       }

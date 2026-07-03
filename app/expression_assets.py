@@ -109,15 +109,19 @@ def expression_assets_public(
         asset = dict(item)
         setting = settings.get(_asset_key(asset))
         lifecycle_status = _normalize_lifecycle_status(None if setting is None else setting.get("lifecycle_status"))
+        media_review_status = _normalize_media_review_status(None if setting is None else setting.get("media_review_status"))
         asset["lifecycle_status"] = lifecycle_status
+        asset["media_review_status"] = media_review_status
         if setting:
-            configured_asset_kind = str(setting.get("asset_kind") or "").strip()
-            if configured_asset_kind:
-                asset["asset_kind"] = _normalize_asset_kind(configured_asset_kind)
-            for field in ("media_url", "thumbnail_url", "alt_text"):
-                configured = str(setting.get(field) or "").strip()
-                if configured:
-                    asset[field] = configured
+            can_use_media = media_review_status == "approved" or include_admin_metadata
+            if can_use_media:
+                configured_asset_kind = str(setting.get("asset_kind") or "").strip()
+                if configured_asset_kind:
+                    asset["asset_kind"] = _normalize_asset_kind(configured_asset_kind)
+                for field in ("media_url", "thumbnail_url", "alt_text"):
+                    configured = str(setting.get(field) or "").strip()
+                    if configured:
+                        asset[field] = configured
         asset["media_url"] = str(asset.get("media_url") or "")
         asset["thumbnail_url"] = str(asset.get("thumbnail_url") or asset.get("media_url") or "")
         asset["alt_text"] = str(asset.get("alt_text") or asset.get("display_text") or asset.get("label") or "")
@@ -128,6 +132,7 @@ def expression_assets_public(
             asset["admin_note"] = "" if setting is None else str(setting.get("admin_note") or "")
             asset["updated_at"] = 0 if setting is None else int(setting.get("updated_at") or 0)
             asset["cooldown_turns_override"] = configured_cooldown if configured_cooldown >= 0 else None
+            asset["media_review_note"] = "" if setting is None else str(setting.get("media_review_note") or "")
         if include_disabled or asset["enabled"]:
             result.append(asset)
     return result
@@ -200,6 +205,8 @@ def update_expression_asset_setting(
     media_url: str | None = None,
     thumbnail_url: str | None = None,
     alt_text: str | None = None,
+    media_review_status: str | None = None,
+    media_review_note: str | None = None,
     updated_by_user_id: int | None = None,
 ) -> dict[str, Any]:
     expression_type = str(expression_type or "").strip()
@@ -212,7 +219,8 @@ def update_expression_asset_setting(
     with get_db() as db:
         existing = db.execute(
             """
-            SELECT cooldown_turns, lifecycle_status, asset_kind, media_url, thumbnail_url, alt_text
+            SELECT cooldown_turns, lifecycle_status, asset_kind, media_url, thumbnail_url, alt_text,
+                   media_review_status, media_review_note
             FROM expression_asset_settings
             WHERE expression_type = ? AND label = ?
             """,
@@ -231,14 +239,18 @@ def update_expression_asset_setting(
         stored_media_url = _stored_setting_text(media_url, existing, "media_url")
         stored_thumbnail_url = _stored_setting_text(thumbnail_url, existing, "thumbnail_url")
         stored_alt_text = _stored_setting_text(alt_text, existing, "alt_text")
+        stored_media_review_status = _normalize_media_review_status(
+            media_review_status if media_review_status is not None else (existing["media_review_status"] if existing else "approved")
+        )
+        stored_media_review_note = _stored_setting_text(media_review_note, existing, "media_review_note")
         db.execute(
             """
             INSERT INTO expression_asset_settings (
                 expression_type, label, enabled, cooldown_turns, lifecycle_status,
-                asset_kind, media_url, thumbnail_url, alt_text,
+                asset_kind, media_url, thumbnail_url, alt_text, media_review_status, media_review_note,
                 admin_note, updated_by_user_id, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(expression_type, label) DO UPDATE SET
                 enabled = excluded.enabled,
                 cooldown_turns = excluded.cooldown_turns,
@@ -247,6 +259,8 @@ def update_expression_asset_setting(
                 media_url = excluded.media_url,
                 thumbnail_url = excluded.thumbnail_url,
                 alt_text = excluded.alt_text,
+                media_review_status = excluded.media_review_status,
+                media_review_note = excluded.media_review_note,
                 admin_note = excluded.admin_note,
                 updated_by_user_id = excluded.updated_by_user_id,
                 updated_at = excluded.updated_at
@@ -261,6 +275,8 @@ def update_expression_asset_setting(
                 stored_media_url,
                 stored_thumbnail_url,
                 stored_alt_text,
+                stored_media_review_status,
+                stored_media_review_note,
                 str(admin_note or "")[:500],
                 updated_by_user_id,
                 ts,
@@ -289,7 +305,8 @@ def _expression_asset_settings() -> dict[tuple[str, str], dict[str, Any]]:
             rows = db.execute(
                 """
                 SELECT expression_type, label, enabled, cooldown_turns, lifecycle_status,
-                       asset_kind, media_url, thumbnail_url, alt_text, admin_note, updated_at
+                       asset_kind, media_url, thumbnail_url, alt_text, media_review_status,
+                       media_review_note, admin_note, updated_at
                 FROM expression_asset_settings
                 """
             ).fetchall()
@@ -315,6 +332,13 @@ def _normalize_asset_kind(value: Any) -> str:
     if kind not in {"text_badge", "image", "gif", "avatar_expression"}:
         return "text_badge"
     return kind
+
+
+def _normalize_media_review_status(value: Any) -> str:
+    status = str(value or "approved").strip().lower()
+    if status not in {"pending", "approved", "rejected"}:
+        return "pending"
+    return status
 
 
 def _stored_setting_text(value: str | None, existing: Any, field: str) -> str:

@@ -241,7 +241,30 @@ def verify_expression_asset_upload_in_process(client) -> None:
         assert imported.get("failed_count") == 1
         tone_asset = next(item for item in imported.get("assets", []) if item["expression_type"] == "tone" and item["label"] == "轻声")
         assert tone_asset["asset_kind"] == "gif"
+        assert tone_asset["media_review_status"] == "pending"
         assert tone_asset["media_url"] == "/uploads/expression-assets/soft.gif"
+        public_assets = client.get("/api/expression-assets")
+        assert public_assets.status_code == 200
+        public_tone = next(item for item in public_assets.json().get("assets", []) if item["expression_type"] == "tone" and item["label"] == "轻声")
+        assert public_tone["asset_kind"] == "text_badge"
+        assert public_tone["media_url"] == ""
+        review_response = client.patch(
+            f"/api/admin/expression-assets/tone/{quote('轻声')}",
+            json={
+                "enabled": True,
+                "asset_kind": "gif",
+                "media_url": "/uploads/expression-assets/soft.gif",
+                "thumbnail_url": "/uploads/expression-assets/soft.gif",
+                "alt_text": "轻声动图",
+                "media_review_status": "approved",
+                "media_review_note": "smoke approved",
+            },
+        )
+        assert review_response.status_code == 200, review_response.text
+        approved_public = client.get("/api/expression-assets")
+        approved_tone = next(item for item in approved_public.json().get("assets", []) if item["expression_type"] == "tone" and item["label"] == "轻声")
+        assert approved_tone["asset_kind"] == "gif"
+        assert approved_tone["media_url"] == "/uploads/expression-assets/soft.gif"
     finally:
         with database.get_db() as db:
             db.execute("DELETE FROM users WHERE id = ?", (user_id,))
