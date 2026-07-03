@@ -8,7 +8,10 @@ from .database import dict_from_row, get_db, now_ts
 from .db_chat import (
     EXPRESSION_POLICY_LOOKBACK,
     _apply_expression_policy,
+    _expression_scene_context,
+    _expression_selection_agent,
     _extract_reply_presentation,
+    _persona_expression_style_context,
     _safe_context,
     get_persona_for_user,
 )
@@ -364,12 +367,13 @@ def group_chat(
     for item in planned_messages[:MAX_GROUP_MESSAGES_PER_TURN]:
         speaker_id = int(item["persona_id"])
         persona = _persona_for_user(user_id, speaker_id)
+        expression_policy = _recent_group_expression_policy(user_id, speaker_id, group_conversation_id)
+        expression_policy.update(_expression_scene_context(content))
+        expression_policy.update(_persona_expression_style_context(persona))
+        candidate_expressions = item.get("expressions") or _expression_selection_agent(content, item["content"], expression_policy)
         reply = {
             "content": item["content"],
-            "expressions": _apply_expression_policy(
-                item.get("expressions") or [],
-                _recent_group_expression_policy(user_id, speaker_id, group_conversation_id),
-            ),
+            "expressions": _apply_expression_policy(candidate_expressions, expression_policy),
         }
         replies.append(_store_persona_group_reply(user_id, group_conversation_id, persona, reply))
     _update_group_member_relations(
@@ -452,12 +456,14 @@ def autonomous_group_turn(
     for index, item in enumerate(planned_messages[:MAX_AUTONOMOUS_GROUP_MESSAGES]):
         speaker_id = int(item["persona_id"])
         persona = _persona_for_user(user_id, speaker_id)
+        seed_text = _group_expression_seed_text(history)
+        expression_policy = _recent_group_expression_policy(user_id, speaker_id, group_conversation_id)
+        expression_policy.update(_expression_scene_context(seed_text))
+        expression_policy.update(_persona_expression_style_context(persona))
+        candidate_expressions = item.get("expressions") or _expression_selection_agent(seed_text, item["content"], expression_policy)
         reply = {
             "content": item["content"],
-            "expressions": _apply_expression_policy(
-                item.get("expressions") or [],
-                _recent_group_expression_policy(user_id, speaker_id, group_conversation_id),
-            ),
+            "expressions": _apply_expression_policy(candidate_expressions, expression_policy),
         }
         replies.append(
             _store_persona_group_reply(
@@ -855,6 +861,14 @@ def _group_speaker_rhythm_context(members: list[dict], history: list[dict]) -> d
             "If the last persona already answered fully, another persona should react to them or stay silent."
         ),
     }
+
+
+def _group_expression_seed_text(history: list[dict]) -> str:
+    for item in reversed(history or []):
+        content = str(item.get("content") or "").strip()
+        if content:
+            return content
+    return ""
 
 
 def _store_persona_group_reply(

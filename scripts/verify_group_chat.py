@@ -220,6 +220,31 @@ def verify_group_chat_flow() -> None:
     assert messages[1]["expressions"][0]["label"] == "点头"
     assert messages[2]["expressions"][0]["expression_type"] == "mood"
     assert messages[2]["expressions"][0]["label"] == "微笑"
+
+    def selector_llm(messages, task="chat"):
+        assert task == "group_chat"
+        return json.dumps(
+            {
+                "messages": [
+                    {"persona_id": persona_ids[2], "content": "我在，先慢慢说。", "reason": "support"}
+                ]
+            },
+            ensure_ascii=False,
+        )
+
+    group_chat.call_llm_api = selector_llm
+    selected = server.group_chat_endpoint(
+        server.GroupChatRequest(
+            group_conversation_id=group["id"],
+            message="我今天有点累，陪我一下",
+            client_message_id="group-chat-selector",
+        ),
+        {"id": user_id},
+    )
+    assert selected["replies"][0]["speaker_persona_id"] == persona_ids[2]
+    assert selected["replies"][0]["expressions"][0]["label"] == "轻声"
+    assert selected["replies"][0]["expressions"][0]["source_text"] == "selection_agent:support_needed"
+
     server.admin_update_expression_asset(
         "gesture",
         "点头",
@@ -271,11 +296,13 @@ def verify_group_chat_flow() -> None:
     assert expression_usage["counts"][0]["cooldown_turns"] == 3
 
     listed = server.group_conversations({"id": user_id})["group_conversations"]
-    assert listed[0]["message_count"] == 3
+    all_messages = server.group_conversation_messages(group["id"], {"id": user_id})["messages"]
+    assert listed[0]["message_count"] == len(all_messages)
+    assert listed[0]["message_count"] == 5
     assert listed[0]["unread_count"] == 0
 
     read = server.mark_group_read(group["id"], {"id": user_id})
-    assert read["last_read_group_message_id"] == messages[-1]["id"]
+    assert read["last_read_group_message_id"] == all_messages[-1]["id"]
 
     removed = server.remove_group_conversation_member(group["id"], persona_ids[2], {"id": user_id})[
         "group_conversation"
