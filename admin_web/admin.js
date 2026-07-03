@@ -869,10 +869,19 @@ function renderExpressionUsageItem(item) {
       h("span", { class: `expression-asset-risk ${item.risk_level || "unknown"}`, text: `风险：${item.risk_level || "unknown"}` }),
       h("span", { text: `分组：${item.group || "unknown"}` }),
       h("span", { text: `冷却：${item.cooldown_turns ?? 0}轮` }),
+      h("span", { text: `来源：${expressionSourceLabel(item.source_text)}` }),
       h("span", { class: enabled ? "asset-enabled" : "asset-disabled", text: status }),
     ]),
     h("p", { text: item.content || "" }),
   ]);
+}
+
+function expressionSourceLabel(sourceText) {
+  const source = String(sourceText || "");
+  if (source.startsWith("selection_agent:")) return `选择器 ${source.split(":").slice(1).join(":") || ""}`.trim();
+  if (source.startsWith("[[expression:")) return "模型标签";
+  if (source.startsWith("（") || source.startsWith("(")) return "括号兼容";
+  return source ? "历史导入" : "未知";
 }
 
 function renderEmpty() {
