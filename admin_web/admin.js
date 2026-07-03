@@ -19,6 +19,7 @@ let state = {
   llmCalls: [],
   llmRoutes: null,
   growthDemo: null,
+  expressionAssetFilter: "all",
   runningEval: false,
   generatingRevision: false,
   autoReviewingRevisions: false,
@@ -401,8 +402,24 @@ function renderExpressionReviewItems(items) {
 }
 
 function renderExpressionAssetCatalog(assets) {
+  const counts = {
+    all: assets.length,
+    pending: assets.filter((asset) => asset.media_url && asset.media_review_status === "pending").length,
+    rejected: assets.filter((asset) => asset.media_url && asset.media_review_status === "rejected").length,
+    approved: assets.filter((asset) => asset.media_url && asset.media_review_status === "approved").length,
+  };
+  const filter = state.expressionAssetFilter || "all";
+  const visibleAssets = assets
+    .filter((asset) => {
+      if (filter === "pending") return asset.media_url && asset.media_review_status === "pending";
+      if (filter === "rejected") return asset.media_url && asset.media_review_status === "rejected";
+      if (filter === "approved") return asset.media_url && asset.media_review_status === "approved";
+      return true;
+    })
+    .slice()
+    .sort((a, b) => expressionAssetReviewRank(a) - expressionAssetReviewRank(b));
   const groups = new Map();
-  for (const asset of assets) {
+  for (const asset of visibleAssets) {
     const key = asset.group || "general";
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(asset);
@@ -420,15 +437,38 @@ function renderExpressionAssetCatalog(assets) {
   return h("div", { class: "expression-asset-catalog" }, [
     h("div", { class: "expression-asset-catalog-tools" }, [
       h("strong", { text: "表达资源" }),
-      h("button", {
-        type: "button",
-        class: "ghost compact",
-        text: "批量导入媒体",
-        onclick: importExpressionAssetMediaBatch,
-      }),
+      h("div", { class: "expression-asset-filter" }, [
+        ...[
+          ["all", `全部 ${counts.all}`],
+          ["pending", `待审 ${counts.pending}`],
+          ["rejected", `驳回 ${counts.rejected}`],
+          ["approved", `已通过 ${counts.approved}`],
+        ].map(([value, label]) => h("button", {
+          type: "button",
+          class: value === filter ? "compact" : "ghost compact",
+          text: label,
+          onclick: () => {
+            state.expressionAssetFilter = value;
+            render();
+          },
+        })),
+        h("button", {
+          type: "button",
+          class: "ghost compact",
+          text: "批量导入媒体",
+          onclick: importExpressionAssetMediaBatch,
+        }),
+      ]),
     ]),
-    ...groupNodes,
+    groupNodes.length ? groupNodes : h("p", { class: "muted", text: "这个筛选下暂无表达资源。" }),
   ]);
+}
+
+function expressionAssetReviewRank(asset) {
+  if (asset.media_url && asset.media_review_status === "pending") return 0;
+  if (asset.media_url && asset.media_review_status === "rejected") return 1;
+  if (asset.media_url && asset.media_review_status === "approved") return 2;
+  return 3;
 }
 
 function renderExpressionAsset(asset) {

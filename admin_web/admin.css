@@ -560,6 +560,13 @@ small {
   gap: 8px;
 }
 
+.expression-asset-filter {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
 .expression-asset-group-list {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
