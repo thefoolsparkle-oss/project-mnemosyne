@@ -497,6 +497,44 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     assert row["mode"] == "normal"
     assert int(row["source_message_id"]) == enabled["user_message_id"]
 
+    ts = database.now_ts()
+    with database.get_db() as db:
+        for index in range(3):
+            message_id = int(
+                db.execute(
+                    """
+                    INSERT INTO messages (conversation_id, user_id, persona_id, role, content, created_at)
+                    VALUES (?, ?, ?, 'assistant', ?, ?)
+                    """,
+                    (conversation_id, user_id, persona_id, f"批量审查样本 {index}", ts + index),
+                ).lastrowid
+            )
+            db.execute(
+                """
+                INSERT INTO message_expressions (
+                    message_id, user_id, persona_id, conversation_id,
+                    expression_type, label, source_text, created_at
+                )
+                VALUES (?, ?, ?, ?, 'mood', '微笑', '[[expression:mood:微笑]]', ?)
+                """,
+                (message_id, user_id, persona_id, conversation_id, ts + index),
+            )
+    bulk = server.admin_apply_expression_review_cooldowns(
+        server.ExpressionReviewBulkRequest(
+            target_user_id=user_id,
+            persona_id=persona_id,
+            limit=4,
+            usage_limit=4,
+        ),
+        {"id": user_id, "role": "admin"},
+    )
+    assert bulk["applied_count"] >= 1
+    applied_smile = next(item for item in bulk["applied"] if item["label"] == "微笑")
+    assert applied_smile["previous_cooldown_turns"] == 4
+    assert applied_smile["cooldown_turns"] == 6
+    smile_asset = next(item for item in bulk["assets"] if item["expression_type"] == "mood" and item["label"] == "微笑")
+    assert smile_asset["cooldown_turns"] == 6
+
 
 def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:

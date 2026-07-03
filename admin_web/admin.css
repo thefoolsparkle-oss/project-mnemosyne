@@ -483,7 +483,15 @@ small {
   gap: 8px;
 }
 
-.expression-review-list > strong {
+.expression-review-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.expression-review-title strong {
   font-size: 13px;
 }
 

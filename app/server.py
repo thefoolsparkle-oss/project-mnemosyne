@@ -205,6 +205,13 @@ class ExpressionAssetUpdateRequest(BaseModel):
     admin_note: str | None = Field(default="", max_length=500)
 
 
+class ExpressionReviewBulkRequest(BaseModel):
+    target_user_id: int | None = None
+    persona_id: int | None = None
+    limit: int = Field(default=12, ge=1, le=50)
+    usage_limit: int = Field(default=80, ge=1, le=500)
+
+
 class PersonaAvatarGenerateRequest(BaseModel):
     desired_image: str | None = Field(default=None, max_length=2000)
 
@@ -748,6 +755,68 @@ def _expression_review_items(counts: list[dict[str, Any]], summary: dict[str, An
             })
     severity_order = {"tune": 0, "watch": 1}
     return sorted(items, key=lambda item: (severity_order.get(str(item.get("severity")), 9), -int(item.get("count") or 0), str(item.get("tag") or "")))[:8]
+
+
+@app.post("/api/admin/expression-review/apply-cooldowns")
+def admin_apply_expression_review_cooldowns(
+    req: ExpressionReviewBulkRequest,
+    admin: dict = Depends(current_admin),
+):
+    owner_id = _admin_target_user_id(admin, req.target_user_id)
+    _assert_persona_owner(owner_id, req.persona_id)
+    usage = admin_expression_usage(
+        admin,
+        target_user_id=owner_id,
+        persona_id=req.persona_id,
+        limit=req.limit,
+        usage_limit=req.usage_limit,
+    )
+    candidates: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in usage.get("review_items") or []:
+        suggested = item.get("suggested_cooldown_turns")
+        if suggested is None or item.get("asset_enabled") is False:
+            continue
+        key = (str(item.get("expression_type") or ""), str(item.get("label") or ""))
+        if not key[0] or not key[1]:
+            continue
+        cooldown = max(0, min(int(suggested), 20))
+        current = int(item.get("cooldown_turns") or 0)
+        if cooldown == current:
+            continue
+        previous = candidates.get(key)
+        if previous is None or cooldown > int(previous["cooldown_turns"]):
+            candidates[key] = {
+                "expression_type": key[0],
+                "label": key[1],
+                "cooldown_turns": cooldown,
+                "previous_cooldown_turns": current,
+                "reason": item.get("kind") or "review_item",
+                "text": item.get("text") or "",
+            }
+    applied = []
+    for item in candidates.values():
+        asset = update_expression_asset_setting(
+            item["expression_type"],
+            item["label"],
+            enabled=True,
+            cooldown_turns=int(item["cooldown_turns"]),
+            admin_note=f"批量审查：{item['text']}"[:500],
+            updated_by_user_id=int(admin["id"]),
+        )
+        applied.append({**item, "asset": asset})
+    refreshed_usage = admin_expression_usage(
+        admin,
+        target_user_id=owner_id,
+        persona_id=req.persona_id,
+        limit=req.limit,
+        usage_limit=req.usage_limit,
+    )
+    return {
+        "applied_count": len(applied),
+        "applied": applied,
+        "expression_usage": refreshed_usage,
+        "assets": expression_assets_public(include_disabled=True, include_admin_metadata=True),
+    }
 
 
 @app.post("/api/admin/rag/sync")

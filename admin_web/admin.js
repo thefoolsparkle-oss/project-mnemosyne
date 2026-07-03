@@ -359,8 +359,19 @@ function renderExpressionUsage(data) {
 }
 
 function renderExpressionReviewItems(items) {
+  const canApplyCooldowns = items.some((item) => Number.isFinite(Number(item.suggested_cooldown_turns)) && item.asset_enabled !== false);
   return h("div", { class: "expression-review-list" }, [
-    h("strong", { text: "审查建议" }),
+    h("div", { class: "expression-review-title" }, [
+      h("strong", { text: "审查建议" }),
+      canApplyCooldowns
+        ? h("button", {
+          type: "button",
+          class: "ghost compact",
+          text: "一键应用冷却建议",
+          onclick: applyExpressionReviewCooldowns,
+        })
+        : null,
+    ]),
     ...items.map((item) => h("article", { class: `expression-review-item ${item.severity || "watch"}` }, [
       h("div", { class: "expression-review-main" }, [
         h("span", { class: `expression-asset-risk ${item.risk_level || "unknown"}`, text: item.risk_level || "unknown" }),
@@ -540,6 +551,27 @@ async function updateExpressionAssetFromReview(item, patch) {
       }
     );
     state.expressionAssets = data.assets || [];
+    await loadReview();
+  } catch (err) {
+    state.error = err.message;
+  }
+  render();
+}
+
+async function applyExpressionReviewCooldowns() {
+  state.error = "";
+  try {
+    const data = await api("/api/admin/expression-review/apply-cooldowns", {
+      method: "POST",
+      body: JSON.stringify({
+        target_user_id: state.selectedUserId,
+        persona_id: state.selectedPersonaId,
+        limit: 12,
+        usage_limit: 80,
+      }),
+    });
+    state.expressionAssets = data.assets || [];
+    state.expressionUsage = data.expression_usage || state.expressionUsage;
     await loadReview();
   } catch (err) {
     state.error = err.message;
