@@ -47,7 +47,8 @@ function tabSessionToken() {
 async function api(path, options = {}) {
   const isolated = tabSessionMode();
   const token = tabSessionToken();
-  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  const isFormData = options.body instanceof FormData;
+  const headers = { ...(isFormData ? {} : { "Content-Type": "application/json" }), ...(options.headers || {}) };
   if (isolated && token) headers.Authorization = `Bearer ${token}`;
   const res = await fetch(path, {
     ...options,
@@ -431,37 +432,45 @@ function renderExpressionAsset(asset) {
       h("strong", { text: asset.display_text || asset.label || "" }),
       h("small", { text: `${asset.expression_type || ""} / ${asset.group || "general"} / 强度 ${asset.intensity || 1} / 冷却 ${asset.cooldown_turns ?? 0} 轮 / ${enabled ? "启用" : "禁用"} / ${lifecycle}` }),
     ]),
-    h("button", {
-      type: "button",
-      class: enabled ? "ghost compact" : "compact",
-      text: enabled ? "禁用" : "启用",
-      disabled: archived ? "disabled" : null,
-      onclick: () => toggleExpressionAsset(asset),
-    }),
-    h("button", {
-      type: "button",
-      class: archived ? "compact" : "ghost compact",
-      text: archived ? "恢复" : "归档",
-      onclick: () => updateExpressionAssetLifecycle(asset, archived ? "active" : "archived"),
-    }),
-    h("button", {
-      type: "button",
-      class: "ghost compact",
-      text: "备注",
-      onclick: () => editExpressionAssetNote(asset),
-    }),
-    h("button", {
-      type: "button",
-      class: "ghost compact",
-      text: "冷却",
-      onclick: () => editExpressionAssetCooldown(asset),
-    }),
-    h("button", {
-      type: "button",
-      class: "ghost compact",
-      text: "媒体",
-      onclick: () => editExpressionAssetMedia(asset),
-    }),
+    h("div", { class: "expression-asset-actions" }, [
+      h("button", {
+        type: "button",
+        class: enabled ? "ghost compact" : "compact",
+        text: enabled ? "禁用" : "启用",
+        disabled: archived ? "disabled" : null,
+        onclick: () => toggleExpressionAsset(asset),
+      }),
+      h("button", {
+        type: "button",
+        class: archived ? "compact" : "ghost compact",
+        text: archived ? "恢复" : "归档",
+        onclick: () => updateExpressionAssetLifecycle(asset, archived ? "active" : "archived"),
+      }),
+      h("button", {
+        type: "button",
+        class: "ghost compact",
+        text: "备注",
+        onclick: () => editExpressionAssetNote(asset),
+      }),
+      h("button", {
+        type: "button",
+        class: "ghost compact",
+        text: "冷却",
+        onclick: () => editExpressionAssetCooldown(asset),
+      }),
+      h("button", {
+        type: "button",
+        class: "ghost compact",
+        text: "媒体",
+        onclick: () => editExpressionAssetMedia(asset),
+      }),
+      h("button", {
+        type: "button",
+        class: "ghost compact",
+        text: "上传",
+        onclick: () => uploadExpressionAssetMedia(asset),
+      }),
+    ]),
     h("p", { text: asset.description || "" }),
     h("small", { class: `expression-asset-risk ${asset.risk_level || "low"}`, text: `风险：${asset.risk_level || "low"}` }),
     asset.admin_note ? h("small", { class: "expression-asset-note", text: `备注：${asset.admin_note}` }) : null,
@@ -595,6 +604,41 @@ async function editExpressionAssetMedia(asset) {
     state.error = err.message;
   }
   render();
+}
+
+function uploadExpressionAssetMedia(asset) {
+  const input = h("input", {
+    type: "file",
+    accept: "image/png,image/jpeg,image/webp,image/gif",
+  });
+  input.style.position = "fixed";
+  input.style.left = "-9999px";
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    input.remove();
+    if (!file) return;
+    const form = new FormData();
+    form.append("file", file);
+    const kind = file.type === "image/gif" ? "gif" : (asset.asset_kind === "avatar_expression" ? "avatar_expression" : "image");
+    form.append("asset_kind", kind);
+    state.error = "";
+    try {
+      const data = await api(
+        `/api/admin/expression-assets/${encodeURIComponent(asset.expression_type)}/${encodeURIComponent(asset.label)}/upload`,
+        {
+          method: "POST",
+          body: form,
+        }
+      );
+      state.expressionAssets = data.assets || [];
+      await loadReview();
+    } catch (err) {
+      state.error = err.message;
+    }
+    render();
+  };
+  document.body.append(input);
+  input.click();
 }
 
 async function applyExpressionReviewCooldown(item) {

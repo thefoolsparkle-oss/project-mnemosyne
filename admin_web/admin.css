@@ -589,6 +589,18 @@ small {
   background: rgba(95, 125, 181, 0.14);
 }
 
+.expression-asset-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.expression-asset-actions .compact {
+  min-height: 26px;
+  padding: 0 8px;
+}
+
 .expression-asset-item strong,
 .expression-asset-item small,
 .expression-asset-item p {

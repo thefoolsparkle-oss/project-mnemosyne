@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, File, Header, HTTPException, Response, UploadFile
+from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -33,7 +33,7 @@ from .archivist import recall_memories
 from .config import load_config
 from .database import dict_from_row, get_db, init_db, now_ts
 from .db_chat import db_chat, normalize_existing_assistant_messages
-from .expression_assets import active_expression_labels, expression_assets_public, update_expression_asset_setting
+from .expression_assets import active_expression_labels, expression_asset, expression_assets_public, update_expression_asset_setting
 from .group_chat import (
     add_group_member,
     autonomous_group_turn,
@@ -90,6 +90,14 @@ WEB_DIR = BASE_DIR / "web"
 ADMIN_WEB_DIR = BASE_DIR / "admin_web"
 UPLOAD_DIR = BASE_DIR / "data" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+IMAGE_UPLOAD_TYPES = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
+IMAGE_UPLOAD_MAX_BYTES = 5 * 1024 * 1024
 
 init_db()
 try:
@@ -479,31 +487,45 @@ def admin_update_expression_asset(
     }
 
 
+@app.post("/api/admin/expression-assets/{expression_type}/{label}/upload")
+async def admin_upload_expression_asset_media(
+    expression_type: str,
+    label: str,
+    file: UploadFile = File(...),
+    asset_kind: str | None = Form(default=None),
+    admin: dict = Depends(current_admin),
+):
+    asset = _find_expression_asset(expression_type, label)
+    data, content_type, extension = await _read_image_upload(file)
+    kind = _uploaded_expression_asset_kind(content_type, asset_kind)
+    url = _write_upload_file(["expression-assets"], data, extension)
+    try:
+        updated = update_expression_asset_setting(
+            expression_type,
+            label,
+            enabled=asset.get("enabled") is not False,
+            cooldown_turns=None,
+            lifecycle_status=str(asset.get("lifecycle_status") or "active"),
+            asset_kind=kind,
+            media_url=url,
+            thumbnail_url=url,
+            alt_text=str(asset.get("alt_text") or asset.get("display_text") or asset.get("label") or ""),
+            admin_note="管理台上传媒体资源",
+            updated_by_user_id=int(admin["id"]),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "asset": updated,
+        "upload": {"url": url, "content_type": content_type, "asset_kind": kind},
+        "assets": expression_assets_public(include_disabled=True, include_admin_metadata=True),
+    }
+
+
 @app.post("/api/uploads/avatar")
 async def upload_avatar(file: UploadFile = File(...), user: dict = Depends(current_user)):
-    content_type = (file.content_type or "").lower()
-    allowed = {
-        "image/jpeg": ".jpg",
-        "image/png": ".png",
-        "image/webp": ".webp",
-        "image/gif": ".gif",
-    }
-    if content_type not in allowed:
-        raise HTTPException(status_code=400, detail="only jpg, png, webp or gif images are allowed")
-
-    data = await file.read()
-    max_size = 5 * 1024 * 1024
-    if not data:
-        raise HTTPException(status_code=400, detail="empty file")
-    if len(data) > max_size:
-        raise HTTPException(status_code=400, detail="image must be smaller than 5MB")
-
-    user_dir = UPLOAD_DIR / str(user["id"])
-    user_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"{uuid.uuid4().hex}{allowed[content_type]}"
-    path = user_dir / filename
-    path.write_bytes(data)
-    return {"url": f"/uploads/{user['id']}/{filename}"}
+    data, _, extension = await _read_image_upload(file)
+    return {"url": _write_upload_file([str(user["id"])], data, extension)}
 
 
 @app.get("/api/memories")
@@ -3529,6 +3551,46 @@ def _normalize_expression_mode(mode: Any, enabled: bool | None = None) -> str:
     if enabled is False:
         return "off"
     return "normal"
+
+
+async def _read_image_upload(file: UploadFile) -> tuple[bytes, str, str]:
+    content_type = (file.content_type or "").lower()
+    extension = IMAGE_UPLOAD_TYPES.get(content_type)
+    if not extension:
+        raise HTTPException(status_code=400, detail="only jpg, png, webp or gif images are allowed")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="empty file")
+    if len(data) > IMAGE_UPLOAD_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="image must be smaller than 5MB")
+    return data, content_type, extension
+
+
+def _write_upload_file(parts: list[str], data: bytes, extension: str) -> str:
+    clean_parts = [str(part).strip("/\\") for part in parts if str(part).strip("/\\")]
+    upload_dir = UPLOAD_DIR.joinpath(*clean_parts)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{uuid.uuid4().hex}{extension}"
+    path = upload_dir / filename
+    path.write_bytes(data)
+    url_parts = "/".join([*clean_parts, filename])
+    return f"/uploads/{url_parts}"
+
+
+def _find_expression_asset(expression_type: str, label: str) -> dict[str, Any]:
+    asset = expression_asset(expression_type, label)
+    if not asset:
+        raise HTTPException(status_code=404, detail="unknown expression asset")
+    return asset
+
+
+def _uploaded_expression_asset_kind(content_type: str, requested_kind: str | None) -> str:
+    kind = str(requested_kind or "").strip().lower()
+    if not kind:
+        return "gif" if content_type == "image/gif" else "image"
+    if kind not in {"image", "gif", "avatar_expression"}:
+        raise HTTPException(status_code=400, detail="asset_kind must be image, gif or avatar_expression")
+    return kind
 
 
 def _public_review_highlights(previous_version: dict | None, reviewed_version: dict | None) -> list[str]:

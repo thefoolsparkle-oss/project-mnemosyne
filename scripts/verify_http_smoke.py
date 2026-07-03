@@ -7,6 +7,7 @@ import warnings
 from http.cookiejar import CookieJar
 from pathlib import Path
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote
 from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -187,6 +188,40 @@ def verify_avatar_route_in_process(client) -> None:
             db.execute("DELETE FROM users WHERE id = ?", (user_id,))
 
 
+def verify_expression_asset_upload_in_process(client) -> None:
+    admin_response = client.post(
+        "/api/auth/register",
+        json={"username": "admin_smoke", "password": "password-admin", "nickname": "Admin Smoke"},
+    )
+    assert admin_response.status_code == 200
+    user_id = int(admin_response.json()["user"]["id"])
+    try:
+        tiny_png = (
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+            b"\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+            b"\x00\x00\x00\nIDATx\x9cc\xf8\x0f\x00\x01\x01\x01\x00"
+            b"\x18\xdd\x8d\xb0\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+        response = client.post(
+            f"/api/admin/expression-assets/mood/{quote('微笑')}/upload",
+            files={"file": ("smile.png", tiny_png, "image/png")},
+        )
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        upload = payload.get("upload") or {}
+        upload_url = str(upload.get("url") or "")
+        assert upload.get("asset_kind") == "image"
+        assert upload_url.startswith("/uploads/expression-assets/")
+        assert client.get(upload_url).status_code == 200
+        asset = payload.get("asset") or {}
+        assert asset.get("asset_kind") == "image"
+        assert asset.get("media_url") == upload_url
+        assert asset.get("thumbnail_url") == upload_url
+    finally:
+        with database.get_db() as db:
+            db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+
 def verify_in_process() -> None:
     warnings.filterwarnings("ignore", message=r"Using `httpx` with `starlette\.testclient` is deprecated.*")
     from fastapi.testclient import TestClient
@@ -214,6 +249,7 @@ def verify_in_process() -> None:
             if response.status_code != expected:
                 raise AssertionError(f"{path}: expected {expected}, got {response.status_code}")
         verify_avatar_route_in_process(client)
+        verify_expression_asset_upload_in_process(client)
     print("HTTP smoke verification passed in process")
 
 
