@@ -3,11 +3,13 @@ const TAB_SESSION_MODE_KEY = "mnemosyne:tab-session-mode";
 const TAB_SESSION_TOKEN_KEY = "mnemosyne:tab-session-token";
 const GROUP_AUTO_CHECK_MS = 15000;
 const GROUP_AUTO_MIN_IDLE_SECONDS = 45;
+const GROUP_AUTO_PROMPT_DELAY_MS = GROUP_AUTO_MIN_IDLE_SECONDS * 1000 + 1200;
 const GROUP_AUTO_USER_WINDOW_SECONDS = 600;
 const GROUP_AUTO_FAILURE_BACKOFF_SECONDS = 300;
 const GROUP_MAX_MEMBERS = 6;
 
 const groupAutoCooldowns = new Map();
+let groupAutoPromptTimer = null;
 
 const text = {
   appName: "忆界树",
@@ -342,6 +344,7 @@ async function loadGroupMessages(groupConversationId) {
 }
 
 function returnToHome() {
+  clearGroupAutoPrompt();
   state.view = "home";
   state.activePersona = null;
   state.activeConversationId = null;
@@ -364,6 +367,7 @@ function isMobileShell() {
 }
 
 async function openConversationItem(item) {
+  clearGroupAutoPrompt();
   const persona = state.personas.find((entry) => Number(entry.id) === Number(item.persona_id));
   if (persona) state.activePersona = persona;
   state.activeConversationId = item.id;
@@ -392,11 +396,13 @@ async function openGroupConversationItem(item) {
   state.threadPanelOpen = false;
   await loadGroupMessages(item.id);
   await loadMainData();
+  scheduleGroupAutoPrompt(item.id);
   renderShell();
   scrollChat();
 }
 
 async function openPersonaItem(persona) {
+  clearGroupAutoPrompt();
   state.activePersona = persona;
   state.activeGroupConversationId = null;
   state.activeGroupConversation = null;
@@ -2861,6 +2867,30 @@ function setGroupAutoTurnEnabled(groupId, enabled) {
   } catch {
     // Local storage may be unavailable in restricted browser modes.
   }
+  if (enabled) scheduleGroupAutoPrompt(groupId);
+  else clearGroupAutoPrompt();
+}
+
+function clearGroupAutoPrompt() {
+  if (groupAutoPromptTimer) {
+    clearTimeout(groupAutoPromptTimer);
+    groupAutoPromptTimer = null;
+  }
+}
+
+function scheduleGroupAutoPrompt(groupId, delayMs = GROUP_AUTO_PROMPT_DELAY_MS) {
+  const id = Number(groupId);
+  if (!id || !groupAutoTurnEnabled(id)) {
+    clearGroupAutoPrompt();
+    return;
+  }
+  clearGroupAutoPrompt();
+  groupAutoPromptTimer = setTimeout(() => {
+    groupAutoPromptTimer = null;
+    if (state.view === "group" && Number(state.activeGroupConversationId) === id) {
+      maybeRequestGroupAutonomousTurn();
+    }
+  }, Math.max(1000, Number(delayMs) || GROUP_AUTO_PROMPT_DELAY_MS));
 }
 
 function loadDraft() {
@@ -3044,6 +3074,9 @@ async function sendGroupChatMessage(content, { retryLocalId = "", clientMessageI
     if (stillViewingGroup) {
       state.groupMessages = state.groupMessages.filter((message) => message.client_message_id !== outgoingClientMessageId);
       state.groupMessages.push(...(data.messages || []));
+      if ((data.messages || []).some((message) => message.speaker_type === "persona")) {
+        scheduleGroupAutoPrompt(requestGroupId);
+      }
       const hasStoredRetryNotice = (data.messages || []).some((message) => (
         message.speaker_type === "user"
         && message.client_message_id === outgoingClientMessageId
@@ -3144,6 +3177,9 @@ async function maybeRequestGroupAutonomousTurn() {
     if ((data.messages || []).length) {
       groupAutoCooldowns.set(cooldownKey, nowSeconds() + GROUP_AUTO_MIN_IDLE_SECONDS);
       state.groupMessages.push(...data.messages);
+      if ((data.messages || []).some((message) => message.speaker_type === "persona")) {
+        scheduleGroupAutoPrompt(groupId);
+      }
       await markGroupConversationRead(groupId);
       await loadMainData();
       renderShell();
@@ -3726,6 +3762,7 @@ function resetClientState() {
     clearInterval(sendingTicker);
     sendingTicker = null;
   }
+  clearGroupAutoPrompt();
   state = {
     user: null,
     profile: null,
