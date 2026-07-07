@@ -317,6 +317,31 @@ def verify_group_chat_flow() -> None:
     assert len(restored["members"]) == 3
     assert persona_ids[2] in {int(member["persona_id"]) for member in restored["members"]}
 
+    def duplicate_ack_llm(messages, task="chat"):
+        assert task == "group_chat"
+        return json.dumps(
+            {
+                "messages": [
+                    {"persona_id": persona_ids[0], "content": "我在，刚才有点卡住，但看到你说的了。", "reason": "ack"},
+                    {"persona_id": persona_ids[1], "content": "我也在，刚才有点卡，但看到你说的了。", "reason": "duplicate ack"},
+                ]
+            },
+            ensure_ascii=False,
+        )
+
+    group_chat.call_llm_api = duplicate_ack_llm
+    deduped = server.group_chat_endpoint(
+        server.GroupChatRequest(
+            group_conversation_id=group["id"],
+            message="你们怎么都这么安静？",
+            client_message_id="group-chat-duplicate-ack",
+        ),
+        {"id": user_id},
+    )
+    assert deduped["degraded"] is False
+    assert len(deduped["replies"]) == 1
+    assert deduped["replies"][0]["speaker_persona_id"] == persona_ids[0]
+
     fallback_calls: list[str] = []
 
     def flaky_llm(messages, task="chat"):

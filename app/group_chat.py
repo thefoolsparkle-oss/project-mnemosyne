@@ -363,7 +363,7 @@ def group_chat(
 
     history = _recent_group_messages(user_id, group_conversation_id)
     turn = _generate_group_turn(user_id, group_conversation_id, members, history, content)
-    planned_messages = turn.get("messages") or []
+    planned_messages = _dedupe_group_planned_messages(turn.get("messages") or [])
     replies: list[dict] = []
     for item in planned_messages[:MAX_GROUP_MESSAGES_PER_TURN]:
         speaker_id = int(item["persona_id"])
@@ -453,7 +453,7 @@ def autonomous_group_turn(
 
     history = _recent_group_messages(user_id, group_conversation_id)
     turn = _generate_group_autonomous_turn(user_id, group_conversation_id, members, history)
-    planned_messages = turn.get("messages") or []
+    planned_messages = _dedupe_group_planned_messages(turn.get("messages") or [])
     replies: list[dict] = []
     for index, item in enumerate(planned_messages[:MAX_AUTONOMOUS_GROUP_MESSAGES]):
         speaker_id = int(item["persona_id"])
@@ -729,6 +729,35 @@ def _group_degraded_message(turn: dict) -> str:
     if turn.get("reason") == "turn_parse_failed":
         return "群聊刚才说乱了格式，这句话已经留在当前会话里。稍后再试一次。"
     return "群聊暂时没有成功接上，这句话已经留在当前会话里。稍后再试一次。"
+
+
+def _dedupe_group_planned_messages(messages: list[dict]) -> list[dict]:
+    result: list[dict] = []
+    seen_keys: set[str] = set()
+    for item in messages:
+        content = str(item.get("content") or "").strip()
+        key = _group_reply_similarity_key(content)
+        if key and key in seen_keys:
+            continue
+        result.append(item)
+        if key:
+            seen_keys.add(key)
+    return result
+
+
+def _group_reply_similarity_key(content: str) -> str:
+    compact = re.sub(r"[\s，。！？,.!?、~…:：；;（）()\"'“”‘’]+", "", str(content or "").strip().lower())
+    if not compact:
+        return ""
+    if (
+        len(compact) <= 42
+        and ("卡" in compact or "慢" in compact or "刚才" in compact)
+        and any(marker in compact for marker in ("我在", "我也在", "也在", "看到你说", "看见你说", "听到你说", "接上"))
+    ):
+        return "stall_ack"
+    if len(compact) <= 18 and any(marker in compact for marker in ("我在", "在呢", "嗯", "好")):
+        return f"short_ack:{compact}"
+    return f"exact:{compact}"
 
 
 def _group_user_message_expects_reply(user_message: str) -> bool:
