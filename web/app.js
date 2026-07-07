@@ -3104,6 +3104,12 @@ async function maybeRequestGroupAutonomousTurn() {
   if (!messages.length) return;
   const now = nowSeconds();
   const latest = messages[messages.length - 1];
+  if (
+    latest.speaker_type === "user"
+    && ["error", "generating"].includes(latest.reply_status)
+  ) {
+    return;
+  }
   if (now - Number(latest.created_at || 0) < GROUP_AUTO_MIN_IDLE_SECONDS) return;
   const latestUser = [...messages].reverse().find((message) => message.speaker_type === "user");
   if (!latestUser || now - Number(latestUser.created_at || 0) > GROUP_AUTO_USER_WINDOW_SECONDS) return;
