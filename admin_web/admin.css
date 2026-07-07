@@ -440,6 +440,21 @@ small {
   font-size: 12px;
 }
 
+.expression-style-history {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: 100%;
+  color: var(--muted);
+}
+
+.expression-style-history span {
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 11px;
+}
+
 .expression-usage-tags {
   display: flex;
   flex-wrap: wrap;

@@ -326,6 +326,7 @@ function renderExpressionUsage(data) {
       h("strong", { text: `当前模式：${modeLabel}` }),
       h("small", { text: preference.explicit ? "用户已显式设置" : "默认" }),
       renderExpressionStyleSetting(data.style_setting),
+      renderExpressionStyleHistory(data.style_history || []),
     ]),
     assets.length
       ? renderExpressionAssetCatalog(assets)
@@ -361,6 +362,16 @@ function renderExpressionUsage(data) {
     recent.length
       ? h("div", { class: "expression-usage-list" }, recent.slice(0, 8).map(renderExpressionUsageItem))
       : null,
+  ]);
+}
+
+function renderExpressionStyleHistory(items) {
+  if (!items.length) return null;
+  return h("div", { class: "expression-style-history" }, [
+    h("small", { text: "最近风格设置" }),
+    ...items.slice(0, 3).map((item) => h("span", {
+      text: `${item.style || "推断"} / 优先 ${(item.preferred_groups || []).join("、") || "推断"} / 避免 ${(item.avoid_labels || []).join("、") || "无"}`,
+    })),
   ]);
 }
 

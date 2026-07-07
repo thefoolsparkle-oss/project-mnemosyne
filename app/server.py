@@ -34,7 +34,11 @@ from .config import load_config
 from .database import dict_from_row, get_db, init_db, now_ts
 from .db_chat import db_chat, normalize_existing_assistant_messages
 from .expression_assets import active_expression_labels, expression_asset, expression_assets_public, update_expression_asset_setting
-from .expression_style import persona_expression_style_setting, update_persona_expression_style_setting
+from .expression_style import (
+    persona_expression_style_events,
+    persona_expression_style_setting,
+    update_persona_expression_style_setting,
+)
 from .group_chat import (
     add_group_member,
     autonomous_group_turn,
@@ -862,6 +866,7 @@ def admin_expression_usage(
     return {
         "preference": preference,
         "style_setting": persona_expression_style_setting(owner_id, persona_filter) if persona_filter else None,
+        "style_history": persona_expression_style_events(owner_id, persona_filter, limit=5) if persona_filter else [],
         "summary": summary,
         "insights": insights,
         "recent": recent,

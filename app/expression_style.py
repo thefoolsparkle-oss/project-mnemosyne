@@ -145,7 +145,56 @@ def update_persona_expression_style_setting(
                 ts,
             ),
         )
+        db.execute(
+            """
+            INSERT INTO persona_expression_style_events (
+                user_id, persona_id, style, preferred_groups_json, avoid_labels_json,
+                admin_note, updated_by_user_id, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                persona_id,
+                clean_style,
+                json.dumps(clean_groups, ensure_ascii=False),
+                json.dumps(clean_labels, ensure_ascii=False),
+                str(admin_note or "")[:500],
+                updated_by_user_id,
+                ts,
+            ),
+        )
     return persona_expression_style_setting(user_id, persona_id)
+
+
+def persona_expression_style_events(user_id: int, persona_id: int, limit: int = 5) -> list[dict[str, Any]]:
+    limit = max(1, min(int(limit or 5), 20))
+    with get_db() as db:
+        rows = db.execute(
+            """
+            SELECT id, style, preferred_groups_json, avoid_labels_json, admin_note, updated_by_user_id, created_at
+            FROM persona_expression_style_events
+            WHERE user_id = ? AND persona_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (user_id, persona_id, limit),
+        ).fetchall()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict_from_row(row) or {}
+        result.append(
+            {
+                "id": int(item.get("id") or 0),
+                "style": _normalize_style(item.get("style")),
+                "preferred_groups": _load_list(item.get("preferred_groups_json")),
+                "avoid_labels": _load_list(item.get("avoid_labels_json")),
+                "admin_note": str(item.get("admin_note") or ""),
+                "updated_by_user_id": item.get("updated_by_user_id"),
+                "created_at": int(item.get("created_at") or 0),
+            }
+        )
+    return result
 
 
 def _normalize_style(value: Any) -> str:

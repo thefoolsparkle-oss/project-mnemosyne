@@ -272,6 +272,8 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     )
     assert usage_with_style["style_setting"]["style"] == "warm"
     assert usage_with_style["style_setting"]["admin_note"] == "phase3 style override"
+    assert usage_with_style["style_history"][0]["style"] == "warm"
+    assert usage_with_style["style_history"][0]["avoid_labels"] == ["轻声"]
     server.admin_update_persona_expression_style(
         server.PersonaExpressionStyleUpdateRequest(
             persona_id=persona_id,
