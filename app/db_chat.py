@@ -14,6 +14,7 @@ from .expression_assets import (
     expression_asset,
     expression_protocol_prompt,
 )
+from .expression_style import persona_expression_style_context
 from .identity import IDENTITY_REPLACEMENTS, scrub_identity_obj, scrub_identity_text
 from .layered_memory import layered_memory_prompt, recall_layered_memory, state_prompt, summary_prompt
 from .llm_client import LLMProviderError, call_llm_api
@@ -549,7 +550,7 @@ def db_chat(
     )
     expression_policy = _recent_expression_policy(user_id, persona_id, int(conversation["id"]))
     expression_policy.update(_expression_scene_context(message))
-    expression_policy.update(_persona_expression_style_context(persona))
+    expression_policy.update(_persona_expression_style_context(persona, user_id=user_id, persona_id=persona_id))
     expression_policy_context = _expression_policy_prompt(expression_policy)
     active_preference_context = _active_preference_prompt(user_id, persona_id)
     profile_usage_context = _profile_usage_prompt(message)
@@ -1170,38 +1171,13 @@ def _expression_scene_prompt(policy: dict) -> str:
     return "本轮轻表达场景：unspecified。按总体节奏约束保持稀少。"
 
 
-def _persona_expression_style_context(persona: dict) -> dict:
-    text = re.sub(
-        r"\s+",
-        "",
-        " ".join(
-            str(persona.get(field) or "").lower()
-            for field in ("summary", "relationship", "speaking_style", "growth_notes")
-        ),
-    )
-    if any(marker in text for marker in ("安静", "简短", "克制", "慢", "少说", "沉稳", "可靠")):
-        return {
-            "expression_persona_style": "restrained",
-            "expression_persona_preferred_groups": ["support", "acknowledgement"],
-            "expression_persona_avoid_labels": ["轻笑"],
-        }
-    if any(marker in text for marker in ("活泼", "打趣", "俏皮", "开朗", "玩笑", "轻松")):
-        return {
-            "expression_persona_style": "playful",
-            "expression_persona_preferred_groups": ["warmth", "acknowledgement"],
-            "expression_persona_avoid_labels": ["担心"],
-        }
-    if any(marker in text for marker in ("恋人", "亲密", "陪伴", "温柔")):
-        return {
-            "expression_persona_style": "warm",
-            "expression_persona_preferred_groups": ["warmth", "support"],
-            "expression_persona_avoid_labels": [],
-        }
-    return {
-        "expression_persona_style": "neutral",
-        "expression_persona_preferred_groups": [],
-        "expression_persona_avoid_labels": [],
-    }
+def _persona_expression_style_context(
+    persona: dict,
+    *,
+    user_id: int | None = None,
+    persona_id: int | None = None,
+) -> dict:
+    return persona_expression_style_context(user_id, persona_id, persona)
 
 
 def _expression_persona_style_prompt(policy: dict) -> str:

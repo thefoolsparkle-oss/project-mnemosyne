@@ -369,7 +369,7 @@ def group_chat(
         persona = _persona_for_user(user_id, speaker_id)
         expression_policy = _recent_group_expression_policy(user_id, speaker_id, group_conversation_id)
         expression_policy.update(_expression_scene_context(content))
-        expression_policy.update(_persona_expression_style_context(persona))
+        expression_policy.update(_persona_expression_style_context(persona, user_id=user_id, persona_id=speaker_id))
         candidate_expressions = item.get("expressions") or _expression_selection_agent(content, item["content"], expression_policy)
         reply = {
             "content": item["content"],
@@ -459,7 +459,7 @@ def autonomous_group_turn(
         seed_text = _group_expression_seed_text(history)
         expression_policy = _recent_group_expression_policy(user_id, speaker_id, group_conversation_id)
         expression_policy.update(_expression_scene_context(seed_text))
-        expression_policy.update(_persona_expression_style_context(persona))
+        expression_policy.update(_persona_expression_style_context(persona, user_id=user_id, persona_id=speaker_id))
         candidate_expressions = item.get("expressions") or _expression_selection_agent(seed_text, item["content"], expression_policy)
         reply = {
             "content": item["content"],

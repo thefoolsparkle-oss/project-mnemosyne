@@ -34,6 +34,7 @@ from .config import load_config
 from .database import dict_from_row, get_db, init_db, now_ts
 from .db_chat import db_chat, normalize_existing_assistant_messages
 from .expression_assets import active_expression_labels, expression_asset, expression_assets_public, update_expression_asset_setting
+from .expression_style import persona_expression_style_setting, update_persona_expression_style_setting
 from .group_chat import (
     add_group_member,
     autonomous_group_turn,
@@ -241,6 +242,14 @@ class ExpressionAssetMediaImportItem(BaseModel):
 
 class ExpressionAssetMediaImportRequest(BaseModel):
     items: list[ExpressionAssetMediaImportItem] = Field(default_factory=list)
+
+
+class PersonaExpressionStyleUpdateRequest(BaseModel):
+    persona_id: int
+    style: str | None = Field(default="", max_length=40)
+    preferred_groups: list[str] = Field(default_factory=list)
+    avoid_labels: list[str] = Field(default_factory=list)
+    admin_note: str | None = Field(default="", max_length=500)
 
 
 class ExpressionReviewBulkRequest(BaseModel):
@@ -609,6 +618,26 @@ async def upload_avatar(file: UploadFile = File(...), user: dict = Depends(curre
     return {"url": _write_upload_file([str(user["id"])], data, extension)}
 
 
+@app.patch("/api/admin/expression-style")
+def admin_update_persona_expression_style(
+    req: PersonaExpressionStyleUpdateRequest,
+    admin: dict = Depends(current_admin),
+    target_user_id: int | None = None,
+):
+    owner_id = _admin_target_user_id(admin, target_user_id)
+    _assert_persona_owner(owner_id, req.persona_id)
+    setting = update_persona_expression_style_setting(
+        owner_id,
+        req.persona_id,
+        style=req.style,
+        preferred_groups=req.preferred_groups,
+        avoid_labels=req.avoid_labels,
+        admin_note=req.admin_note or "",
+        updated_by_user_id=int(admin["id"]),
+    )
+    return {"style_setting": setting}
+
+
 @app.get("/api/memories")
 def memories(user: dict = Depends(current_user), persona_id: int | None = None, q: str = ""):
     return {"memories": recall_memories(int(user["id"]), persona_id, q, limit=50)}
@@ -832,6 +861,7 @@ def admin_expression_usage(
         }
     return {
         "preference": preference,
+        "style_setting": persona_expression_style_setting(owner_id, persona_filter) if persona_filter else None,
         "summary": summary,
         "insights": insights,
         "recent": recent,

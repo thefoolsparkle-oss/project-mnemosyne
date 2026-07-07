@@ -426,6 +426,20 @@ small {
   color: var(--muted);
 }
 
+.expression-style-setting {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  color: var(--muted);
+}
+
+.expression-style-setting span {
+  color: var(--text);
+  font-size: 12px;
+}
+
 .expression-usage-tags {
   display: flex;
   flex-wrap: wrap;

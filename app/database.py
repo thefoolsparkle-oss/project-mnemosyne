@@ -252,6 +252,21 @@ def init_db() -> None:
                 FOREIGN KEY (updated_by_user_id) REFERENCES users(id) ON DELETE SET NULL
             );
 
+            CREATE TABLE IF NOT EXISTS persona_expression_styles (
+                user_id INTEGER NOT NULL,
+                persona_id INTEGER NOT NULL,
+                style TEXT NOT NULL DEFAULT '',
+                preferred_groups_json TEXT NOT NULL DEFAULT '[]',
+                avoid_labels_json TEXT NOT NULL DEFAULT '[]',
+                admin_note TEXT NOT NULL DEFAULT '',
+                updated_by_user_id INTEGER,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (user_id, persona_id),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE CASCADE,
+                FOREIGN KEY (updated_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+            );
+
             CREATE TABLE IF NOT EXISTS group_conversations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -668,6 +683,8 @@ def init_db() -> None:
                 ON expression_preferences(user_id, persona_id);
             CREATE INDEX IF NOT EXISTS idx_expression_asset_settings_enabled
                 ON expression_asset_settings(enabled);
+            CREATE INDEX IF NOT EXISTS idx_persona_expression_styles_scope
+                ON persona_expression_styles(user_id, persona_id);
             CREATE INDEX IF NOT EXISTS idx_group_conversations_user
                 ON group_conversations(user_id, status, updated_at);
             CREATE INDEX IF NOT EXISTS idx_group_members_group

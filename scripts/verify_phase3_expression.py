@@ -221,6 +221,39 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     assert chat._persona_expression_style_context(
         {"summary": "安静而可靠", "relationship": "像朋友一样", "speaking_style": "简短自然"}
     )["expression_persona_style"] == "restrained"
+    style_update = server.admin_update_persona_expression_style(
+        server.PersonaExpressionStyleUpdateRequest(
+            persona_id=persona_id,
+            style="warm",
+            preferred_groups=["care", "support"],
+            avoid_labels=["轻声"],
+            admin_note="phase3 style override",
+        ),
+        {"id": user_id, "role": "admin"},
+        target_user_id=user_id,
+    )["style_setting"]
+    assert style_update["explicit"] is True
+    assert style_update["style"] == "warm"
+    assert style_update["preferred_groups"] == ["care", "support"]
+    assert style_update["avoid_labels"] == ["轻声"]
+    configured_style = chat._persona_expression_style_context(
+        {"summary": "安静而可靠", "relationship": "像朋友一样", "speaking_style": "简短自然"},
+        user_id=user_id,
+        persona_id=persona_id,
+    )
+    assert configured_style["expression_persona_style"] == "warm"
+    assert configured_style["expression_persona_style_source"] == "admin"
+    assert configured_style["expression_persona_avoid_labels"] == ["轻声"]
+    assert chat._expression_selection_agent(
+        "我今天有点累，陪我一下",
+        "我在，先慢慢来。",
+        {
+            "suppress_all": False,
+            "expression_scene": "support_needed",
+            "expression_allowed_groups": ["support", "care", "warmth", "acknowledgement"],
+            "expression_persona_avoid_labels": ["轻声"],
+        },
+    )[0]["label"] == "担心"
     assert chat._apply_expression_policy(
         [{"type": "mood", "label": "轻笑", "source_text": "[[expression:mood:轻笑]]"}],
         {
@@ -230,6 +263,26 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
             "expression_persona_avoid_labels": ["轻笑"],
         },
     ) == []
+    usage_with_style = server.admin_expression_usage(
+        {"id": user_id, "role": "admin"},
+        target_user_id=user_id,
+        persona_id=persona_id,
+        limit=1,
+        usage_limit=8,
+    )
+    assert usage_with_style["style_setting"]["style"] == "warm"
+    assert usage_with_style["style_setting"]["admin_note"] == "phase3 style override"
+    server.admin_update_persona_expression_style(
+        server.PersonaExpressionStyleUpdateRequest(
+            persona_id=persona_id,
+            style="",
+            preferred_groups=[],
+            avoid_labels=[],
+            admin_note="phase3 style reset",
+        ),
+        {"id": user_id, "role": "admin"},
+        target_user_id=user_id,
+    )
     support_agent = chat._expression_selection_agent(
         "我今天有点累，陪我一下",
         "我在，先慢慢来。",

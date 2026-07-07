@@ -325,6 +325,7 @@ function renderExpressionUsage(data) {
     h("div", { class: "expression-usage-head" }, [
       h("strong", { text: `当前模式：${modeLabel}` }),
       h("small", { text: preference.explicit ? "用户已显式设置" : "默认" }),
+      renderExpressionStyleSetting(data.style_setting),
     ]),
     assets.length
       ? renderExpressionAssetCatalog(assets)
@@ -361,6 +362,63 @@ function renderExpressionUsage(data) {
       ? h("div", { class: "expression-usage-list" }, recent.slice(0, 8).map(renderExpressionUsageItem))
       : null,
   ]);
+}
+
+function renderExpressionStyleSetting(setting) {
+  if (!setting) return null;
+  const explicit = setting.explicit === true;
+  const style = setting.style || "推断";
+  const groups = (setting.preferred_groups || []).join("、") || "按推断";
+  const avoid = (setting.avoid_labels || []).join("、") || "无";
+  return h("div", { class: "expression-style-setting" }, [
+    h("span", { text: `风格：${style} / 优先 ${groups} / 避免 ${avoid}` }),
+    h("small", { text: explicit ? "管理台已显式配置" : "使用人格资料推断" }),
+    h("button", {
+      type: "button",
+      class: "ghost compact",
+      text: "编辑风格",
+      onclick: () => editExpressionStyleSetting(setting),
+    }),
+  ]);
+}
+
+async function editExpressionStyleSetting(setting) {
+  const style = window.prompt("表达风格：restrained / playful / warm / neutral，留空则回到推断", setting.style || "");
+  if (style === null) return;
+  const groups = window.prompt("优先分组，用逗号分隔，例如 warmth,support", (setting.preferred_groups || []).join(","));
+  if (groups === null) return;
+  const avoid = window.prompt("避用标签，用逗号分隔，例如 轻笑,担心", (setting.avoid_labels || []).join(","));
+  if (avoid === null) return;
+  const note = window.prompt("管理备注", setting.admin_note || "");
+  if (note === null) return;
+  state.error = "";
+  try {
+    const data = await api(`/api/admin/expression-style?target_user_id=${state.selectedUserId}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        persona_id: state.selectedPersonaId,
+        style: style.trim(),
+        preferred_groups: splitCsv(groups),
+        avoid_labels: splitCsv(avoid),
+        admin_note: note.trim(),
+      }),
+    });
+    state.expressionUsage = {
+      ...(state.expressionUsage || {}),
+      style_setting: data.style_setting,
+    };
+    await loadReview();
+  } catch (err) {
+    state.error = err.message;
+  }
+  render();
+}
+
+function splitCsv(text) {
+  return String(text || "")
+    .split(/[,\uFF0C、]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function renderExpressionReviewItems(items) {
