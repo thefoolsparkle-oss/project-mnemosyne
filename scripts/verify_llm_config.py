@@ -44,6 +44,7 @@ def main() -> None:
                 raise AssertionError("unsupported provider did not raise LLMProviderError")
 
             from app.server import _safe_llm_config
+            import app.server as server
 
             safe = _safe_llm_config({
                 "provider": "kimi",
@@ -57,6 +58,31 @@ def main() -> None:
             assert safe["base_url"] == "https://api.moonshot.cn/v1"
             assert safe["max_tokens"] == 360
             assert safe["timeout"] == 25
+
+            ts = database.now_ts()
+            with database.get_db() as db:
+                db.executemany(
+                    """
+                    INSERT INTO llm_call_logs (
+                        task, provider, model, status, prompt_chars, response_chars,
+                        duration_ms, error_text, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        ("health_probe", "kimi", "moonshot-v1-auto", "success", 100, 50, 1200, "", ts),
+                        ("health_probe", "kimi", "moonshot-v1-auto", "failed", 120, 0, 31000, "timeout", ts + 1),
+                        ("group_chat", "kimi", "moonshot-v1-auto", "success", 80, 40, 900, "", ts + 2),
+                    ],
+                )
+            health = server.admin_llm_health({"id": 1, "role": "admin"}, limit=10)
+            probe_health = next(item for item in health["tasks"] if item["task"] == "health_probe")
+            assert health["window"] >= 3
+            assert health["failed"] >= 1
+            assert health["slow"] >= 1
+            assert probe_health["failed"] == 1
+            assert probe_health["slow"] == 1
+            assert probe_health["last_error"] == "timeout"
     finally:
         llm.load_config = original_load_config
         database.DB_PATH = original_db_path

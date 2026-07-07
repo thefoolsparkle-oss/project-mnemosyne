@@ -201,6 +201,7 @@ LLM 路由：
 - 当前任务：chat / forge / namer / memory / sculptor / mirror / judge / summary / default。
 - 支持 DeepSeek、OpenAI、Ollama、OpenAI-compatible provider。
 - `llm_call_logs` 记录任务、provider、model、成功失败、耗时、prompt/response 长度和错误摘要。
+- 管理台模型健康概览第一版已接入：按最近调用聚合任务失败率、慢调用和最近错误，只读日志与路由配置，不额外触发模型请求。
 
 表达层：
 

@@ -18,6 +18,7 @@ let state = {
   evalRuns: [],
   llmCalls: [],
   llmRoutes: null,
+  llmHealth: null,
   growthDemo: null,
   expressionAssetFilter: "all",
   runningEval: false,
@@ -123,9 +124,10 @@ async function loadReview() {
     state.growth = null;
     state.versions = [];
     state.llmRoutes = null;
+    state.llmHealth = null;
     return;
   }
-  const [data, traceData, expressionData, assetData, revisionData, growthData, versionData, evalData, llmData, routeData] = await Promise.all([
+  const [data, traceData, expressionData, assetData, revisionData, growthData, versionData, evalData, llmData, routeData, healthData] = await Promise.all([
     api(`/api/admin/memory/review?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}&include_history=true`),
     api(`/api/admin/chat-context-traces?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}&limit=6`),
     api(`/api/admin/expression-usage?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}&limit=12&usage_limit=80`),
@@ -136,6 +138,7 @@ async function loadReview() {
     api("/api/admin/evaluations/memory/runs?limit=5"),
     api("/api/admin/llm-calls?limit=20"),
     api("/api/admin/llm-routes"),
+    api("/api/admin/llm-health?limit=120"),
   ]);
   state.review = data.review;
   state.traces = traceData.traces;
@@ -147,6 +150,7 @@ async function loadReview() {
   state.evalRuns = evalData.runs;
   state.llmCalls = llmData.calls;
   state.llmRoutes = routeData;
+  state.llmHealth = healthData;
 }
 
 function render() {
@@ -1596,6 +1600,7 @@ function renderReview() {
   return h("div", { class: "review-grid" }, [
     card("人格成长", renderGrowthPanel(), "wide"),
     card("状态变量", renderStateList(review.state || [])),
+    card("模型健康", renderLlmHealth(), "wide"),
     card("模型调用记录", renderLlmCalls(), "wide"),
     card("模型路由", renderLlmRoutes(), "wide"),
     card("记忆评测", renderEvalPanel(), "wide"),
@@ -1608,6 +1613,30 @@ function renderReview() {
     card("上下文追踪", renderTraceList(state.traces || []), "wide"),
     card("当前事实", renderMemoryList(review.facts || []), "wide"),
     card("当前关系", renderMemoryList(review.relations || []), "wide"),
+  ]);
+}
+
+function renderLlmHealth() {
+  const health = state.llmHealth || {};
+  const tasks = Array.isArray(health.tasks) ? health.tasks : [];
+  if (!tasks.length) return h("p", { class: "muted", text: "暂无模型健康数据。" });
+  return h("div", { class: "llm-health-panel" }, [
+    h("div", { class: "expression-usage-summary" }, [
+      h("span", { text: `窗口 ${health.window || 0}` }),
+      h("span", { text: `失败 ${health.failed || 0}` }),
+      h("span", { text: `慢调用 ${health.slow || 0}` }),
+    ]),
+    h("div", { class: "llm-health-list" }, tasks.slice(0, 8).map((item) => h("article", {
+      class: `llm-health-item ${Number(item.failed || 0) ? "failed" : "ok"}`,
+    }, [
+      h("div", { class: "memory-title" }, [
+        h("strong", { text: `${item.task} / ${item.last_status || "unknown"}` }),
+        h("small", { text: `${Math.round(Number(item.failure_rate || 0) * 100)}% fail` }),
+      ]),
+      h("p", { text: `${item.provider || ""} ${item.model || ""}`.trim() || "route unknown" }),
+      h("small", { text: `total ${item.total || 0} / avg ${item.avg_duration_ms || 0}ms / max ${item.max_duration_ms || 0}ms / slow ${item.slow || 0}` }),
+      item.last_error ? h("pre", { text: item.last_error }) : null,
+    ]))),
   ]);
 }
 

@@ -293,13 +293,16 @@ small {
 }
 
 .llm-call-list,
-.llm-route-list {
+.llm-route-list,
+.llm-health-list,
+.llm-health-panel {
   display: grid;
   gap: 8px;
 }
 
 .llm-call,
-.llm-route {
+.llm-route,
+.llm-health-item {
   display: grid;
   gap: 6px;
   padding: 10px;
@@ -316,17 +319,24 @@ small {
   border-color: rgba(242, 160, 160, 0.7);
 }
 
+.llm-health-item.failed {
+  border-color: rgba(242, 160, 160, 0.7);
+}
+
 .llm-call p,
-.llm-route p {
+.llm-route p,
+.llm-health-item p {
   margin: 0;
 }
 
-.llm-route small {
+.llm-route small,
+.llm-health-item small {
   color: var(--muted);
   overflow-wrap: anywhere;
 }
 
-.llm-call pre {
+.llm-call pre,
+.llm-health-item pre {
   max-height: 120px;
   margin: 0;
   padding: 8px;

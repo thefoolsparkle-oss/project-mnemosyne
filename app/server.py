@@ -1251,6 +1251,74 @@ def admin_llm_routes(admin: dict = Depends(current_admin)):
     }
 
 
+@app.get("/api/admin/llm-health")
+def admin_llm_health(admin: dict = Depends(current_admin), limit: int = 120):
+    limit = max(1, min(int(limit or 120), 500))
+    with get_db() as db:
+        rows = db.execute(
+            """
+            SELECT id, task, provider, model, status, prompt_chars, response_chars,
+                   duration_ms, error_text, created_at
+            FROM llm_call_logs
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    calls = [dict_from_row(row) for row in rows]
+    by_task: dict[str, dict[str, Any]] = {}
+    for item in calls:
+        task = str(item.get("task") or "default")
+        stats = by_task.setdefault(
+            task,
+            {
+                "task": task,
+                "total": 0,
+                "success": 0,
+                "failed": 0,
+                "slow": 0,
+                "duration_total_ms": 0,
+                "max_duration_ms": 0,
+                "last_status": "",
+                "last_error": "",
+                "last_created_at": 0,
+                "provider": str(item.get("provider") or ""),
+                "model": str(item.get("model") or ""),
+            },
+        )
+        duration_ms = int(item.get("duration_ms") or 0)
+        status = str(item.get("status") or "")
+        stats["total"] += 1
+        stats["duration_total_ms"] += duration_ms
+        stats["max_duration_ms"] = max(int(stats["max_duration_ms"] or 0), duration_ms)
+        if duration_ms >= 30000:
+            stats["slow"] += 1
+        if status == "success":
+            stats["success"] += 1
+        elif status == "failed":
+            stats["failed"] += 1
+        if not stats["last_created_at"] or int(item.get("created_at") or 0) > int(stats["last_created_at"] or 0):
+            stats["last_status"] = status
+            stats["last_error"] = str(item.get("error_text") or "")[:500]
+            stats["last_created_at"] = int(item.get("created_at") or 0)
+            stats["provider"] = str(item.get("provider") or "")
+            stats["model"] = str(item.get("model") or "")
+    tasks = []
+    for item in by_task.values():
+        total = max(1, int(item["total"] or 0))
+        item["failure_rate"] = round(int(item["failed"] or 0) / total, 4)
+        item["avg_duration_ms"] = round(int(item["duration_total_ms"] or 0) / total)
+        item.pop("duration_total_ms", None)
+        tasks.append(item)
+    tasks.sort(key=lambda item: (-int(item["failed"] or 0), -int(item["slow"] or 0), str(item["task"])))
+    return {
+        "window": len(calls),
+        "failed": sum(int(item.get("failed") or 0) for item in tasks),
+        "slow": sum(int(item.get("slow") or 0) for item in tasks),
+        "tasks": tasks,
+    }
+
+
 def _safe_llm_config(config: dict[str, Any]) -> dict[str, Any]:
     allowed = ("provider", "provider_name", "model", "base_url", "api_key_env", "temperature", "max_tokens", "timeout")
     safe = {key: config.get(key) for key in allowed if config.get(key) not in (None, "")}
