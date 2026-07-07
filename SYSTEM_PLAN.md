@@ -202,6 +202,7 @@ LLM 路由：
 - 支持 DeepSeek、OpenAI、Ollama、OpenAI-compatible provider。
 - `llm_call_logs` 记录任务、provider、model、成功失败、耗时、prompt/response 长度和错误摘要。
 - 管理台模型健康概览第一版已接入：按最近调用聚合任务失败率、慢调用和最近错误，只读日志与路由配置，不额外触发模型请求。
+- `scripts/diagnose_llm_env.py` 已复用运行时同一套环境变量检测，并会输出最近本地模型调用健康摘要，便于不开管理台时排查路由、Key 和超时问题。
 
 表达层：
 

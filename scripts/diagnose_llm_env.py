@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -11,6 +10,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.config import CONFIG_FILE, load_config
+from app.database import get_db
+from app.llm_client import api_key_env_present
 
 
 def _merged_routes(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -35,10 +36,38 @@ def _safe_row(task: str, config: dict[str, Any]) -> dict[str, Any]:
         "model": str(config.get("model") or ""),
         "base_url": str(config.get("base_url") or ""),
         "api_key_env": env_name,
-        "api_key_env_present": bool(env_name and os.getenv(env_name)),
+        "api_key_env_present": api_key_env_present(env_name) if env_name else False,
         "timeout": config.get("timeout", ""),
         "max_tokens": config.get("max_tokens", ""),
     }
+
+
+def _recent_llm_health(limit: int = 80) -> list[dict[str, Any]]:
+    try:
+        with get_db() as db:
+            rows = db.execute(
+                """
+                SELECT task, status, duration_ms, error_text, created_at
+                FROM llm_call_logs
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (max(1, min(int(limit), 500)),),
+            ).fetchall()
+    except Exception:
+        return []
+    stats: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        task = str(row["task"] or "default")
+        item = stats.setdefault(task, {"task": task, "total": 0, "failed": 0, "slow": 0, "last_error": ""})
+        item["total"] += 1
+        if str(row["status"] or "") == "failed":
+            item["failed"] += 1
+            if not item["last_error"]:
+                item["last_error"] = str(row["error_text"] or "")[:160]
+        if int(row["duration_ms"] or 0) >= 30000:
+            item["slow"] += 1
+    return sorted(stats.values(), key=lambda item: (-int(item["failed"]), -int(item["slow"]), str(item["task"])))
 
 
 def main() -> None:
@@ -54,6 +83,16 @@ def main() -> None:
                 status=status,
             )
         )
+    health = _recent_llm_health()
+    if health:
+        print("\nRecent local LLM health:")
+        for item in health:
+            line = "  {task}: total={total} failed={failed} slow={slow}".format(**item)
+            if item.get("last_error"):
+                line += f" last_error={item['last_error']}"
+            print(line)
+    else:
+        print("\nRecent local LLM health: no local call logs")
 
 
 if __name__ == "__main__":
