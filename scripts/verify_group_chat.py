@@ -446,6 +446,33 @@ def verify_group_chat_flow() -> None:
     assert quiet_empty_expected["replies"] == []
     assert len(quiet_empty_expected["messages"]) == 1
     assert quiet_empty_expected["messages"][0]["reply_status"] == "error"
+    skipped_after_error = group_chat.autonomous_group_turn(
+        user_id=user_id,
+        group_conversation_id=group["id"],
+        client_message_id="group-auto-after-error",
+        min_idle_seconds=0,
+    )
+    assert quiet_calls == ["turn", "turn"]
+    assert skipped_after_error["skipped"] is True
+    assert skipped_after_error["reason"] == "last_user_turn_unresolved"
+
+    def pre_autonomous_llm(messages, task="chat"):
+        return json.dumps(
+            {"messages": [{"persona_id": persona_ids[0], "content": "先把这个话头放在这儿。", "reason": "seed"}]},
+            ensure_ascii=False,
+        )
+
+    group_chat.call_llm_api = pre_autonomous_llm
+    pre_autonomous = server.group_chat_endpoint(
+        server.GroupChatRequest(
+            group_conversation_id=group["id"],
+            message="你们可以接着聊一点。",
+            client_message_id="group-chat-before-auto",
+        ),
+        {"id": user_id},
+    )
+    assert pre_autonomous["degraded"] is False
+    assert len(pre_autonomous["replies"]) == 1
 
     autonomous_calls: list[str] = []
 
@@ -483,6 +510,15 @@ def verify_group_chat_flow() -> None:
     assert autonomous_calls == ["turn"]
     assert repeated_auto["reason"] == "reused"
     assert repeated_auto["messages"][0]["id"] == autonomous["messages"][0]["id"]
+    no_id_auto = group_chat.autonomous_group_turn(
+        user_id=user_id,
+        group_conversation_id=group["id"],
+        client_message_id="",
+        min_idle_seconds=0,
+    )
+    assert autonomous_calls == ["turn", "turn"]
+    assert no_id_auto["skipped"] is False
+    assert no_id_auto["messages"][0]["id"] != autonomous["messages"][0]["id"]
 
     archived = server.patch_group_conversation(
         group["id"],

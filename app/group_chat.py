@@ -421,7 +421,7 @@ def autonomous_group_turn(
         raise ValueError("group conversation needs at least two active personas")
 
     client_message_id = str(client_message_id or "").strip()[:80]
-    existing = _group_autonomous_messages_by_client_id(user_id, group_conversation_id, client_message_id)
+    existing = _group_autonomous_messages_by_client_id(user_id, group_conversation_id, client_message_id) if client_message_id else []
     if existing:
         return {
             "group_conversation_id": group_conversation_id,
@@ -998,7 +998,7 @@ def _autonomous_group_eligibility(
     with get_db() as db:
         latest = db.execute(
             """
-            SELECT id, speaker_type, created_at
+            SELECT id, speaker_type, reply_status, created_at
             FROM group_messages
             WHERE user_id = ? AND group_conversation_id = ?
             ORDER BY id DESC
@@ -1008,6 +1008,9 @@ def _autonomous_group_eligibility(
         ).fetchone()
         if not latest:
             return {"ok": False, "reason": "empty"}
+        latest_status = str(latest["reply_status"] or "")
+        if str(latest["speaker_type"] or "") == "user" and latest_status in {"generating", "error"}:
+            return {"ok": False, "reason": "last_user_turn_unresolved"}
         if ts - int(latest["created_at"] or 0) < max(0, int(min_idle_seconds)):
             return {"ok": False, "reason": "too_fresh"}
         last_user = db.execute(
