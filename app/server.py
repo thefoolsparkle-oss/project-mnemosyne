@@ -864,6 +864,7 @@ def admin_expression_usage(
     review_items = _expression_review_items(sorted_counts, summary)
     style_setting = persona_expression_style_setting(owner_id, persona_filter) if persona_filter else None
     style_suggestions = _expression_style_suggestions(sorted_counts, summary, style_setting) if persona_filter else []
+    preference_history = expression_preference_events(owner_id, persona_filter, limit=5) if persona_filter else []
     preference = {"enabled": True, "mode": "normal", "explicit": False}
     if preference_row:
         row = dict_from_row(preference_row) or {}
@@ -875,9 +876,15 @@ def admin_expression_usage(
             "updated_at": int(row.get("updated_at") or 0),
             "source_message_id": row.get("source_message_id"),
         }
+    if len(preference_history) >= 3 and len({str(item.get("mode") or "") for item in preference_history[:5]}) >= 2:
+        insights.append({
+            "kind": "preference_changes",
+            "severity": "tune",
+            "text": "最近轻表达偏好有多次切换，建议先观察用户对频率的真实反应，再继续提高表达触发。",
+        })
     return {
         "preference": preference,
-        "preference_history": expression_preference_events(owner_id, persona_filter, limit=5) if persona_filter else [],
+        "preference_history": preference_history,
         "style_setting": style_setting,
         "style_suggestions": style_suggestions,
         "style_history": persona_expression_style_events(owner_id, persona_filter, limit=5) if persona_filter else [],

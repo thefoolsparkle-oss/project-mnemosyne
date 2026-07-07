@@ -725,6 +725,7 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     )
     assert restored_pref_usage["preference_history"][0]["mode"] == "normal"
     assert restored_pref_usage["preference_history"][0]["source"] == "chat_intent"
+    assert any(item["kind"] == "preference_changes" for item in restored_pref_usage["insights"])
 
     ts = database.now_ts()
     with database.get_db() as db:
