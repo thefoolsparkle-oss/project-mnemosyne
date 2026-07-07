@@ -695,6 +695,22 @@ small {
   line-height: 1.5;
 }
 
+.expression-asset-history {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+
+.expression-asset-history span {
+  padding: 2px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .expression-asset-risk {
   grid-column: 1 / -1;
   color: var(--muted);

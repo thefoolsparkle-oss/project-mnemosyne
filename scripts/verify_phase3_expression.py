@@ -91,6 +91,8 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
         {"id": user_id, "role": "admin"},
     )["asset"]
     assert disabled_asset["enabled"] is False
+    assert disabled_asset["history"][0]["event_kind"] == "enabled"
+    assert disabled_asset["history"][0]["after"]["enabled"] == 0
     public_assets = server.expression_assets({"id": user_id})["assets"]
     assert "担心" not in {item["label"] for item in public_assets}
     admin_assets = server.admin_expression_assets({"id": user_id, "role": "admin"})["assets"]
@@ -143,6 +145,8 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     )["asset"]
     assert archived_asset["lifecycle_status"] == "archived"
     assert archived_asset["enabled"] is False
+    assert archived_asset["history"][0]["event_kind"] == "lifecycle"
+    assert archived_asset["history"][0]["after"]["lifecycle_status"] == "archived"
     public_after_archive = server.expression_assets({"id": user_id})["assets"]
     assert "停顿" not in {item["label"] for item in public_after_archive}
     assert "[[expression:tone:停顿]]" not in chat.chat_rendering_rules_prompt()
@@ -179,6 +183,8 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     assert media_asset["media_url"] == "/uploads/expression/smile.png"
     assert media_asset["thumbnail_url"] == "/uploads/expression/smile-thumb.png"
     assert media_asset["alt_text"] == "微笑贴图"
+    assert media_asset["history"][0]["event_kind"] == "media"
+    assert media_asset["history"][0]["after"]["media_url"] == "/uploads/expression/smile.png"
     public_media_asset = next(item for item in server.expression_assets({"id": user_id})["assets"] if item["label"] == "微笑")
     assert public_media_asset["asset_kind"] == "image"
     assert public_media_asset["media_url"]

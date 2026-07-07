@@ -660,7 +660,29 @@ function renderExpressionAsset(asset) {
     asset.admin_note ? h("small", { class: "expression-asset-note", text: `备注：${asset.admin_note}` }) : null,
     asset.media_review_note ? h("small", { class: "expression-asset-note", text: `媒体审查：${asset.media_review_note}` }) : null,
     asset.media_source ? h("small", { class: "expression-asset-note", text: `媒体来源：${asset.media_source}${asset.media_source_detail ? ` · ${asset.media_source_detail}` : ""}` }) : null,
+    renderExpressionAssetHistory(asset.history || []),
   ]);
+}
+
+function renderExpressionAssetHistory(items) {
+  if (!items.length) return null;
+  return h("div", { class: "expression-asset-history" }, [
+    h("small", { text: "最近变更" }),
+    ...items.slice(0, 3).map((item) => h("span", {
+      text: `${expressionAssetEventLabel(item.event_kind)}${item.admin_note ? ` · ${item.admin_note}` : ""}`,
+    })),
+  ]);
+}
+
+function expressionAssetEventLabel(kind) {
+  return {
+    lifecycle: "生命周期",
+    enabled: "启用状态",
+    media_review: "媒体审核",
+    media: "媒体配置",
+    cooldown: "冷却",
+    settings: "设置",
+  }[kind] || "设置";
 }
 
 function mediaReviewLabel(status) {

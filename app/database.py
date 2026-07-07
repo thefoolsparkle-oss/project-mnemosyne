@@ -252,6 +252,19 @@ def init_db() -> None:
                 FOREIGN KEY (updated_by_user_id) REFERENCES users(id) ON DELETE SET NULL
             );
 
+            CREATE TABLE IF NOT EXISTS expression_asset_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                expression_type TEXT NOT NULL,
+                label TEXT NOT NULL,
+                event_kind TEXT NOT NULL DEFAULT 'settings',
+                before_json TEXT NOT NULL DEFAULT '{}',
+                after_json TEXT NOT NULL DEFAULT '{}',
+                admin_note TEXT NOT NULL DEFAULT '',
+                updated_by_user_id INTEGER,
+                created_at INTEGER NOT NULL,
+                FOREIGN KEY (updated_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+            );
+
             CREATE TABLE IF NOT EXISTS persona_expression_styles (
                 user_id INTEGER NOT NULL,
                 persona_id INTEGER NOT NULL,
@@ -698,6 +711,8 @@ def init_db() -> None:
                 ON expression_preferences(user_id, persona_id);
             CREATE INDEX IF NOT EXISTS idx_expression_asset_settings_enabled
                 ON expression_asset_settings(enabled);
+            CREATE INDEX IF NOT EXISTS idx_expression_asset_events_scope
+                ON expression_asset_events(expression_type, label, created_at);
             CREATE INDEX IF NOT EXISTS idx_persona_expression_styles_scope
                 ON persona_expression_styles(user_id, persona_id);
             CREATE INDEX IF NOT EXISTS idx_persona_expression_style_events_scope

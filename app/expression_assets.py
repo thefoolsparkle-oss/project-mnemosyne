@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -104,10 +105,12 @@ def expression_assets_public(
     include_admin_metadata: bool = False,
 ) -> list[dict[str, Any]]:
     settings = _expression_asset_settings()
+    events = _expression_asset_events_by_key() if include_admin_metadata else {}
     result = []
     for item in sorted(EXPRESSION_ASSETS, key=lambda asset: int(asset.get("sort_order") or 0)):
         asset = dict(item)
-        setting = settings.get(_asset_key(asset))
+        key = _asset_key(asset)
+        setting = settings.get(key)
         lifecycle_status = _normalize_lifecycle_status(None if setting is None else setting.get("lifecycle_status"))
         media_review_status = _normalize_media_review_status(None if setting is None else setting.get("media_review_status"))
         asset["lifecycle_status"] = lifecycle_status
@@ -135,6 +138,7 @@ def expression_assets_public(
             asset["media_review_note"] = "" if setting is None else str(setting.get("media_review_note") or "")
             asset["media_source"] = "" if setting is None else str(setting.get("media_source") or "")
             asset["media_source_detail"] = "" if setting is None else str(setting.get("media_source_detail") or "")
+            asset["history"] = events.get(key, [])
         if include_disabled or asset["enabled"]:
             result.append(asset)
     return result
@@ -223,13 +227,14 @@ def update_expression_asset_setting(
     with get_db() as db:
         existing = db.execute(
             """
-            SELECT cooldown_turns, lifecycle_status, asset_kind, media_url, thumbnail_url, alt_text,
-                   media_source, media_source_detail, media_review_status, media_review_note
+            SELECT enabled, cooldown_turns, lifecycle_status, asset_kind, media_url, thumbnail_url, alt_text,
+                   media_source, media_source_detail, media_review_status, media_review_note, admin_note
             FROM expression_asset_settings
             WHERE expression_type = ? AND label = ?
             """,
             (expression_type, label),
         ).fetchone()
+        before_state = _asset_setting_state(existing)
         if cooldown_turns is None:
             stored_cooldown = int(existing["cooldown_turns"]) if existing else -1
         else:
@@ -249,6 +254,20 @@ def update_expression_asset_setting(
             media_review_status if media_review_status is not None else (existing["media_review_status"] if existing else "approved")
         )
         stored_media_review_note = _stored_setting_text(media_review_note, existing, "media_review_note")
+        after_state = {
+            "enabled": 1 if enabled else 0,
+            "cooldown_turns": stored_cooldown,
+            "lifecycle_status": stored_lifecycle_status,
+            "asset_kind": stored_asset_kind,
+            "media_url": stored_media_url,
+            "thumbnail_url": stored_thumbnail_url,
+            "alt_text": stored_alt_text,
+            "media_source": stored_media_source,
+            "media_source_detail": stored_media_source_detail,
+            "media_review_status": stored_media_review_status,
+            "media_review_note": stored_media_review_note,
+            "admin_note": str(admin_note or "")[:500],
+        }
         db.execute(
             """
             INSERT INTO expression_asset_settings (
@@ -293,11 +312,35 @@ def update_expression_asset_setting(
                 ts,
             ),
         )
+        db.execute(
+            """
+            INSERT INTO expression_asset_events (
+                expression_type, label, event_kind, before_json, after_json,
+                admin_note, updated_by_user_id, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                expression_type,
+                label,
+                _asset_event_kind(before_state, after_state),
+                json.dumps(before_state, ensure_ascii=False, sort_keys=True),
+                json.dumps(after_state, ensure_ascii=False, sort_keys=True),
+                str(admin_note or "")[:500],
+                updated_by_user_id,
+                ts,
+            ),
+        )
     return next(
         asset
         for asset in expression_assets_public(include_disabled=True, include_admin_metadata=True)
         if str(asset["expression_type"]) == expression_type and str(asset["label"]) == label
     )
+
+
+def expression_asset_events(expression_type: str, label: str, limit: int = 5) -> list[dict[str, Any]]:
+    key = (str(expression_type or "").strip(), str(label or "").strip())
+    return _expression_asset_events_by_key(limit=max(1, min(int(limit or 5), 20)), keys={key}).get(key, [])
 
 
 def _known_asset_keys() -> set[tuple[str, str]]:
@@ -328,6 +371,105 @@ def _expression_asset_settings() -> dict[tuple[str, str], dict[str, Any]]:
         }
     except Exception:
         return {}
+
+
+def _expression_asset_events_by_key(
+    *,
+    limit: int = 5,
+    keys: set[tuple[str, str]] | None = None,
+) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    try:
+        from .database import dict_from_row, get_db
+
+        limit = max(1, min(int(limit or 5), 20))
+        params: list[Any] = []
+        clause = ""
+        if keys:
+            filters = []
+            for expression_type, label in keys:
+                filters.append("(expression_type = ? AND label = ?)")
+                params.extend([expression_type, label])
+            clause = "WHERE " + " OR ".join(filters)
+        with get_db() as db:
+            rows = db.execute(
+                f"""
+                SELECT id, expression_type, label, event_kind, before_json, after_json,
+                       admin_note, updated_by_user_id, created_at
+                FROM expression_asset_events
+                {clause}
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                [*params, limit * max(1, len(keys or _known_asset_keys()))],
+            ).fetchall()
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for row in rows:
+            item = dict_from_row(row) or {}
+            key = (str(item.get("expression_type") or ""), str(item.get("label") or ""))
+            if len(grouped.get(key, [])) >= limit:
+                continue
+            item["before"] = _json_object(item.pop("before_json", "{}"))
+            item["after"] = _json_object(item.pop("after_json", "{}"))
+            grouped.setdefault(key, []).append(item)
+        return grouped
+    except Exception:
+        return {}
+
+
+def _asset_setting_state(row: Any) -> dict[str, Any]:
+    if not row:
+        return {}
+    fields = (
+        "enabled",
+        "cooldown_turns",
+        "lifecycle_status",
+        "asset_kind",
+        "media_url",
+        "thumbnail_url",
+        "alt_text",
+        "media_source",
+        "media_source_detail",
+        "media_review_status",
+        "media_review_note",
+        "admin_note",
+    )
+    return {field: row[field] for field in fields}
+
+
+def _asset_event_kind(before: dict[str, Any], after: dict[str, Any]) -> str:
+    if not before:
+        if after.get("lifecycle_status") not in {"", "active", None}:
+            return "lifecycle"
+        if after.get("enabled") != 1:
+            return "enabled"
+        if after.get("media_review_status") not in {"", "approved", None}:
+            return "media_review"
+        media_fields = {"asset_kind", "media_url", "thumbnail_url", "alt_text", "media_source", "media_source_detail"}
+        if any(after.get(field) for field in media_fields):
+            return "media"
+        if after.get("cooldown_turns") not in {-1, None}:
+            return "cooldown"
+        return "settings"
+    if before.get("lifecycle_status") != after.get("lifecycle_status"):
+        return "lifecycle"
+    if before.get("enabled") != after.get("enabled"):
+        return "enabled"
+    if before.get("media_review_status") != after.get("media_review_status"):
+        return "media_review"
+    media_fields = {"asset_kind", "media_url", "thumbnail_url", "alt_text", "media_source", "media_source_detail"}
+    if any(before.get(field) != after.get(field) for field in media_fields):
+        return "media"
+    if before.get("cooldown_turns") != after.get("cooldown_turns"):
+        return "cooldown"
+    return "settings"
+
+
+def _json_object(value: Any) -> dict[str, Any]:
+    try:
+        decoded = json.loads(str(value or "{}"))
+    except Exception:
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
 
 
 def _normalize_lifecycle_status(value: Any) -> str:
