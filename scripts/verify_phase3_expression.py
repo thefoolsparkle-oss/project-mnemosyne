@@ -529,8 +529,11 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
         usage_limit=8,
     )
     assert selector_usage["summary"]["source_selection_agent"] >= 5
+    assert selector_usage["summary"]["scene_ordinary"] >= 5
     selector_count = next(item for item in selector_usage["counts"] if item["tag"] == "gesture:点头")
     assert selector_count["source_counts"]["selection_agent"] >= 5
+    assert selector_count["scene_counts"]["ordinary"] >= 5
+    assert selector_usage["recent"][0]["scene_kind"] == "ordinary"
     assert any(item["kind"] == "selection_agent_label" for item in selector_usage["review_items"])
     assert selector_usage["style_suggestions"][0]["style"] == "restrained"
     assert "acknowledgement" in selector_usage["style_suggestions"][0]["preferred_groups"]

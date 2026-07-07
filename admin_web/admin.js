@@ -341,6 +341,9 @@ function renderExpressionUsage(data) {
       h("span", { text: `模型 ${summary.source_model || 0}` }),
       h("span", { text: `选择器 ${summary.source_selection_agent || 0}` }),
       h("span", { text: `兼容 ${summary.source_compat || 0}` }),
+      h("span", { text: `安慰场景 ${summary.scene_support_needed || 0}` }),
+      h("span", { text: `玩笑场景 ${summary.scene_playful || 0}` }),
+      h("span", { text: `普通场景 ${summary.scene_ordinary || 0}` }),
     ]),
     insights.length
       ? h("div", { class: "expression-usage-insights" }, insights.map((item) => h("p", {
@@ -491,7 +494,7 @@ function renderExpressionReviewItems(items) {
       h("div", { class: "expression-review-main" }, [
         h("span", { class: `expression-asset-risk ${item.risk_level || "unknown"}`, text: item.risk_level || "unknown" }),
         h("strong", { text: `${item.display_text || item.label || item.tag} × ${item.count || 0}` }),
-        h("small", { text: `${item.group || "unknown"} / 占比 ${Math.round(Number(item.share || 0) * 100)}% / 冷却 ${item.cooldown_turns ?? 0} 轮 / ${expressionSourceCountLabel(item.source_counts)}` }),
+        h("small", { text: `${item.group || "unknown"} / 占比 ${Math.round(Number(item.share || 0) * 100)}% / 冷却 ${item.cooldown_turns ?? 0} 轮 / ${expressionSourceCountLabel(item.source_counts)} / ${expressionSceneCountLabel(item.scene_counts)}` }),
       ]),
       h("p", { text: item.text || "" }),
       h("div", { class: "expression-review-actions" }, [
@@ -983,6 +986,7 @@ function renderExpressionUsageItem(item) {
       h("span", { text: `分组：${item.group || "unknown"}` }),
       h("span", { text: `冷却：${item.cooldown_turns ?? 0}轮` }),
       h("span", { text: `来源：${expressionSourceLabel(item.source_text)}` }),
+      h("span", { text: `场景：${expressionSceneLabel(item.scene_kind)}` }),
       h("span", { class: enabled ? "asset-enabled" : "asset-disabled", text: status }),
     ]),
     h("p", { text: item.content || "" }),
@@ -1005,6 +1009,25 @@ function expressionSourceCountLabel(counts = {}) {
     ["未知", counts.unknown],
   ].filter(([, count]) => Number(count || 0) > 0);
   return parts.length ? parts.map(([label, count]) => `${label}${count}`).join(" / ") : "来源暂无";
+}
+
+function expressionSceneLabel(scene) {
+  return {
+    support_needed: "安慰",
+    playful: "玩笑",
+    ordinary: "普通",
+    unknown: "未知",
+  }[scene] || "未知";
+}
+
+function expressionSceneCountLabel(counts = {}) {
+  const parts = [
+    ["安慰", counts.support_needed],
+    ["玩笑", counts.playful],
+    ["普通", counts.ordinary],
+    ["未知", counts.unknown],
+  ].filter(([, count]) => Number(count || 0) > 0);
+  return parts.length ? parts.map(([label, count]) => `${label}${count}`).join(" / ") : "场景暂无";
 }
 
 function renderEmpty() {

@@ -791,13 +791,20 @@ def admin_expression_usage(
         "source_selection_agent": 0,
         "source_compat": 0,
         "source_unknown": 0,
+        "scene_support_needed": 0,
+        "scene_playful": 0,
+        "scene_ordinary": 0,
+        "scene_unknown": 0,
     }
     for item in usage_rows:
         scope = "group" if item.get("scope") == "group" else "single"
         summary[scope] += 1
         source_kind = _expression_source_kind(item.get("source_text"))
+        scene_kind = _expression_scene_kind(item.get("source_text"))
         item["source_kind"] = source_kind
+        item["scene_kind"] = scene_kind
         summary[f"source_{source_kind}"] += 1
+        summary[f"scene_{scene_kind}"] += 1
         if item.get("asset_enabled") is False:
             summary["disabled_asset"] += 1
         if item.get("risk_level") == "medium":
@@ -815,9 +822,11 @@ def admin_expression_usage(
                 "group": item.get("group") or "unknown",
                 "cooldown_turns": int(item.get("cooldown_turns") or 0),
                 "source_counts": {"model": 0, "selection_agent": 0, "compat": 0, "unknown": 0},
+                "scene_counts": {"support_needed": 0, "playful": 0, "ordinary": 0, "unknown": 0},
             }
         counts[key]["count"] += 1
         counts[key]["source_counts"][source_kind] += 1
+        counts[key]["scene_counts"][scene_kind] += 1
     sorted_counts = sorted(counts.values(), key=lambda item: (-int(item["count"]), str(item["tag"])))
     insights: list[dict[str, Any]] = []
     if summary["disabled_asset"]:
@@ -899,6 +908,7 @@ def _expression_review_items(counts: list[dict[str, Any]], summary: dict[str, An
             "group": item.get("group") or "unknown",
             "cooldown_turns": int(item.get("cooldown_turns") or 0),
             "source_counts": item.get("source_counts") or {},
+            "scene_counts": item.get("scene_counts") or {},
         }
         if item.get("asset_enabled") is False:
             items.append({
@@ -3707,6 +3717,16 @@ def _expression_source_kind(source_text: Any) -> str:
         return "model"
     if source.startswith("（") or source.startswith("("):
         return "compat"
+    return "unknown"
+
+
+def _expression_scene_kind(source_text: Any) -> str:
+    source = str(source_text or "").strip()
+    if not source.startswith("selection_agent:"):
+        return "unknown"
+    scene = source.split(":", 1)[1].strip()
+    if scene in {"support_needed", "playful", "ordinary"}:
+        return scene
     return "unknown"
 
 
