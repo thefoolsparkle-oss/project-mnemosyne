@@ -202,6 +202,24 @@ small {
   display: none;
 }
 
+.network-banner {
+  position: fixed;
+  top: 10px;
+  left: 50%;
+  z-index: 50;
+  width: min(520px, calc(100vw - 24px));
+  padding: 8px 12px;
+  border: 1px solid rgba(198, 76, 85, 0.3);
+  border-radius: 8px;
+  background: #fff6f6;
+  color: #8f3d45;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+  transform: translateX(-50%);
+  box-shadow: 0 10px 30px rgba(40, 47, 60, 0.1);
+}
+
 .sidebar {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto auto auto;

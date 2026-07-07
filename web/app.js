@@ -76,6 +76,7 @@ let state = {
   focusComposer: false,
   sending: false,
   sendingStartedAt: 0,
+  networkOffline: typeof navigator !== "undefined" && navigator.onLine === false,
 };
 
 let sendingTicker = null;
@@ -544,7 +545,7 @@ function renderShell() {
   saveLastActive();
   const restoreSearchFocus = document.activeElement?.classList?.contains("conversation-search");
   app.className = `app-shell view-${state.view || "chat"} ${state.activePersona || state.activeGroupConversation ? "has-persona" : "no-persona"}`;
-  const children = [renderSidebar(), renderMain()];
+  const children = [renderSidebar(), renderMain(), renderNetworkBanner()];
   if (state.profileOpen) children.push(renderProfileModal());
   if (state.personaPanelOpen) children.push(renderPersonaModal());
   if (state.threadPanelOpen) children.push(renderThreadModal());
@@ -1492,6 +1493,16 @@ function renderGroupChat() {
     ]),
     state.groupSettingsOpen ? renderGroupSettingsModal(group) : null,
   ]);
+}
+
+function renderNetworkBanner() {
+  if (!state.networkOffline) return null;
+  return h("div", {
+    class: "network-banner",
+    role: "status",
+    "aria-live": "polite",
+    text: "当前离线。已打开的页面可以继续查看，发送消息需要恢复网络。",
+  });
 }
 
 function renderGroupSettingsModal(group) {
@@ -3749,6 +3760,7 @@ function resetClientState() {
     focusComposer: false,
     sending: false,
     sendingStartedAt: 0,
+    networkOffline: typeof navigator !== "undefined" && navigator.onLine === false,
   };
 }
 
@@ -3786,6 +3798,20 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden) {
     maybeRequestGroupAutonomousTurn();
   }
+});
+
+window.addEventListener("offline", () => {
+  state.networkOffline = true;
+  renderShell();
+});
+
+window.addEventListener("online", () => {
+  state.networkOffline = false;
+  renderShell();
+  loadMainData().then(() => {
+    renderShell();
+    scrollChat();
+  }).catch(() => {});
 });
 
 if ("serviceWorker" in navigator) {
