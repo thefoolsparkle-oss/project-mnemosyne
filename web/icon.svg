@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="忆界树">
+  <rect width="512" height="512" rx="112" fill="#f6f8fb"/>
+  <circle cx="256" cy="238" r="126" fill="#dbe7f7"/>
+  <path d="M257 110c54 38 83 80 86 128 4 67-43 123-86 164-44-41-90-97-86-164 3-48 32-90 86-128z" fill="#5f7db5"/>
+  <path d="M256 174v206" fill="none" stroke="#ffffff" stroke-width="26" stroke-linecap="round"/>
+  <path d="M256 255c-38-15-65-39-84-75" fill="none" stroke="#ffffff" stroke-width="22" stroke-linecap="round"/>
+  <path d="M256 295c42-16 73-44 93-86" fill="none" stroke="#ffffff" stroke-width="22" stroke-linecap="round"/>
+  <path d="M156 406h200" fill="none" stroke="#4f638d" stroke-width="24" stroke-linecap="round"/>
+</svg>

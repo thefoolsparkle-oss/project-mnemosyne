@@ -3711,6 +3711,10 @@ async function switchAccountInThisTab() {
 }
 
 function resetClientState() {
+  if (sendingTicker) {
+    clearInterval(sendingTicker);
+    sendingTicker = null;
+  }
   state = {
     user: null,
     profile: null,
@@ -3744,6 +3748,7 @@ function resetClientState() {
     conversationSearch: "",
     focusComposer: false,
     sending: false,
+    sendingStartedAt: 0,
   };
 }
 
@@ -3782,5 +3787,11 @@ document.addEventListener("visibilitychange", () => {
     maybeRequestGroupAutonomousTurn();
   }
 });
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  });
+}
 
 bootstrap();
