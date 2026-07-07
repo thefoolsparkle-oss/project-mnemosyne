@@ -754,10 +754,17 @@ def admin_expression_usage(
         "group": 0,
         "disabled_asset": 0,
         "medium_risk": 0,
+        "source_model": 0,
+        "source_selection_agent": 0,
+        "source_compat": 0,
+        "source_unknown": 0,
     }
     for item in usage_rows:
         scope = "group" if item.get("scope") == "group" else "single"
         summary[scope] += 1
+        source_kind = _expression_source_kind(item.get("source_text"))
+        item["source_kind"] = source_kind
+        summary[f"source_{source_kind}"] += 1
         if item.get("asset_enabled") is False:
             summary["disabled_asset"] += 1
         if item.get("risk_level") == "medium":
@@ -774,8 +781,10 @@ def admin_expression_usage(
                 "risk_level": item.get("risk_level") or "unknown",
                 "group": item.get("group") or "unknown",
                 "cooldown_turns": int(item.get("cooldown_turns") or 0),
+                "source_counts": {"model": 0, "selection_agent": 0, "compat": 0, "unknown": 0},
             }
         counts[key]["count"] += 1
+        counts[key]["source_counts"][source_kind] += 1
     sorted_counts = sorted(counts.values(), key=lambda item: (-int(item["count"]), str(item["tag"])))
     insights: list[dict[str, Any]] = []
     if summary["disabled_asset"]:
@@ -799,6 +808,15 @@ def admin_expression_usage(
                 "severity": "tune",
                 "text": f"{top['display_text']} 占最近统计窗口 {share:.0%}，可考虑提高冷却或改写用途说明。",
                 "tag": top["tag"],
+            })
+    selector_count = int(summary.get("source_selection_agent") or 0)
+    if selector_count >= 3 and summary["window"]:
+        selector_share = selector_count / max(1, int(summary["window"]))
+        if selector_share >= 0.5:
+            insights.append({
+                "kind": "selection_agent_high_share",
+                "severity": "tune",
+                "text": f"选择器补充占最近统计窗口 {selector_share:.0%}，可提高相关资源冷却或收紧场景触发。",
             })
     review_items = _expression_review_items(sorted_counts, summary)
     preference = {"enabled": True, "mode": "normal", "explicit": False}
@@ -842,6 +860,7 @@ def _expression_review_items(counts: list[dict[str, Any]], summary: dict[str, An
             "risk_level": item.get("risk_level") or "unknown",
             "group": item.get("group") or "unknown",
             "cooldown_turns": int(item.get("cooldown_turns") or 0),
+            "source_counts": item.get("source_counts") or {},
         }
         if item.get("asset_enabled") is False:
             items.append({
@@ -866,6 +885,18 @@ def _expression_review_items(counts: list[dict[str, Any]], summary: dict[str, An
                 "suggested_cooldown_turns": min(20, int(base["cooldown_turns"]) + 2),
                 "text": f"{base['display_text']} 占最近统计窗口 {share:.0%}，可提高冷却或改写用途说明。",
             })
+        source_counts = base.get("source_counts") or {}
+        selector_count = int(source_counts.get("selection_agent") or 0)
+        if selector_count >= 2 and count:
+            selector_share = selector_count / max(1, count)
+            if selector_share >= 0.5 and item.get("asset_enabled") is not False:
+                items.append({
+                    **base,
+                    "kind": "selection_agent_label",
+                    "severity": "tune",
+                    "suggested_cooldown_turns": min(20, int(base["cooldown_turns"]) + 1),
+                    "text": f"{base['display_text']} 主要由选择器补充（{selector_share:.0%}），可轻微提高冷却或收紧触发场景。",
+                })
     severity_order = {"tune": 0, "watch": 1}
     return sorted(items, key=lambda item: (severity_order.get(str(item.get("severity")), 9), -int(item.get("count") or 0), str(item.get("tag") or "")))[:8]
 
@@ -3581,6 +3612,17 @@ def _with_expression_asset_metadata(item: dict[str, Any], asset_map: dict[tuple[
     item["intensity"] = int(asset.get("intensity") or 0)
     item["cooldown_turns"] = int(asset.get("cooldown_turns") or 0)
     return item
+
+
+def _expression_source_kind(source_text: Any) -> str:
+    source = str(source_text or "").strip()
+    if source.startswith("selection_agent:"):
+        return "selection_agent"
+    if source.startswith("[[expression:"):
+        return "model"
+    if source.startswith("（") or source.startswith("("):
+        return "compat"
+    return "unknown"
 
 
 def _persona_list_item(persona: dict) -> dict:

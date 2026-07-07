@@ -390,17 +390,19 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     assert hidden_usage_item["risk_level"] == "low"
     assert hidden_usage_item["group"] == "support"
     assert hidden_usage_item["cooldown_turns"] == 4
+    assert hidden_usage_item["source_kind"] == "model"
+    assert usage["summary"]["source_model"] >= 1
     hidden_count = next(item for item in usage["counts"] if item["tag"] == "tone:轻声")
     assert hidden_count["asset_enabled"] is False
     assert hidden_count["display_text"] == "轻声"
     assert hidden_count["cooldown_turns"] == 4
+    assert hidden_count["source_counts"]["model"] >= 1
     server.admin_update_expression_asset(
         "tone",
         "轻声",
         server.ExpressionAssetUpdateRequest(enabled=True, admin_note="phase3 restore history"),
         {"id": user_id, "role": "admin"},
     )
-
     captured.clear()
     chat.call_llm_api = lambda messages, task="chat": (
         captured.setdefault("messages", messages) and "我还在。[[expression:mood:微笑]]"
@@ -441,6 +443,40 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
         client_message_id="phase3-expression-distinct",
     )
     assert distinct["expressions"][0]["label"] == "微笑"
+
+    ts = database.now_ts()
+    with database.get_db() as db:
+        for index in range(3):
+            message_id = int(
+                db.execute(
+                    """
+                    INSERT INTO messages (conversation_id, user_id, persona_id, role, content, created_at)
+                    VALUES (?, ?, ?, 'assistant', ?, ?)
+                    """,
+                    (conversation_id, user_id, persona_id, f"selector seeded {index}", ts + index),
+                ).lastrowid
+            )
+            db.execute(
+                """
+                INSERT INTO message_expressions (
+                    message_id, user_id, persona_id, conversation_id,
+                    expression_type, label, source_text, created_at
+                )
+                VALUES (?, ?, ?, ?, 'gesture', '点头', 'selection_agent:ordinary', ?)
+                """,
+                (message_id, user_id, persona_id, conversation_id, ts + index),
+            )
+    selector_usage = server.admin_expression_usage(
+        {"id": user_id, "role": "admin"},
+        target_user_id=user_id,
+        persona_id=persona_id,
+        limit=8,
+        usage_limit=8,
+    )
+    assert selector_usage["summary"]["source_selection_agent"] >= 3
+    selector_count = next(item for item in selector_usage["counts"] if item["tag"] == "gesture:点头")
+    assert selector_count["source_counts"]["selection_agent"] >= 3
+    assert any(item["kind"] == "selection_agent_label" for item in selector_usage["review_items"])
 
     assert chat._expression_preference_intent("以后别发表情了") == "disable"
     assert chat._expression_preference_intent("表情少一点") == "subtle"

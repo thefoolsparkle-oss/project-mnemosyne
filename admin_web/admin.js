@@ -335,6 +335,9 @@ function renderExpressionUsage(data) {
       h("span", { text: `群聊 ${summary.group || 0}` }),
       h("span", { text: `中风险 ${summary.medium_risk || 0}` }),
       h("span", { text: `已禁用历史 ${summary.disabled_asset || 0}` }),
+      h("span", { text: `模型 ${summary.source_model || 0}` }),
+      h("span", { text: `选择器 ${summary.source_selection_agent || 0}` }),
+      h("span", { text: `兼容 ${summary.source_compat || 0}` }),
     ]),
     insights.length
       ? h("div", { class: "expression-usage-insights" }, insights.map((item) => h("p", {
@@ -378,7 +381,7 @@ function renderExpressionReviewItems(items) {
       h("div", { class: "expression-review-main" }, [
         h("span", { class: `expression-asset-risk ${item.risk_level || "unknown"}`, text: item.risk_level || "unknown" }),
         h("strong", { text: `${item.display_text || item.label || item.tag} × ${item.count || 0}` }),
-        h("small", { text: `${item.group || "unknown"} / 占比 ${Math.round(Number(item.share || 0) * 100)}% / 冷却 ${item.cooldown_turns ?? 0} 轮` }),
+        h("small", { text: `${item.group || "unknown"} / 占比 ${Math.round(Number(item.share || 0) * 100)}% / 冷却 ${item.cooldown_turns ?? 0} 轮 / ${expressionSourceCountLabel(item.source_counts)}` }),
       ]),
       h("p", { text: item.text || "" }),
       h("div", { class: "expression-review-actions" }, [
@@ -882,6 +885,16 @@ function expressionSourceLabel(sourceText) {
   if (source.startsWith("[[expression:")) return "模型标签";
   if (source.startsWith("（") || source.startsWith("(")) return "括号兼容";
   return source ? "历史导入" : "未知";
+}
+
+function expressionSourceCountLabel(counts = {}) {
+  const parts = [
+    ["模型", counts.model],
+    ["选择器", counts.selection_agent],
+    ["兼容", counts.compat],
+    ["未知", counts.unknown],
+  ].filter(([, count]) => Number(count || 0) > 0);
+  return parts.length ? parts.map(([label, count]) => `${label}${count}`).join(" / ") : "来源暂无";
 }
 
 function renderEmpty() {
