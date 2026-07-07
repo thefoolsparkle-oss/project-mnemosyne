@@ -642,10 +642,10 @@ def db_chat(
         reply = call_llm_api(messages, task="chat")
     except LLMProviderError as exc:
         _finish_context_trace(trace_id, status="degraded", error_text=str(exc))
-        return _failed_reply_payload(conversation, persona_id, user_message_id, trace_id, stored_memories, layered, semantic_memories)
+        return _failed_reply_payload(conversation, persona_id, user_message_id, trace_id, stored_memories, layered, semantic_memories, exc)
     except Exception as exc:
         _finish_context_trace(trace_id, status="degraded", error_text=str(exc))
-        return _failed_reply_payload(conversation, persona_id, user_message_id, trace_id, stored_memories, layered, semantic_memories)
+        return _failed_reply_payload(conversation, persona_id, user_message_id, trace_id, stored_memories, layered, semantic_memories, exc)
 
     presentation = _extract_reply_presentation(reply)
     reply = presentation["content"]
@@ -725,8 +725,10 @@ def _failed_reply_payload(
     stored_memories: list,
     layered: list,
     semantic_memories: list,
+    exc: Exception | None = None,
 ) -> dict:
-    error_message = "回复暂时没有送达。可以稍后重试。"
+    error = _safe_reply_error(exc)
+    error_message = error["message"]
     with get_db() as db:
         db.execute(
             "UPDATE messages SET reply_status = 'failed', reply_error = ? WHERE id = ? AND role = 'user'",
@@ -745,8 +747,26 @@ def _failed_reply_payload(
         "stored_memories": stored_memories,
         "layered_memory": layered,
         "degraded": True,
+        "error_code": error["code"],
         "expressions": [],
     }
+
+
+def _safe_reply_error(exc: Exception | None) -> dict[str, str]:
+    text = str(exc or "")
+    lowered = text.lower()
+    status_code = getattr(exc, "status_code", None)
+    if status_code == 429 or "too many requests" in lowered or "rate limit" in lowered or "ratelimit" in lowered:
+        return {"code": "rate_limited", "message": "模型服务现在有点拥挤，稍后重试会更稳。"}
+    if status_code in {401, 403}:
+        return {"code": "auth_failed", "message": "模型服务鉴权没有通过，请在管理台检查 API Key 和模型路由。"}
+    if " is not set" in text or "api_key_env" in lowered or "api key" in lowered or "apikey" in lowered:
+        return {"code": "config_missing", "message": "模型服务配置缺少环境变量，请在管理台检查 API Key 和模型路由。"}
+    if status_code in {500, 502, 503, 504}:
+        return {"code": "provider_unavailable", "message": "模型服务暂时没有接上，这句话已经留在当前会话里，可以稍后重试。"}
+    if "timeout" in lowered or "timed out" in lowered or "read timed out" in lowered:
+        return {"code": "timeout", "message": "模型服务响应超时了，这句话已经留在当前会话里，可以稍后重试。"}
+    return {"code": "reply_unavailable", "message": "回复暂时没有送达。可以稍后重试。"}
 
 
 def _pending_reply_payload(conversation: dict, persona_id: int, user_message_id: int) -> dict:

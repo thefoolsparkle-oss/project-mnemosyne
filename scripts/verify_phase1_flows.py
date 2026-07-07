@@ -177,6 +177,8 @@ def verify_naming_and_restore(server, user_id: int) -> None:
 
 
 def verify_chat_failure_and_idempotency(chat, server, user_id: int, persona_id: int) -> None:
+    from app.llm_client import LLMProviderError
+
     disable_chat_side_effects(chat)
     ts = database.now_ts()
     with database.get_db() as db:
@@ -195,6 +197,7 @@ def verify_chat_failure_and_idempotency(chat, server, user_id: int, persona_id: 
     chat.call_llm_api = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("provider down"))
     failed = chat.db_chat(user_id, persona_id, "\u8fd8\u5728\u5417", conversation_id=target_id, client_message_id="msg-failed")
     assert failed["degraded"] is True and failed["assistant_message_id"] is None
+    assert failed["error_code"] == "reply_unavailable"
     listing = [
         item
         for item in server.conversations({"id": user_id})["conversations"]
@@ -216,6 +219,22 @@ def verify_chat_failure_and_idempotency(chat, server, user_id: int, persona_id: 
         ).fetchall()
     assert [item["role"] for item in stored] == ["user", "assistant"]
     assert stored[0]["reply_status"] == "answered"
+
+    chat.call_llm_api = lambda *args, **kwargs: (_ for _ in ()).throw(
+        LLMProviderError("MOONSHOT_API_KEY is not set, but config.yaml selects provider: kimi")
+    )
+    config_failed = chat.db_chat(user_id, persona_id, "配置是不是坏了", client_message_id="msg-config-failed")
+    assert config_failed["error_code"] == "config_missing"
+    assert "环境变量" in config_failed["error_message"]
+    config_messages = server.conversation_messages(config_failed["conversation_id"], {"id": user_id})["messages"]
+    assert config_messages[-1]["reply_error"] == config_failed["error_message"]
+
+    chat.call_llm_api = lambda *args, **kwargs: (_ for _ in ()).throw(
+        LLMProviderError("kimi request failed with status 429", status_code=429)
+    )
+    limited = chat.db_chat(user_id, persona_id, "再试一下", client_message_id="msg-rate-limited")
+    assert limited["error_code"] == "rate_limited"
+    assert "拥挤" in limited["error_message"]
 
     with database.get_db() as db:
         waiting_id = int(
