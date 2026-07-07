@@ -16,11 +16,41 @@ def main() -> None:
 
     original_db_path = database.DB_PATH
     original_load_config = llm.load_config
+    original_get_env = llm._get_env
+    original_post = llm.requests.post
     try:
         with tempfile.TemporaryDirectory() as tmp:
             database.DB_PATH = Path(tmp) / "llm_config.db"
             database.init_db()
 
+            captured: dict[str, str] = {}
+
+            class FakeResponse:
+                def raise_for_status(self) -> None:
+                    return None
+
+                def json(self) -> dict:
+                    return {"choices": [{"message": {"content": "ok"}}]}
+
+            def fake_post(url, **kwargs):
+                captured["url"] = str(url)
+                return FakeResponse()
+
+            llm._get_env = lambda name: "test-key" if name == "MOONSHOT_API_KEY" else None
+            llm.requests.post = fake_post
+            llm.load_config = lambda: {
+                "llm": {
+                    "provider": "kimi",
+                    "model": "moonshot-v1-auto",
+                    "api_key_env": "MOONSHOT_API_KEY",
+                },
+                "llm_routes": {},
+            }
+            assert llm.call_llm_api([{"role": "user", "content": "hello"}], task="chat") == "ok"
+            assert captured["url"] == "https://api.moonshot.cn/v1/chat/completions"
+
+            llm._get_env = original_get_env
+            llm.requests.post = original_post
             llm.load_config = lambda: {
                 "llm": {
                     "provider": "kimi",
@@ -85,6 +115,8 @@ def main() -> None:
             assert probe_health["last_error"] == "timeout"
     finally:
         llm.load_config = original_load_config
+        llm._get_env = original_get_env
+        llm.requests.post = original_post
         database.DB_PATH = original_db_path
 
     print("LLM config verification passed")

@@ -158,7 +158,7 @@ def _call_kimi(messages: List[Message], llm_config: dict) -> str:
         llm_config,
         provider_name="kimi",
         env_key="MOONSHOT_API_KEY",
-        default_base_url="https://api.moonshot.ai/v1",
+        default_base_url="https://api.moonshot.cn/v1",
         default_model="kimi-k2.6",
         include_temperature=False,
     )
