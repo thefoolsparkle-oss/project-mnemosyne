@@ -75,7 +75,10 @@ let state = {
   conversationSearch: "",
   focusComposer: false,
   sending: false,
+  sendingStartedAt: 0,
 };
+
+let sendingTicker = null;
 
 function tabSessionMode() {
   try {
@@ -2782,7 +2785,7 @@ function renderComposer() {
   const input = h("textarea", { rows: "1", maxlength: "8000", placeholder: text.messagePlaceholder });
   const button = h("button", { type: "submit", text: state.sending ? "等待" : text.send, disabled: state.sending ? "disabled" : null });
   const status = state.sending
-    ? h("small", { class: "composer-status", "aria-live": "polite", text: state.view === "group" ? "群聊正在接话..." : "正在等回复..." })
+    ? h("small", { class: composerStatusClass(), "aria-live": "polite", text: composerStatusText() })
     : null;
   const form = h("form", { class: "composer" }, [input, button, status]);
   input.value = loadDraft();
@@ -2887,11 +2890,51 @@ function autoResizeTextarea(input) {
   input.style.height = `${Math.max(44, nextHeight)}px`;
 }
 
+function startSending() {
+  state.sending = true;
+  state.sendingStartedAt = Date.now();
+  if (sendingTicker) clearInterval(sendingTicker);
+  sendingTicker = setInterval(() => {
+    if (!state.sending) {
+      clearInterval(sendingTicker);
+      sendingTicker = null;
+      return;
+    }
+    renderShell();
+  }, 5000);
+}
+
+function finishSending() {
+  state.sending = false;
+  state.sendingStartedAt = 0;
+  if (sendingTicker) {
+    clearInterval(sendingTicker);
+    sendingTicker = null;
+  }
+}
+
+function composerStatusText() {
+  if (!state.sending) return "";
+  const elapsed = state.sendingStartedAt ? Math.floor((Date.now() - state.sendingStartedAt) / 1000) : 0;
+  if (elapsed >= 45) return "等待时间较长。这句话已经送出，不会丢；如果失败会在原地给你重试。";
+  if (elapsed >= 25) return state.view === "group" ? "群聊模型响应偏慢，仍在等他们接上。" : "模型响应偏慢，仍在等回复。";
+  if (elapsed >= 8) return state.view === "group" ? "已发送，正在判断谁自然接话。" : "已发送，正在等 TA 回复。";
+  return state.view === "group" ? "群聊正在接话..." : "正在等回复...";
+}
+
+function composerStatusClass() {
+  if (!state.sendingStartedAt) return "composer-status";
+  const elapsed = Math.floor((Date.now() - state.sendingStartedAt) / 1000);
+  if (elapsed >= 45) return "composer-status stuck";
+  if (elapsed >= 25) return "composer-status slow";
+  return "composer-status";
+}
+
 async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId = null, clientMessageId = "" } = {}) {
   if (!content || !state.activePersona || state.sending) return;
   const requestPersonaId = Number(state.activePersona.id);
   const outgoingClientMessageId = clientMessageId || (retryUserMessageId ? "" : createClientMessageId());
-  state.sending = true;
+  startSending();
   if (retryLocalId) {
     state.messages = state.messages.filter((message) => message.local_id !== retryLocalId);
   }
@@ -2954,7 +2997,7 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
       });
     }
   }
-  state.sending = false;
+  finishSending();
   renderShell();
   scrollChat();
 }
@@ -2963,7 +3006,7 @@ async function sendGroupChatMessage(content, { retryLocalId = "", clientMessageI
   if (!content || !state.activeGroupConversationId || state.sending) return;
   const requestGroupId = Number(state.activeGroupConversationId);
   const outgoingClientMessageId = clientMessageId || createClientMessageId();
-  state.sending = true;
+  startSending();
   if (retryLocalId) {
     state.groupMessages = state.groupMessages.filter((message) => message.local_id !== retryLocalId);
   }
@@ -3024,7 +3067,7 @@ async function sendGroupChatMessage(content, { retryLocalId = "", clientMessageI
       });
     }
   }
-  state.sending = false;
+  finishSending();
   renderShell();
   scrollChat();
 }

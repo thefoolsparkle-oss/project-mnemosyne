@@ -1641,6 +1641,14 @@ small {
   font-size: 12px;
 }
 
+.composer-status.slow {
+  color: #7b5f2a;
+}
+
+.composer-status.stuck {
+  color: #a64c4c;
+}
+
 .profile-rail {
   display: grid;
   align-content: start;
