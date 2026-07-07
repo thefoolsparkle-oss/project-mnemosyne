@@ -14,6 +14,7 @@ venv/
 /data/
 /personas/*.json
 *.log
+*.pid
 
 # Downloaded helper binaries
 /tools/

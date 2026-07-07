@@ -8,6 +8,7 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $stdoutLog = Join-Path $projectRoot "uvicorn.local.out.log"
 $stderrLog = Join-Path $projectRoot "uvicorn.local.err.log"
+$pidFile = Join-Path $projectRoot "uvicorn.local.pid"
 
 function Test-PythonExecutable {
     param([string]$Candidate)
@@ -56,6 +57,7 @@ $process = Start-Process `
     -PassThru
 Write-Host "uvicorn started. ProcessId: $($process.Id)"
 Write-Host "Using Python: $Python"
+Set-Content -Path $pidFile -Value $process.Id -Encoding ASCII
 
 $ready = $false
 for ($i = 0; $i -lt 20; $i++) {

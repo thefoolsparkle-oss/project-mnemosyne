@@ -9,6 +9,7 @@ $toolsDir = Join-Path $projectRoot "tools"
 $cloudflared = Join-Path $toolsDir "cloudflared.exe"
 $stdoutLog = Join-Path $projectRoot "cloudflared.out.log"
 $stderrLog = Join-Path $projectRoot "cloudflared.err.log"
+$pidFile = Join-Path $projectRoot "cloudflared.pid"
 
 New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
 
@@ -37,6 +38,7 @@ $process = Start-Process `
     -PassThru
 
 Write-Host "cloudflared started. ProcessId: $($process.Id)"
+Set-Content -Path $pidFile -Value $process.Id -Encoding ASCII
 Write-Host "Waiting for the temporary URL..."
 
 $url = $null

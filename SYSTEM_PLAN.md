@@ -518,6 +518,7 @@ LLM 路由：
 - 跨城市/跨省设备访问不能靠局域网 IP，需要公网入口。
 - 临时远程测试可以用 Cloudflare Tunnel / ngrok / frp 这类隧道，把本机 `8001` 暴露成临时 HTTPS 地址。
 - 当前已有脚本 `scripts/start_remote_tunnel.ps1`，会自动下载 `tools/cloudflared.exe` 并打印 `https://*.trycloudflare.com` 临时访问地址。
+- 本地 uvicorn 与 cloudflared 启动脚本会写入 `*.pid`；`scripts/stop_project_services.ps1` 会优先按本项目 PID 文件停止服务，避免需要手工关黑屏终端窗口，也避免纯靠端口扫描漏停。
 - 当前临时隧道测试已跑通；链接会随 cloudflared 重启变化，不要把临时链接当固定入口。
 - 临时隧道适合作者自己或少数测试者体验，不适合作为成熟产品入口。
 - 不要把开发服务器裸露到公网。

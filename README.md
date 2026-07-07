@@ -128,7 +128,7 @@ py scripts\diagnose_llm_env.py
 
 - 对外项目名称统一为 `忆界树 / Project Mnemosyne`，GitHub 仓库名称使用 `project-mnemosyne`。
 - `data/` 包含本地 SQLite 数据库、聊天数据和上传图片，不进入版本控制。
-- `*.log`、`tools/` 下的临时隧道工具以及 `.env*` 本地密钥文件不进入版本控制。
+- `*.log`、`*.pid`、`tools/` 下的临时隧道工具以及 `.env*` 本地密钥文件不进入版本控制。
 - `config.yaml` 只保存模型路由和环境变量名，不应写入真实 API Key。
 
 ## 启动
@@ -474,6 +474,11 @@ py -m app.admin set-user 用户名
 ```
 
 脚本会自动下载 `tools\cloudflared.exe`，并把当前本机服务暴露成一个 `https://*.trycloudflare.com` 地址。
+本地服务和临时隧道脚本会写入 PID 文件，关闭时使用：
+
+```powershell
+.\scripts\stop_project_services.ps1
+```
 
 - 临时隧道只适合小范围测试，不适合当正式产品入口。
 - 不要把开发服务器裸露到公网。
