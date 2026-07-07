@@ -26,6 +26,7 @@ MAX_GROUP_MEMBERS = 6
 MAX_GROUP_MESSAGES_PER_TURN = 3
 MAX_AUTONOMOUS_GROUP_MESSAGES = 2
 MAX_PERSONA_MESSAGES_AFTER_USER = 4
+GROUP_PENDING_RETRY_SECONDS = 120
 GROUP_HISTORY_LIMIT = 24
 GROUP_AUTONOMOUS_MIN_IDLE_SECONDS = 45
 GROUP_AUTONOMOUS_USER_WINDOW_SECONDS = 600
@@ -343,6 +344,11 @@ def group_chat(
                 "degraded_reason": "",
                 "error_message": "",
             }
+        if (
+            str(existing_user_message.get("reply_status") or "") == "generating"
+            and ts - int(existing_user_message.get("created_at") or 0) < GROUP_PENDING_RETRY_SECONDS
+        ):
+            return _pending_group_reply_payload(group_conversation_id, user_message_id, existing_messages)
     else:
         with get_db() as db:
             cursor = db.execute(
@@ -359,6 +365,16 @@ def group_chat(
             db.execute(
                 "UPDATE group_conversations SET updated_at = ? WHERE id = ?",
                 (ts, group_conversation_id),
+            )
+    if existing_user_message:
+        with get_db() as db:
+            db.execute(
+                """
+                UPDATE group_messages
+                SET reply_status = 'generating', reply_error = ''
+                WHERE id = ? AND user_id = ? AND speaker_type = 'user'
+                """,
+                (user_message_id, user_id),
             )
 
     history = _recent_group_messages(user_id, group_conversation_id)
@@ -729,6 +745,21 @@ def _group_degraded_message(turn: dict) -> str:
     if turn.get("reason") == "turn_parse_failed":
         return "群聊刚才说乱了格式，这句话已经留在当前会话里。稍后再试一次。"
     return "群聊暂时没有成功接上，这句话已经留在当前会话里。稍后再试一次。"
+
+
+def _pending_group_reply_payload(group_conversation_id: int, user_message_id: int, messages: list[dict]) -> dict:
+    return {
+        "group_conversation_id": group_conversation_id,
+        "user_message_id": user_message_id,
+        "route": {"speakers": []},
+        "replies": [],
+        "messages": messages,
+        "degraded": True,
+        "pending": True,
+        "degraded_reason": "existing_generation_still_pending",
+        "error_code": "",
+        "error_message": "这句话已经送出，群聊回复还没有回来。稍后可以再试。",
+    }
 
 
 def _dedupe_group_planned_messages(messages: list[dict]) -> list[dict]:

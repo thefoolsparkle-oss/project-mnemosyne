@@ -317,6 +317,66 @@ def verify_group_chat_flow() -> None:
     assert len(restored["members"]) == 3
     assert persona_ids[2] in {int(member["persona_id"]) for member in restored["members"]}
 
+    pending_client_id = "group-chat-pending"
+    pending_ts = database.now_ts()
+    with database.get_db() as db:
+        pending_user_message_id = int(
+            db.execute(
+                """
+                INSERT INTO group_messages (
+                    group_conversation_id, user_id, speaker_type, content,
+                    reply_status, client_message_id, created_at
+                )
+                VALUES (?, ?, 'user', ?, 'generating', ?, ?)
+                """,
+                (group["id"], user_id, "还在吗？", pending_client_id, pending_ts),
+            ).lastrowid
+        )
+
+    def no_pending_retry_llm(messages, task="chat"):
+        raise AssertionError("fresh pending group retry should not call LLM")
+
+    group_chat.call_llm_api = no_pending_retry_llm
+    pending_retry = server.group_chat_endpoint(
+        server.GroupChatRequest(
+            group_conversation_id=group["id"],
+            message="还在吗？",
+            client_message_id=pending_client_id,
+        ),
+        {"id": user_id},
+    )
+    assert pending_retry["pending"] is True
+    assert pending_retry["degraded_reason"] == "existing_generation_still_pending"
+    assert pending_retry["messages"][0]["id"] == pending_user_message_id
+
+    with database.get_db() as db:
+        db.execute(
+            "UPDATE group_messages SET created_at = ? WHERE id = ?",
+            (database.now_ts() - 121, pending_user_message_id),
+        )
+
+    stale_retry_calls: list[str] = []
+
+    def stale_retry_llm(messages, task="chat"):
+        stale_retry_calls.append(task)
+        return json.dumps(
+            {"messages": [{"persona_id": persona_ids[0], "content": "在，刚才那句我接上了。", "reason": "stale retry"}]},
+            ensure_ascii=False,
+        )
+
+    group_chat.call_llm_api = stale_retry_llm
+    stale_retry = server.group_chat_endpoint(
+        server.GroupChatRequest(
+            group_conversation_id=group["id"],
+            message="还在吗？",
+            client_message_id=pending_client_id,
+        ),
+        {"id": user_id},
+    )
+    assert stale_retry_calls == ["group_chat"]
+    assert stale_retry["degraded"] is False
+    assert len(stale_retry["replies"]) == 1
+
     def duplicate_ack_llm(messages, task="chat"):
         assert task == "group_chat"
         return json.dumps(
