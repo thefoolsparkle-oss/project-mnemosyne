@@ -871,8 +871,8 @@ small {
 
 .group-settings-modal {
   width: min(430px, calc(100vw - 36px));
-  gap: 12px;
-  padding: 14px;
+  gap: 10px;
+  padding: 12px;
 }
 
 .group-settings-card summary {
@@ -936,15 +936,15 @@ small {
 
 .group-settings-members {
   display: grid;
-  gap: 6px;
+  gap: 5px;
   margin-top: 2px;
 }
 
 .group-member-strip {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  max-height: 112px;
+  gap: 5px;
+  max-height: 76px;
   overflow-y: auto;
   padding-right: 2px;
 }
@@ -952,8 +952,8 @@ small {
 .group-member-pill {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 7px 4px 4px;
+  gap: 5px;
+  padding: 3px 6px 3px 3px;
   border: 1px solid var(--line);
   border-radius: 999px;
   background: rgba(23, 28, 37, 0.03);
@@ -962,15 +962,27 @@ small {
 }
 
 .group-member-pill .avatar {
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   font-size: 10px;
+}
+
+.group-relation-details {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.group-relation-details summary {
+  cursor: pointer;
+  font-weight: 700;
 }
 
 .group-relation-list {
   display: grid;
   gap: 5px;
-  max-height: 108px;
+  max-height: 96px;
   overflow-y: auto;
   padding-right: 2px;
 }
@@ -1020,8 +1032,8 @@ small {
 .group-member-remove {
   display: grid;
   place-items: center;
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   border: 0;
   border-radius: 999px;
   background: transparent;

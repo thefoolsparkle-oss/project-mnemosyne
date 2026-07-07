@@ -1693,12 +1693,15 @@ function renderGroupRelationSummary(members) {
       text: "\u6210\u5458\u4e92\u76f8\u63a5\u8bdd\u540e\uff0c\u8fd9\u91cc\u4f1a\u663e\u793a\u7fa4\u5185\u5173\u7cfb\u72b6\u6001\u3002",
     });
   }
-  return h("div", { class: "group-relation-list" }, rows.map(({ name, relation }) => (
-    h("div", { class: `group-relation-row ${relation.status || "new"}` }, [
-      h("strong", { text: name }),
-      h("small", { text: groupRelationText(relation) }),
-    ])
-  )));
+  return h("details", { class: "group-relation-details" }, [
+    h("summary", { text: `关系状态 ${rows.length}` }),
+    h("div", { class: "group-relation-list" }, rows.map(({ name, relation }) => (
+      h("div", { class: `group-relation-row ${relation.status || "new"}` }, [
+        h("strong", { text: name }),
+        h("small", { text: groupRelationText(relation) }),
+      ])
+    ))),
+  ]);
 }
 
 function groupRelationText(relation) {
