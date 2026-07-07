@@ -455,6 +455,28 @@ small {
   font-size: 11px;
 }
 
+.expression-style-suggestions {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+}
+
+.expression-style-suggestions article {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid rgba(213, 183, 120, 0.35);
+  border-radius: 8px;
+  background: rgba(213, 183, 120, 0.08);
+}
+
+.expression-style-suggestions span {
+  color: var(--text);
+  font-size: 12px;
+}
+
 .expression-usage-tags {
   display: flex;
   flex-wrap: wrap;

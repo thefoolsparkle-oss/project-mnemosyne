@@ -852,6 +852,8 @@ def admin_expression_usage(
                 "text": f"选择器补充占最近统计窗口 {selector_share:.0%}，可提高相关资源冷却或收紧场景触发。",
             })
     review_items = _expression_review_items(sorted_counts, summary)
+    style_setting = persona_expression_style_setting(owner_id, persona_filter) if persona_filter else None
+    style_suggestions = _expression_style_suggestions(sorted_counts, summary, style_setting) if persona_filter else []
     preference = {"enabled": True, "mode": "normal", "explicit": False}
     if preference_row:
         row = dict_from_row(preference_row) or {}
@@ -865,7 +867,8 @@ def admin_expression_usage(
         }
     return {
         "preference": preference,
-        "style_setting": persona_expression_style_setting(owner_id, persona_filter) if persona_filter else None,
+        "style_setting": style_setting,
+        "style_suggestions": style_suggestions,
         "style_history": persona_expression_style_events(owner_id, persona_filter, limit=5) if persona_filter else [],
         "summary": summary,
         "insights": insights,
@@ -934,6 +937,53 @@ def _expression_review_items(counts: list[dict[str, Any]], summary: dict[str, An
                 })
     severity_order = {"tune": 0, "watch": 1}
     return sorted(items, key=lambda item: (severity_order.get(str(item.get("severity")), 9), -int(item.get("count") or 0), str(item.get("tag") or "")))[:8]
+
+
+def _expression_style_suggestions(
+    counts: list[dict[str, Any]],
+    summary: dict[str, Any],
+    current_setting: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    window = max(1, int(summary.get("window") or 0))
+    if window < 3:
+        return []
+    group_counts: dict[str, int] = {}
+    medium_labels: list[str] = []
+    for item in counts:
+        group = str(item.get("group") or "unknown")
+        group_counts[group] = group_counts.get(group, 0) + int(item.get("count") or 0)
+        if item.get("risk_level") == "medium":
+            medium_labels.append(str(item.get("label") or ""))
+    if not group_counts:
+        return []
+    top_group, top_count = max(group_counts.items(), key=lambda pair: pair[1])
+    share = top_count / window
+    if top_count < 3 or share < 0.5:
+        return []
+    mapping = {
+        "acknowledgement": ("restrained", ["acknowledgement", "support"]),
+        "support": ("warm", ["support", "warmth"]),
+        "care": ("warm", ["care", "support"]),
+        "warmth": ("playful", ["warmth", "acknowledgement"]),
+    }
+    if top_group not in mapping:
+        return []
+    style, preferred_groups = mapping[top_group]
+    avoid_labels = list(dict.fromkeys(label for label in medium_labels if label))[:3]
+    current_style = str((current_setting or {}).get("style") or "")
+    if current_style == style and (current_setting or {}).get("preferred_groups") == preferred_groups:
+        return []
+    return [
+        {
+            "kind": "dominant_group_style",
+            "style": style,
+            "preferred_groups": preferred_groups,
+            "avoid_labels": avoid_labels,
+            "group": top_group,
+            "share": round(share, 4),
+            "text": f"{top_group} 占最近表达 {share:.0%}，可将人格轻表达风格调为 {style} 并优先 {', '.join(preferred_groups)}。",
+        }
+    ]
 
 
 @app.post("/api/admin/expression-review/apply-cooldowns")

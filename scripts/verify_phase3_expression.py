@@ -501,7 +501,7 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
 
     ts = database.now_ts()
     with database.get_db() as db:
-        for index in range(3):
+        for index in range(5):
             message_id = int(
                 db.execute(
                     """
@@ -528,10 +528,12 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
         limit=8,
         usage_limit=8,
     )
-    assert selector_usage["summary"]["source_selection_agent"] >= 3
+    assert selector_usage["summary"]["source_selection_agent"] >= 5
     selector_count = next(item for item in selector_usage["counts"] if item["tag"] == "gesture:点头")
-    assert selector_count["source_counts"]["selection_agent"] >= 3
+    assert selector_count["source_counts"]["selection_agent"] >= 5
     assert any(item["kind"] == "selection_agent_label" for item in selector_usage["review_items"])
+    assert selector_usage["style_suggestions"][0]["style"] == "restrained"
+    assert "acknowledgement" in selector_usage["style_suggestions"][0]["preferred_groups"]
 
     assert chat._expression_preference_intent("以后别发表情了") == "disable"
     assert chat._expression_preference_intent("表情少一点") == "subtle"

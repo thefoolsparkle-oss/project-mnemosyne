@@ -326,6 +326,7 @@ function renderExpressionUsage(data) {
       h("strong", { text: `当前模式：${modeLabel}` }),
       h("small", { text: preference.explicit ? "用户已显式设置" : "默认" }),
       renderExpressionStyleSetting(data.style_setting),
+      renderExpressionStyleSuggestions(data.style_suggestions || []),
       renderExpressionStyleHistory(data.style_history || []),
     ]),
     assets.length
@@ -362,6 +363,22 @@ function renderExpressionUsage(data) {
     recent.length
       ? h("div", { class: "expression-usage-list" }, recent.slice(0, 8).map(renderExpressionUsageItem))
       : null,
+  ]);
+}
+
+function renderExpressionStyleSuggestions(items) {
+  if (!items.length) return null;
+  return h("div", { class: "expression-style-suggestions" }, [
+    h("small", { text: "风格建议" }),
+    ...items.slice(0, 3).map((item) => h("article", {}, [
+      h("span", { text: item.text || "" }),
+      h("button", {
+        type: "button",
+        class: "ghost compact",
+        text: "应用",
+        onclick: () => applyExpressionStyleSuggestion(item),
+      }),
+    ])),
   ]);
 }
 
@@ -412,6 +429,30 @@ async function editExpressionStyleSetting(setting) {
         preferred_groups: splitCsv(groups),
         avoid_labels: splitCsv(avoid),
         admin_note: note.trim(),
+      }),
+    });
+    state.expressionUsage = {
+      ...(state.expressionUsage || {}),
+      style_setting: data.style_setting,
+    };
+    await loadReview();
+  } catch (err) {
+    state.error = err.message;
+  }
+  render();
+}
+
+async function applyExpressionStyleSuggestion(item) {
+  state.error = "";
+  try {
+    const data = await api(`/api/admin/expression-style?target_user_id=${state.selectedUserId}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        persona_id: state.selectedPersonaId,
+        style: item.style || "",
+        preferred_groups: item.preferred_groups || [],
+        avoid_labels: item.avoid_labels || [],
+        admin_note: `应用风格建议：${item.text || item.kind || ""}`.slice(0, 500),
       }),
     });
     state.expressionUsage = {
