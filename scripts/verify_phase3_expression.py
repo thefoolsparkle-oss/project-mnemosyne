@@ -558,6 +558,15 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     assert profile_subtle["expression_preference"]["enabled"] is True
     assert profile_subtle["expression_preference"]["mode"] == "subtle"
     assert profile_subtle["expression_preference"]["explicit"] is True
+    profile_usage = server.admin_expression_usage(
+        {"id": user_id, "role": "admin"},
+        target_user_id=user_id,
+        persona_id=persona_id,
+        limit=4,
+        usage_limit=4,
+    )
+    assert profile_usage["preference_history"][0]["mode"] == "subtle"
+    assert profile_usage["preference_history"][0]["source"] == "profile_setting"
     policy = chat._recent_expression_policy(user_id, persona_id, conversation_id)
     assert policy["expression_preference"]["mode"] == "subtle"
     assert policy["subtle_mode"] is True
@@ -633,6 +642,16 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
         ).fetchone()
     assert int(row["enabled"]) == 0
     assert int(row["source_message_id"]) == disabled["user_message_id"]
+    chat_pref_usage = server.admin_expression_usage(
+        {"id": user_id, "role": "admin"},
+        target_user_id=user_id,
+        persona_id=persona_id,
+        limit=4,
+        usage_limit=4,
+    )
+    assert chat_pref_usage["preference_history"][0]["mode"] == "off"
+    assert chat_pref_usage["preference_history"][0]["source"] == "chat_intent"
+    assert int(chat_pref_usage["preference_history"][0]["source_message_id"]) == int(disabled["user_message_id"])
 
     captured.clear()
     chat.call_llm_api = lambda messages, task="chat": (
@@ -697,6 +716,15 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     assert int(row["enabled"]) == 1
     assert row["mode"] == "normal"
     assert int(row["source_message_id"]) == enabled["user_message_id"]
+    restored_pref_usage = server.admin_expression_usage(
+        {"id": user_id, "role": "admin"},
+        target_user_id=user_id,
+        persona_id=persona_id,
+        limit=4,
+        usage_limit=4,
+    )
+    assert restored_pref_usage["preference_history"][0]["mode"] == "normal"
+    assert restored_pref_usage["preference_history"][0]["source"] == "chat_intent"
 
     ts = database.now_ts()
     with database.get_db() as db:

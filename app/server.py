@@ -34,6 +34,7 @@ from .config import load_config
 from .database import dict_from_row, get_db, init_db, now_ts
 from .db_chat import db_chat, normalize_existing_assistant_messages
 from .expression_assets import active_expression_labels, expression_asset, expression_assets_public, update_expression_asset_setting
+from .expression_preferences import expression_preference_events, record_expression_preference_event
 from .expression_style import (
     persona_expression_style_events,
     persona_expression_style_setting,
@@ -876,6 +877,7 @@ def admin_expression_usage(
         }
     return {
         "preference": preference,
+        "preference_history": expression_preference_events(owner_id, persona_filter, limit=5) if persona_filter else [],
         "style_setting": style_setting,
         "style_suggestions": style_suggestions,
         "style_history": persona_expression_style_events(owner_id, persona_filter, limit=5) if persona_filter else [],
@@ -2889,6 +2891,12 @@ def update_persona_expression_preference(
             """,
             (user_id, persona_id, enabled, mode, ts),
         )
+    record_expression_preference_event(
+        user_id,
+        persona_id,
+        mode,
+        source="profile_setting",
+    )
     return {
         "persona_id": persona_id,
         "expression_preference": _expression_preference_public(user_id, persona_id),

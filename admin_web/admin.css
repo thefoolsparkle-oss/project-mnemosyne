@@ -450,7 +450,8 @@ small {
   font-size: 12px;
 }
 
-.expression-style-history {
+.expression-style-history,
+.expression-preference-history {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
@@ -458,7 +459,8 @@ small {
   color: var(--muted);
 }
 
-.expression-style-history span {
+.expression-style-history span,
+.expression-preference-history span {
   padding: 3px 8px;
   border: 1px solid var(--line);
   border-radius: 999px;

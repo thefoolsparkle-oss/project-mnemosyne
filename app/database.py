@@ -231,6 +231,19 @@ def init_db() -> None:
                 FOREIGN KEY (source_message_id) REFERENCES messages(id) ON DELETE SET NULL
             );
 
+            CREATE TABLE IF NOT EXISTS expression_preference_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                persona_id INTEGER NOT NULL,
+                mode TEXT NOT NULL DEFAULT 'normal',
+                source TEXT NOT NULL DEFAULT '',
+                source_message_id INTEGER,
+                created_at INTEGER NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE CASCADE,
+                FOREIGN KEY (source_message_id) REFERENCES messages(id) ON DELETE SET NULL
+            );
+
             CREATE TABLE IF NOT EXISTS expression_asset_settings (
                 expression_type TEXT NOT NULL,
                 label TEXT NOT NULL,
@@ -709,6 +722,8 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_message_expressions_message_id ON message_expressions(message_id);
             CREATE INDEX IF NOT EXISTS idx_expression_preferences_scope
                 ON expression_preferences(user_id, persona_id);
+            CREATE INDEX IF NOT EXISTS idx_expression_preference_events_scope
+                ON expression_preference_events(user_id, persona_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_expression_asset_settings_enabled
                 ON expression_asset_settings(enabled);
             CREATE INDEX IF NOT EXISTS idx_expression_asset_events_scope

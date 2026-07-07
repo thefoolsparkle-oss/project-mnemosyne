@@ -14,6 +14,7 @@ from .expression_assets import (
     expression_asset,
     expression_protocol_prompt,
 )
+from .expression_preferences import record_expression_preference_event
 from .expression_style import persona_expression_style_context
 from .identity import IDENTITY_REPLACEMENTS, scrub_identity_obj, scrub_identity_text
 from .layered_memory import layered_memory_prompt, recall_layered_memory, state_prompt, summary_prompt
@@ -978,6 +979,13 @@ def _maybe_update_expression_preference_from_chat(
             """,
             (user_id, persona_id, enabled, mode, source_message_id, ts),
         )
+    record_expression_preference_event(
+        user_id,
+        persona_id,
+        mode,
+        source="chat_intent",
+        source_message_id=source_message_id,
+    )
     return {
         "intent": intent,
         "enabled": bool(enabled),

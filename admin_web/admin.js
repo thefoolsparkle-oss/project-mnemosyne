@@ -329,6 +329,7 @@ function renderExpressionUsage(data) {
     h("div", { class: "expression-usage-head" }, [
       h("strong", { text: `当前模式：${modeLabel}` }),
       h("small", { text: preference.explicit ? "用户已显式设置" : "默认" }),
+      renderExpressionPreferenceHistory(data.preference_history || []),
       renderExpressionStyleSetting(data.style_setting),
       renderExpressionStyleSuggestions(data.style_suggestions || []),
       renderExpressionStyleHistory(data.style_history || []),
@@ -370,6 +371,18 @@ function renderExpressionUsage(data) {
     recent.length
       ? h("div", { class: "expression-usage-list" }, recent.slice(0, 8).map(renderExpressionUsageItem))
       : null,
+  ]);
+}
+
+function renderExpressionPreferenceHistory(items) {
+  if (!items.length) return null;
+  const labels = { off: "关闭", subtle: "克制", normal: "正常" };
+  const sources = { chat_intent: "聊天", profile_setting: "资料页" };
+  return h("div", { class: "expression-preference-history" }, [
+    h("small", { text: "最近偏好" }),
+    ...items.slice(0, 4).map((item) => h("span", {
+      text: `${labels[item.mode] || item.mode || "正常"} · ${sources[item.source] || item.source || "未知"}`,
+    })),
   ]);
 }
 
