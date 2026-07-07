@@ -13,6 +13,7 @@ from .db_chat import (
     _extract_reply_presentation,
     _persona_expression_style_context,
     _safe_context,
+    _safe_reply_error,
     get_persona_for_user,
 )
 from .expression_assets import active_expression_labels
@@ -402,6 +403,7 @@ def group_chat(
         "messages": [*_messages_for_ids(user_id, [user_message_id]), *replies],
         "degraded": degraded,
         "degraded_reason": str(turn.get("reason") or "") if degraded else "",
+        "error_code": str(turn.get("error_code") or "") if degraded else "",
         "error_message": error_message,
     }
 
@@ -490,6 +492,7 @@ def autonomous_group_turn(
         "reason": "quiet" if not replies and not degraded else "",
         "degraded": degraded,
         "degraded_reason": str(turn.get("reason") or "") if degraded else "",
+        "error_code": str(turn.get("error_code") or "") if degraded else "",
         "error_message": _group_degraded_message(turn) if degraded else "",
     }
 
@@ -545,8 +548,9 @@ def _generate_group_turn(
     ]
     try:
         raw = call_llm_api(messages, task="group_chat")
-    except LLMProviderError:
-        return {"messages": [], "degraded": True, "reason": "turn_unavailable"}
+    except LLMProviderError as exc:
+        safe_error = _safe_reply_error(exc)
+        return {"messages": [], "degraded": True, "reason": "turn_unavailable", "error_code": safe_error["code"], "safe_error_message": safe_error["message"]}
     parsed = _parse_route_json(raw)
     valid_ids = {int(member["persona_id"]) for member in members}
     planned: list[dict] = []
@@ -621,8 +625,9 @@ def _generate_group_autonomous_turn(
     ]
     try:
         raw = call_llm_api(messages, task="group_chat")
-    except LLMProviderError:
-        return {"messages": [], "degraded": True, "reason": "turn_unavailable"}
+    except LLMProviderError as exc:
+        safe_error = _safe_reply_error(exc)
+        return {"messages": [], "degraded": True, "reason": "turn_unavailable", "error_code": safe_error["code"], "safe_error_message": safe_error["message"]}
     parsed = _parse_route_json(raw)
     valid_ids = {int(member["persona_id"]) for member in members}
     planned: list[dict] = []
@@ -718,6 +723,9 @@ def _group_member_memory_context(user_id: int, persona_id: int, query: str) -> d
 
 
 def _group_degraded_message(turn: dict) -> str:
+    safe_message = str(turn.get("safe_error_message") or "").strip()
+    if safe_message:
+        return safe_message.replace("回复", "群聊回复", 1)
     if turn.get("reason") == "turn_parse_failed":
         return "群聊刚才说乱了格式，这句话已经留在当前会话里。稍后再试一次。"
     return "群聊暂时没有成功接上，这句话已经留在当前会话里。稍后再试一次。"

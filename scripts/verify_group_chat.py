@@ -344,7 +344,9 @@ def verify_group_chat_flow() -> None:
     assert fallback_calls == ["turn"]
     assert fallback["degraded"] is True
     assert fallback["replies"] == []
+    assert fallback["error_code"] == "provider_unavailable"
     assert fallback["error_message"]
+    assert "模型服务" in fallback["error_message"]
     assert len(fallback["messages"]) == 1
     assert fallback["messages"][0]["speaker_type"] == "user"
     assert fallback["messages"][0]["reply_status"] == "error"
