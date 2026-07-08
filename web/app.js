@@ -627,6 +627,8 @@ function renderUserEntry() {
 
 function renderProfileModal() {
   const profile = state.profile || {};
+  const preferences = profile.preferences || {};
+  const proactive = preferences.proactive_contact || {};
   const birthday = parseBirthday(profile.birthday);
   const nickname = h("input", { name: "nickname", value: profile.nickname || "" });
   const avatarFile = h("input", { name: "avatar_file", type: "file", accept: "image/png,image/jpeg,image/webp,image/gif" });
@@ -637,6 +639,11 @@ function renderProfileModal() {
   const day = selectControl(["", ...rangeOptions(1, 31)], birthday.day, ["日", ...rangeOptions(1, 31).map((item) => `${item}日`)]);
   const signature = h("input", { name: "signature", value: profile.signature || "" });
   const bio = h("textarea", { name: "bio", rows: "4", maxlength: "1000", placeholder: "简单写一点关于你自己的信息" }, profile.bio || "");
+  const proactiveEnabled = h("input", { type: "checkbox" });
+  proactiveEnabled.checked = Boolean(proactive.enabled);
+  const proactiveMaxPerDay = selectControl(["1", "2", "3"], String(proactive.max_per_day || 1), ["1", "2", "3"]);
+  const proactiveQuietStart = h("input", { type: "time", value: proactive.quiet_start || "22:00" });
+  const proactiveQuietEnd = h("input", { type: "time", value: proactive.quiet_end || "09:00" });
   const status = h("small", { class: "save-status" });
 
   const syncDays = () => {
@@ -692,6 +699,16 @@ function renderProfileModal() {
                 birthday: buildBirthday(year.value, month.value, day.value),
                 signature: signature.value,
                 bio: bio.value,
+                preferences: {
+                  ...preferences,
+                  proactive_contact: {
+                    ...(proactive || {}),
+                    enabled: proactiveEnabled.checked,
+                    max_per_day: Number(proactiveMaxPerDay.value || 1),
+                    quiet_start: proactiveQuietStart.value,
+                    quiet_end: proactiveQuietEnd.value,
+                  },
+                },
               }),
             });
             state.profile = data.profile;
@@ -709,6 +726,20 @@ function renderProfileModal() {
         h("label", {}, ["生日", h("div", { class: "birthday-selects" }, [year, month, day])]),
         h("label", {}, [text.signature, signature]),
         h("label", {}, ["简介", bio]),
+        h("section", { class: "profile-consent" }, [
+          h("label", { class: "checkbox-row" }, [
+            proactiveEnabled,
+            h("span", {}, [
+              h("strong", { text: "\u5141\u8bb8 TA \u5728\u5408\u9002\u65f6\u5019\u4e3b\u52a8\u53d1\u6765\u7ad9\u5185\u6d88\u606f" }),
+              h("small", { text: "\u7b2c\u4e00\u7248\u53ea\u8bb0\u5f55\u8bb8\u53ef\uff0c\u540e\u7eed\u4ecd\u4f1a\u7ecf\u8fc7\u65f6\u673a\u3001\u8bb0\u5fc6\u4f9d\u636e\u548c\u98ce\u9669\u5ba1\u67e5\u3002" }),
+            ]),
+          ]),
+          h("div", { class: "profile-consent-grid" }, [
+            h("label", {}, ["\u6bcf\u5929\u6700\u591a", proactiveMaxPerDay]),
+            h("label", {}, ["\u5b89\u9759\u5f00\u59cb", proactiveQuietStart]),
+            h("label", {}, ["\u5b89\u9759\u7ed3\u675f", proactiveQuietEnd]),
+          ]),
+        ]),
         h("div", { class: "actions modal-actions" }, [
           h("button", { type: "submit", text: text.save }),
           h("button", { type: "button", class: "ghost", text: "取消", onclick: close }),

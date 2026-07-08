@@ -340,6 +340,40 @@ def verify_tab_scoped_login(server, auth) -> None:
     assert auth.current_user(session_token=cookie_token, authorization=None)["username"] == "cookie_user"
 
 
+def verify_profile_proactive_preferences(server, user_id: int) -> None:
+    user = {"id": user_id}
+    profile = server.profile(user)["profile"]
+    proactive = profile["preferences"]["proactive_contact"]
+    assert proactive["enabled"] is False
+    assert proactive["max_per_day"] == 1
+    assert proactive["quiet_start"] == "22:00"
+    assert proactive["quiet_end"] == "09:00"
+
+    updated = server.update_profile(
+        server.ProfileUpdateRequest(
+            nickname="\u6708",
+            preferences={
+                "theme": "quiet",
+                "proactive_contact": {
+                    "enabled": True,
+                    "max_per_day": 99,
+                    "quiet_start": "25:99",
+                    "quiet_end": "08:30",
+                    "allowed_types": ["followup", "unknown", "care"],
+                },
+            },
+        ),
+        user,
+    )["profile"]
+    assert updated["preferences"]["theme"] == "quiet"
+    proactive = updated["preferences"]["proactive_contact"]
+    assert proactive["enabled"] is True
+    assert proactive["max_per_day"] == 3
+    assert proactive["quiet_start"] == "22:00"
+    assert proactive["quiet_end"] == "08:30"
+    assert proactive["allowed_types"] == ["followup", "care"]
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         database.DB_PATH = Path(tmp) / "phase1.db"
@@ -357,6 +391,7 @@ def main() -> None:
         verify_chat_failure_and_idempotency(chat, server, user_id, persona_id)
         verify_chat_defers_summary_refresh(chat, server, user_id, persona_id)
         verify_local_avatar_generation(server, user_id, persona_id)
+        verify_profile_proactive_preferences(server, user_id)
         verify_tab_scoped_login(server, auth)
     print("Phase 1 ordinary-user flow verification passed")
 
