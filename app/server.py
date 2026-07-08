@@ -948,10 +948,21 @@ def admin_expression_usage(
             "severity": "tune",
             "text": "最近轻表达偏好有多次切换，运行时已收紧非安慰场景的自动补标签；建议先观察用户对频率的真实反应。",
         })
+    feedback_signal = _expression_feedback_signal(preference_history, summary)
+    if feedback_signal.get("negative") and feedback_signal.get("negative") >= feedback_signal.get("positive"):
+        insights.append({
+            "kind": "expression_negative_feedback",
+            "severity": "tune",
+            "text": (
+                f"最近轻表达负反馈 {feedback_signal['negative']} 次，"
+                f"主导场景为 {feedback_signal['dominant_scene'] or '未知'}；优先降低非安慰场景触发。"
+            ),
+        })
     return {
         "preference": preference,
         "preference_history": preference_history,
         "preference_feedback": preference_feedback,
+        "feedback_signal": feedback_signal,
         "style_setting": style_setting,
         "style_suggestions": style_suggestions,
         "style_history": persona_expression_style_events(owner_id, persona_filter, limit=5) if persona_filter else [],
@@ -961,6 +972,29 @@ def admin_expression_usage(
         "counts": sorted_counts,
         "review_items": review_items,
         "counted": len(usage_rows),
+    }
+
+
+def _expression_feedback_signal(preference_history: list[dict[str, Any]], summary: dict[str, Any]) -> dict[str, Any]:
+    positive = sum(1 for item in preference_history if item.get("mode") == "normal")
+    negative = sum(1 for item in preference_history if item.get("mode") in {"off", "subtle"})
+    total = max(1, int(summary.get("window") or 0))
+    scene_counts = {
+        "support_needed": int(summary.get("scene_support_needed") or 0),
+        "playful": int(summary.get("scene_playful") or 0),
+        "ordinary": int(summary.get("scene_ordinary") or 0),
+        "unknown": int(summary.get("scene_unknown") or 0),
+    }
+    source_selection_agent = int(summary.get("source_selection_agent") or 0)
+    dominant_scene = max(scene_counts.items(), key=lambda item: item[1])[0] if any(scene_counts.values()) else ""
+    return {
+        "positive": positive,
+        "negative": negative,
+        "net": positive - negative,
+        "recent_modes": [str(item.get("mode") or "") for item in preference_history if item.get("mode")],
+        "dominant_scene": dominant_scene,
+        "scene_counts": scene_counts,
+        "selection_agent_share": round(source_selection_agent / total, 4),
     }
 
 

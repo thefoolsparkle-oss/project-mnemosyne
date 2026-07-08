@@ -334,6 +334,7 @@ function renderExpressionUsage(data) {
   const counts = Array.isArray(data.counts) ? data.counts : [];
   const recent = Array.isArray(data.recent) ? data.recent : [];
   const summary = data.summary || {};
+  const feedbackSignal = data.feedback_signal || {};
   const insights = Array.isArray(data.insights) ? data.insights : [];
   const reviewItems = Array.isArray(data.review_items) ? data.review_items : [];
   return h("div", { class: "expression-usage-panel" }, [
@@ -360,6 +361,10 @@ function renderExpressionUsage(data) {
       h("span", { text: `安慰场景 ${summary.scene_support_needed || 0}` }),
       h("span", { text: `玩笑场景 ${summary.scene_playful || 0}` }),
       h("span", { text: `普通场景 ${summary.scene_ordinary || 0}` }),
+      h("span", { text: `正反馈 ${feedbackSignal.positive || 0}` }),
+      h("span", { text: `负反馈 ${feedbackSignal.negative || 0}` }),
+      h("span", { text: `净值 ${feedbackSignal.net || 0}` }),
+      h("span", { text: `主导场景 ${expressionSceneLabel(feedbackSignal.dominant_scene)}` }),
     ]),
     insights.length
       ? h("div", { class: "expression-usage-insights" }, insights.map((item) => h("p", {

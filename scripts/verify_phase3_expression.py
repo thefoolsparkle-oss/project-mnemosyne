@@ -783,7 +783,12 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     assert restored_pref_usage["preference_history"][0]["source"] == "chat_intent"
     assert restored_pref_usage["preference_feedback"]["churn"] is True
     assert restored_pref_usage["preference_feedback"]["change_count"] >= 2
+    assert restored_pref_usage["feedback_signal"]["positive"] >= 1
+    assert restored_pref_usage["feedback_signal"]["negative"] >= 2
+    assert restored_pref_usage["feedback_signal"]["net"] <= -1
+    assert "scene_counts" in restored_pref_usage["feedback_signal"]
     assert any(item["kind"] == "preference_changes" for item in restored_pref_usage["insights"])
+    assert any(item["kind"] == "expression_negative_feedback" for item in restored_pref_usage["insights"])
     assert any("运行时已收紧" in item["text"] for item in restored_pref_usage["insights"])
     churn_policy = chat._recent_expression_policy(user_id, persona_id, conversation_id)
     assert churn_policy["preference_churn"] is True
