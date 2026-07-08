@@ -1762,6 +1762,8 @@ function renderProactiveContactReview() {
   const candidates = Array.isArray(data.candidates) ? data.candidates : [];
   const events = Array.isArray(state.proactiveContactEvents) ? state.proactiveContactEvents : [];
   const summary = state.proactiveContactSummary || {};
+  const feedbackPolicy = data.feedback_policy || {};
+  const suppressedTypes = Array.isArray(feedbackPolicy.suppressed_types) ? feedbackPolicy.suppressed_types : [];
   const status = data.allowed_now
     ? "\u53ef\u5728\u5f53\u524d\u65f6\u6bb5\u5019\u9009"
     : (
@@ -1783,6 +1785,7 @@ function renderProactiveContactReview() {
       h("span", { text: `dismissed ${Number(summary.dismissed || 0)}` }),
       h("span", { text: `reply ${Math.round(Number(summary.reply_rate || 0) * 100)}%` }),
       h("span", { text: `dismiss ${Math.round(Number(summary.dismiss_rate || 0) * 100)}%` }),
+      h("span", { text: `suppressed ${suppressedTypes.length ? suppressedTypes.join(", ") : "-"}` }),
     ]),
     candidates.length
       ? h("div", { class: "proactive-review-list" }, candidates.map((item) => h("article", { class: "proactive-review-item" }, [

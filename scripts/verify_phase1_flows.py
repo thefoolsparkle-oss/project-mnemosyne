@@ -575,6 +575,20 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
     assert admin_event_report["summary"]["replied"] == 1
     assert admin_event_report["summary"]["reply_rate"] == 1
     assert admin_event_report["summary"]["dismiss_rate"] == 1
+    for _ in range(2):
+        server.record_proactive_contact_event_endpoint(
+            server.ProactiveContactEventRequest(
+                event_type="candidate_dismissed",
+                conversation_id=care_conversation_id,
+                persona_id=persona_id,
+                candidate_type="interest",
+                detail={"reason": "not_relevant"},
+            ),
+            user,
+        )
+    feedback_policy = proactive_contact.proactive_contact_feedback_policy(user_id)
+    assert "interest" in feedback_policy["suppressed_types"]
+    assert feedback_policy["reasons"]["interest"] == "recent_dismissals_without_replies"
 
     server.update_profile(
         server.ProfileUpdateRequest(

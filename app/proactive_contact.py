@@ -79,11 +79,14 @@ def proactive_contact_candidates(user_id: int, *, at_ts: int | None = None, limi
         allowed_now = False
         blocked_reason = "daily_limit"
     allowed_types = set(settings.get("allowed_types") or [])
+    feedback_policy = proactive_contact_feedback_policy(user_id)
+    suppressed_types = set(feedback_policy.get("suppressed_types") or [])
     handled_today = _handled_candidates_today(user_id, ts)
     candidates = [
         item
         for item in candidates
         if str(item.get("type") or "") in allowed_types
+        and str(item.get("type") or "") not in suppressed_types
         and (int(item.get("conversation_id") or 0), str(item.get("type") or "")) not in handled_today
     ]
     if blocked_reason == "daily_limit":
@@ -97,6 +100,7 @@ def proactive_contact_candidates(user_id: int, *, at_ts: int | None = None, limi
         "blocked_reason": blocked_reason,
         "usage_today": usage_today,
         "remaining_today": remaining_today,
+        "feedback_policy": feedback_policy,
         "candidates": candidates if settings.get("enabled") else [],
     }
 
@@ -243,6 +247,24 @@ def proactive_contact_event_summary(user_id: int, *, days: int = 30) -> dict[str
         "dismissed": dismissed,
         "reply_rate": round(replied / opened, 3) if opened else 0,
         "dismiss_rate": round(dismissed / opened, 3) if opened else 0,
+    }
+
+
+def proactive_contact_feedback_policy(user_id: int, *, days: int = 30) -> dict[str, Any]:
+    summary = proactive_contact_event_summary(user_id, days=days)
+    suppressed_types = []
+    reasons: dict[str, str] = {}
+    for candidate_type, counts in (summary.get("by_type") or {}).items():
+        dismissed = int(counts.get("candidate_dismissed") or 0)
+        replied = int(counts.get("candidate_replied") or 0)
+        opened = int(counts.get("candidate_opened") or 0) + int(counts.get("candidate_seen") or 0)
+        if dismissed >= 2 and replied == 0 and dismissed >= opened:
+            suppressed_types.append(str(candidate_type))
+            reasons[str(candidate_type)] = "recent_dismissals_without_replies"
+    return {
+        "window_days": int(summary.get("window_days") or days),
+        "suppressed_types": sorted(suppressed_types),
+        "reasons": reasons,
     }
 
 
