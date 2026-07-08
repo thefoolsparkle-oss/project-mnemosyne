@@ -537,6 +537,8 @@ function renderExpressionReviewItems(items) {
 function renderExpressionAssetCatalog(assets) {
   const counts = {
     all: assets.length,
+    paused: assets.filter((asset) => asset.lifecycle_status === "paused").length,
+    archived: assets.filter((asset) => asset.lifecycle_status === "archived").length,
     pending: assets.filter((asset) => asset.media_url && asset.media_review_status === "pending").length,
     rejected: assets.filter((asset) => asset.media_url && asset.media_review_status === "rejected").length,
     approved: assets.filter((asset) => asset.media_url && asset.media_review_status === "approved").length,
@@ -547,6 +549,8 @@ function renderExpressionAssetCatalog(assets) {
       if (filter === "pending") return asset.media_url && asset.media_review_status === "pending";
       if (filter === "rejected") return asset.media_url && asset.media_review_status === "rejected";
       if (filter === "approved") return asset.media_url && asset.media_review_status === "approved";
+      if (filter === "paused") return asset.lifecycle_status === "paused";
+      if (filter === "archived") return asset.lifecycle_status === "archived";
       return true;
     })
     .slice()
@@ -573,6 +577,8 @@ function renderExpressionAssetCatalog(assets) {
       h("div", { class: "expression-asset-filter" }, [
         ...[
           ["all", `全部 ${counts.all}`],
+          ["paused", `暂停 ${counts.paused}`],
+          ["archived", `归档 ${counts.archived}`],
           ["pending", `待审 ${counts.pending}`],
           ["rejected", `驳回 ${counts.rejected}`],
           ["approved", `已通过 ${counts.approved}`],
@@ -600,8 +606,10 @@ function renderExpressionAssetCatalog(assets) {
 function expressionAssetReviewRank(asset) {
   if (asset.media_url && asset.media_review_status === "pending") return 0;
   if (asset.media_url && asset.media_review_status === "rejected") return 1;
-  if (asset.media_url && asset.media_review_status === "approved") return 2;
-  return 3;
+  if (asset.lifecycle_status === "paused") return 2;
+  if (asset.lifecycle_status === "archived") return 3;
+  if (asset.media_url && asset.media_review_status === "approved") return 4;
+  return 5;
 }
 
 function renderExpressionAsset(asset) {
