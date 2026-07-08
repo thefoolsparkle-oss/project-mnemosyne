@@ -511,6 +511,18 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
     assert dismissed_preview["allowed_now"] is True
     assert dismissed_preview["usage_today"] == 1
     assert dismissed_preview["candidates"] == []
+    reply_event = server.record_proactive_contact_event_endpoint(
+        server.ProactiveContactEventRequest(
+            event_type="candidate_replied",
+            conversation_id=care_conversation_id,
+            persona_id=persona_id,
+            candidate_type="care",
+            detail={"user_message_id": 123},
+        ),
+        user,
+    )["event"]
+    assert reply_event["event_type"] == "candidate_replied"
+    assert server.admin_proactive_contact_events({"id": user_id, "role": "admin"}, target_user_id=user_id, limit=1)["events"][0]["id"] == reply_event["id"]
 
     server.update_profile(
         server.ProfileUpdateRequest(

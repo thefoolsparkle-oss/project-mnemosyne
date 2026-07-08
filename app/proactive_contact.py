@@ -9,7 +9,7 @@ from .database import dict_from_row, get_db, now_ts
 
 
 PROACTIVE_CONTACT_TYPES = {"followup", "care", "reminder", "interest"}
-PROACTIVE_CONTACT_EVENT_TYPES = {"candidate_opened", "candidate_seen", "candidate_dismissed"}
+PROACTIVE_CONTACT_EVENT_TYPES = {"candidate_opened", "candidate_seen", "candidate_dismissed", "candidate_replied"}
 DEFAULT_PROACTIVE_CONTACT = {
     "enabled": False,
     "max_per_day": 1,

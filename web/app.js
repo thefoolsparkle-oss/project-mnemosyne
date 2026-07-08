@@ -58,6 +58,7 @@ let state = {
   groupConversations: [],
   archivedGroupConversations: [],
   proactiveContact: null,
+  proactiveContactReplyCandidate: null,
   activePersona: null,
   activeConversationId: null,
   activeGroupConversationId: null,
@@ -696,6 +697,12 @@ async function openProactiveCandidate(item) {
     console.warn("proactive contact event failed", err);
   }
   await openConversationItem(conversation);
+  state.proactiveContactReplyCandidate = {
+    conversation_id: item.conversation_id,
+    persona_id: item.persona_id,
+    candidate_type: item.type || "",
+    reason: item.reason || "",
+  };
 }
 
 async function dismissProactiveCandidate(item) {
@@ -719,6 +726,29 @@ async function dismissProactiveCandidate(item) {
     });
   } catch (err) {
     console.warn("proactive contact dismissal failed", err);
+  }
+}
+
+async function recordProactiveCandidateReply(conversationId, userMessageId) {
+  const pending = state.proactiveContactReplyCandidate;
+  if (!pending || Number(pending.conversation_id) !== Number(conversationId)) return;
+  state.proactiveContactReplyCandidate = null;
+  try {
+    await api("/api/proactive-contact/events", {
+      method: "POST",
+      body: JSON.stringify({
+        event_type: "candidate_replied",
+        conversation_id: pending.conversation_id,
+        persona_id: pending.persona_id,
+        candidate_type: pending.candidate_type || "",
+        detail: {
+          reason: pending.reason || "",
+          user_message_id: userMessageId || null,
+        },
+      }),
+    });
+  } catch (err) {
+    console.warn("proactive contact reply event failed", err);
   }
 }
 
@@ -3155,6 +3185,7 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
         await markConversationRead(data.conversation_id);
       }
     }
+    await recordProactiveCandidateReply(data.conversation_id, data.user_message_id);
     await loadMainData();
   } catch (err) {
     if (state.view === "chat" && Number(state.activePersona?.id) === requestPersonaId) {
