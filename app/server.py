@@ -262,6 +262,7 @@ class ExpressionReviewBulkRequest(BaseModel):
     persona_id: int | None = None
     limit: int = Field(default=12, ge=1, le=50)
     usage_limit: int = Field(default=80, ge=1, le=500)
+    admin_note: str | None = Field(default="", max_length=500)
 
 
 class PersonaAvatarGenerateRequest(BaseModel):
@@ -1044,16 +1045,19 @@ def admin_apply_expression_review_cooldowns(
                 "text": item.get("text") or "",
             }
     applied = []
+    review_note = str(req.admin_note or "").strip()
     for item in candidates.values():
+        default_note = f"批量审查：{item['text']}"[:500]
+        admin_note = f"{review_note} | {default_note}"[:500] if review_note else default_note
         asset = update_expression_asset_setting(
             item["expression_type"],
             item["label"],
             enabled=True,
             cooldown_turns=int(item["cooldown_turns"]),
-            admin_note=f"批量审查：{item['text']}"[:500],
+            admin_note=admin_note,
             updated_by_user_id=int(admin["id"]),
         )
-        applied.append({**item, "asset": asset})
+        applied.append({**item, "admin_note": admin_note, "asset": asset})
     refreshed_usage = admin_expression_usage(
         admin,
         target_user_id=owner_id,

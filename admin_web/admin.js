@@ -686,9 +686,21 @@ function renderExpressionAssetHistory(items) {
   return h("div", { class: "expression-asset-history" }, [
     h("small", { text: "最近变更" }),
     ...items.slice(0, 3).map((item) => h("span", {
-      text: `${expressionAssetEventLabel(item.event_kind)}${item.admin_note ? ` · ${item.admin_note}` : ""}`,
+      text: expressionAssetHistoryLabel(item),
     })),
   ]);
+}
+
+function expressionAssetHistoryLabel(item) {
+  const meta = [
+    item.created_at ? formatTs(item.created_at) : "",
+    item.updated_by_user_id ? `admin #${item.updated_by_user_id}` : "",
+  ].filter(Boolean).join(" / ");
+  return [
+    expressionAssetEventLabel(item.event_kind),
+    item.admin_note || "",
+    meta,
+  ].filter(Boolean).join(" / ");
 }
 
 function expressionAssetEventLabel(kind) {
@@ -989,6 +1001,8 @@ async function updateExpressionAssetFromReview(item, patch) {
 }
 
 async function applyExpressionReviewCooldowns() {
+  const note = window.prompt("\u6279\u91cf\u5ba1\u67e5\u5907\u6ce8\uff08\u53ef\u7559\u7a7a\uff09", "");
+  if (note === null) return;
   state.error = "";
   try {
     const data = await api("/api/admin/expression-review/apply-cooldowns", {
@@ -998,6 +1012,7 @@ async function applyExpressionReviewCooldowns() {
         persona_id: state.selectedPersonaId,
         limit: 12,
         usage_limit: 80,
+        admin_note: note.trim(),
       }),
     });
     state.expressionAssets = data.assets || [];

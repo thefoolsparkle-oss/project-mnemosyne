@@ -786,6 +786,7 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
             persona_id=persona_id,
             limit=4,
             usage_limit=4,
+            admin_note="phase3 bulk review note",
         ),
         {"id": user_id, "role": "admin"},
     )
@@ -793,8 +794,14 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     applied_smile = next(item for item in bulk["applied"] if item["label"] == "微笑")
     assert applied_smile["previous_cooldown_turns"] == 4
     assert applied_smile["cooldown_turns"] == 6
+    assert "phase3 bulk review note" in applied_smile["admin_note"]
     smile_asset = next(item for item in bulk["assets"] if item["expression_type"] == "mood" and item["label"] == "微笑")
     assert smile_asset["cooldown_turns"] == 6
+    assert smile_asset["admin_note"] == applied_smile["admin_note"]
+    assert smile_asset["history"][0]["event_kind"] == "cooldown"
+    assert smile_asset["history"][0]["updated_by_user_id"] == user_id
+    assert smile_asset["history"][0]["created_at"] >= ts
+    assert "phase3 bulk review note" in smile_asset["history"][0]["admin_note"]
 
 
 def main() -> None:
