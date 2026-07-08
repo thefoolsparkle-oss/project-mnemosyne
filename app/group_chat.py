@@ -732,12 +732,37 @@ def _group_member_memory_context(user_id: int, persona_id: int, query: str) -> d
     try:
         layered = recall_layered_memory(user_id, persona_id, query, limit=8)
         relevant_memory = _safe_context(layered_memory_prompt(layered))[:GROUP_MEMBER_MEMORY_LIMIT]
+        memory_focus = _group_memory_focus(layered)
     except Exception:
         relevant_memory = "Layered long-term memory: unavailable."
+        memory_focus = {"counts": {}, "top": []}
     return {
         "stable_summary": stable_summary,
         "relevant_memory": relevant_memory,
+        "memory_focus": memory_focus,
     }
+
+
+def _group_memory_focus(layered: dict[str, list[dict]]) -> dict:
+    counts = {key: len(layered.get(key) or []) for key in ("summaries", "relations", "facts", "episodes")}
+    top: list[dict] = []
+    for section in ("summaries", "relations", "facts", "episodes"):
+        for item in (layered.get(section) or [])[:2]:
+            text = str(item.get("text") or item.get("summary") or item.get("title") or "").strip()
+            if not text:
+                continue
+            top.append({
+                "section": section,
+                "uid": str(item.get("uid") or ""),
+                "text": _safe_context(text)[:140],
+                "importance": float(item.get("importance") or 0),
+                "confidence": float(item.get("confidence") or 0),
+            })
+            if len(top) >= 4:
+                break
+        if len(top) >= 4:
+            break
+    return {"counts": counts, "top": top}
 
 
 def _group_degraded_message(turn: dict) -> str:

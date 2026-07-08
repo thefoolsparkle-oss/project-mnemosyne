@@ -73,6 +73,7 @@ def verify_group_chat_flow() -> None:
         assert "Group members" in joined
         assert "Recent group messages" in joined
         assert "group memory anchor: likes quiet tea" in joined
+        assert "memory_focus" in joined
         assert "group_stance_hint" in joined
         assert "group_relation_stance" in joined
         assert "Speaker rhythm" in joined
@@ -106,6 +107,9 @@ def verify_group_chat_flow() -> None:
 
     group_chat.call_llm_api = fake_llm
 
+    memory_focus = group_chat._group_member_memory_context(user_id, persona_ids[1], "quiet tea")["memory_focus"]
+    assert memory_focus["counts"]["facts"] >= 1
+    assert any("quiet tea" in item["text"] for item in memory_focus["top"])
     assert group_chat._group_turn_policy_context("你们怎么看？")["multi_speaker_invited"] is True
     assert group_chat._group_turn_policy_context("我先安静一下")["silence_allowed"] is True
 
@@ -568,6 +572,7 @@ def verify_group_chat_flow() -> None:
         assert "Recent group messages" in joined
         assert "familiarity" in joined
         assert "group memory anchor: likes quiet tea" in joined
+        assert "memory_focus" in joined
         assert "group_stance_hint" in joined
         assert "group_relation_stance" in joined
         assert "Speaker rhythm" in joined
