@@ -80,7 +80,12 @@ from .memory_rag import semantic_memory_recall, sync_memory_embeddings
 from .memory_policy import policy_snapshot
 from .mirror import get_user_insight, update_user_insight
 from .persona_forge import build_prompt, forge_persona
-from .proactive_contact import normalize_profile_preferences, proactive_contact_candidates, record_proactive_contact_event
+from .proactive_contact import (
+    normalize_profile_preferences,
+    proactive_contact_candidates,
+    proactive_contact_events,
+    record_proactive_contact_event,
+)
 from .growth_demo import clear_growth_demo_data, seed_growth_demo_data
 from .growth_guidance import deactivate_guidance, supersede_conflicting_guidance
 from .sculptor import (
@@ -526,6 +531,16 @@ def admin_proactive_contact_candidates(
 ):
     owner_id = _admin_target_user_id(admin, target_user_id)
     return proactive_contact_candidates(owner_id, limit=limit)
+
+
+@app.get("/api/admin/proactive-contact/events")
+def admin_proactive_contact_events(
+    admin: dict = Depends(current_admin),
+    target_user_id: int | None = None,
+    limit: int = 20,
+):
+    owner_id = _admin_target_user_id(admin, target_user_id)
+    return {"events": proactive_contact_events(owner_id, limit=limit)}
 
 
 @app.get("/api/persona-options")

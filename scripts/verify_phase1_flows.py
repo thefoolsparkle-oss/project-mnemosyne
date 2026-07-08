@@ -426,6 +426,9 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
     assert event["persona_id"] == persona_id
     assert event["candidate_type"] == "followup"
     assert event["detail"]["reason"] == "old_user_message"
+    admin_events = server.admin_proactive_contact_events({"id": user_id, "role": "admin"}, target_user_id=user_id, limit=5)
+    assert admin_events["events"][0]["id"] == event["id"]
+    assert admin_events["events"][0]["event_type"] == "candidate_opened"
     try:
         server.record_proactive_contact_event_endpoint(
             server.ProactiveContactEventRequest(event_type="bad", conversation_id=conversation_id),

@@ -20,6 +20,7 @@ let state = {
   llmRoutes: null,
   llmHealth: null,
   proactiveContact: null,
+  proactiveContactEvents: [],
   growthDemo: null,
   expressionAssetFilter: "all",
   runningEval: false,
@@ -127,9 +128,10 @@ async function loadReview() {
     state.llmRoutes = null;
     state.llmHealth = null;
     state.proactiveContact = null;
+    state.proactiveContactEvents = [];
     return;
   }
-  const [data, traceData, expressionData, assetData, revisionData, growthData, versionData, evalData, llmData, routeData, healthData, proactiveData] = await Promise.all([
+  const [data, traceData, expressionData, assetData, revisionData, growthData, versionData, evalData, llmData, routeData, healthData, proactiveData, proactiveEventData] = await Promise.all([
     api(`/api/admin/memory/review?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}&include_history=true`),
     api(`/api/admin/chat-context-traces?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}&limit=6`),
     api(`/api/admin/expression-usage?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}&limit=12&usage_limit=80`),
@@ -142,6 +144,7 @@ async function loadReview() {
     api("/api/admin/llm-routes"),
     api("/api/admin/llm-health?limit=120"),
     api(`/api/admin/proactive-contact/candidates?target_user_id=${state.selectedUserId}&limit=8`),
+    api(`/api/admin/proactive-contact/events?target_user_id=${state.selectedUserId}&limit=8`),
   ]);
   state.review = data.review;
   state.traces = traceData.traces;
@@ -155,6 +158,7 @@ async function loadReview() {
   state.llmRoutes = routeData;
   state.llmHealth = healthData;
   state.proactiveContact = proactiveData;
+  state.proactiveContactEvents = proactiveEventData.events || [];
 }
 
 function render() {
@@ -1704,6 +1708,7 @@ function renderProactiveContactReview() {
   const data = state.proactiveContact || {};
   const settings = data.settings || {};
   const candidates = Array.isArray(data.candidates) ? data.candidates : [];
+  const events = Array.isArray(state.proactiveContactEvents) ? state.proactiveContactEvents : [];
   const status = data.allowed_now
     ? "\u53ef\u5728\u5f53\u524d\u65f6\u6bb5\u5019\u9009"
     : (
@@ -1731,6 +1736,16 @@ function renderProactiveContactReview() {
         item.last_excerpt ? h("pre", { text: item.last_excerpt }) : null,
       ])))
       : h("p", { class: "muted", text: settings.enabled ? "\u6682\u65e0\u5019\u9009" : "\u7528\u6237\u672a\u5f00\u542f\u4e3b\u52a8\u8054\u7cfb\u8bb8\u53ef\u3002" }),
+    h("div", { class: "proactive-review-list compact" }, events.length
+      ? events.map((item) => h("article", { class: "proactive-review-item" }, [
+        h("div", { class: "memory-title" }, [
+          h("strong", { text: `${item.event_type || "event"} / ${item.candidate_type || "-"}` }),
+          h("small", { text: formatTs(item.created_at) }),
+        ]),
+        h("small", { text: `persona #${item.persona_id || "-"} / conversation #${item.conversation_id || "-"}` }),
+        Object.keys(item.detail || {}).length ? h("pre", { text: JSON.stringify(item.detail, null, 2) }) : null,
+      ]))
+      : [h("p", { class: "muted", text: "\u6682\u65e0\u53cd\u5e94\u8bb0\u5f55" })]),
   ]);
 }
 
