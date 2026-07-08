@@ -83,6 +83,7 @@ from .persona_forge import build_prompt, forge_persona
 from .proactive_contact import (
     normalize_profile_preferences,
     proactive_contact_candidates,
+    proactive_contact_event_summary,
     proactive_contact_events,
     record_proactive_contact_event,
 )
@@ -540,7 +541,10 @@ def admin_proactive_contact_events(
     limit: int = 20,
 ):
     owner_id = _admin_target_user_id(admin, target_user_id)
-    return {"events": proactive_contact_events(owner_id, limit=limit)}
+    return {
+        "events": proactive_contact_events(owner_id, limit=limit),
+        "summary": proactive_contact_event_summary(owner_id),
+    }
 
 
 @app.get("/api/persona-options")

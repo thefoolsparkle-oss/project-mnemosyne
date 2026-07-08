@@ -543,7 +543,13 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
         user,
     )["event"]
     assert reply_event["event_type"] == "candidate_replied"
-    assert server.admin_proactive_contact_events({"id": user_id, "role": "admin"}, target_user_id=user_id, limit=1)["events"][0]["id"] == reply_event["id"]
+    admin_event_report = server.admin_proactive_contact_events({"id": user_id, "role": "admin"}, target_user_id=user_id, limit=1)
+    assert admin_event_report["events"][0]["id"] == reply_event["id"]
+    assert admin_event_report["summary"]["opened"] == 1
+    assert admin_event_report["summary"]["dismissed"] == 1
+    assert admin_event_report["summary"]["replied"] == 1
+    assert admin_event_report["summary"]["reply_rate"] == 1
+    assert admin_event_report["summary"]["dismiss_rate"] == 1
 
     server.update_profile(
         server.ProfileUpdateRequest(

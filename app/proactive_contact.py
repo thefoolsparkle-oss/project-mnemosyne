@@ -209,6 +209,43 @@ def proactive_contact_events(user_id: int, *, limit: int = 20) -> list[dict[str,
     return [_event_from_row(row) for row in rows]
 
 
+def proactive_contact_event_summary(user_id: int, *, days: int = 30) -> dict[str, Any]:
+    window_days = max(1, min(int(days or 30), 180))
+    start_ts = now_ts() - window_days * 24 * 60 * 60
+    by_event = {event_type: 0 for event_type in sorted(PROACTIVE_CONTACT_EVENT_TYPES)}
+    by_type: dict[str, dict[str, int]] = {}
+    with get_db() as db:
+        rows = db.execute(
+            """
+            SELECT event_type, candidate_type, COUNT(*) AS count
+            FROM proactive_contact_events
+            WHERE user_id = ?
+              AND created_at >= ?
+            GROUP BY event_type, candidate_type
+            """,
+            (user_id, start_ts),
+        ).fetchall()
+    for row in rows:
+        event_type = str(row["event_type"] or "")
+        candidate_type = str(row["candidate_type"] or "unknown")
+        count = int(row["count"] or 0)
+        by_event[event_type] = by_event.get(event_type, 0) + count
+        by_type.setdefault(candidate_type, {})[event_type] = count
+    opened = by_event.get("candidate_opened", 0)
+    replied = by_event.get("candidate_replied", 0)
+    dismissed = by_event.get("candidate_dismissed", 0)
+    return {
+        "window_days": window_days,
+        "by_event": by_event,
+        "by_type": by_type,
+        "opened": opened,
+        "replied": replied,
+        "dismissed": dismissed,
+        "reply_rate": round(replied / opened, 3) if opened else 0,
+        "dismiss_rate": round(dismissed / opened, 3) if opened else 0,
+    }
+
+
 def _candidate_rows(user_id: int, ts: int, *, limit: int) -> list[dict[str, Any]]:
     with get_db() as db:
         rows = db.execute(

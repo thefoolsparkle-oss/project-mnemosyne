@@ -21,6 +21,7 @@ let state = {
   llmHealth: null,
   proactiveContact: null,
   proactiveContactEvents: [],
+  proactiveContactSummary: null,
   growthDemo: null,
   expressionAssetFilter: "all",
   runningEval: false,
@@ -129,6 +130,7 @@ async function loadReview() {
     state.llmHealth = null;
     state.proactiveContact = null;
     state.proactiveContactEvents = [];
+    state.proactiveContactSummary = null;
     return;
   }
   const [data, traceData, expressionData, assetData, revisionData, growthData, versionData, evalData, llmData, routeData, healthData, proactiveData, proactiveEventData] = await Promise.all([
@@ -159,6 +161,7 @@ async function loadReview() {
   state.llmHealth = healthData;
   state.proactiveContact = proactiveData;
   state.proactiveContactEvents = proactiveEventData.events || [];
+  state.proactiveContactSummary = proactiveEventData.summary || null;
 }
 
 function render() {
@@ -1709,6 +1712,7 @@ function renderProactiveContactReview() {
   const settings = data.settings || {};
   const candidates = Array.isArray(data.candidates) ? data.candidates : [];
   const events = Array.isArray(state.proactiveContactEvents) ? state.proactiveContactEvents : [];
+  const summary = state.proactiveContactSummary || {};
   const status = data.allowed_now
     ? "\u53ef\u5728\u5f53\u524d\u65f6\u6bb5\u5019\u9009"
     : (
@@ -1724,6 +1728,12 @@ function renderProactiveContactReview() {
       h("span", { text: `left ${Number(data.remaining_today || 0)}` }),
       h("span", { text: `${settings.quiet_start || "22:00"}-${settings.quiet_end || "09:00"}` }),
       h("span", { text: status }),
+      h("span", { text: `window ${Number(summary.window_days || 30)}d` }),
+      h("span", { text: `opened ${Number(summary.opened || 0)}` }),
+      h("span", { text: `replied ${Number(summary.replied || 0)}` }),
+      h("span", { text: `dismissed ${Number(summary.dismissed || 0)}` }),
+      h("span", { text: `reply ${Math.round(Number(summary.reply_rate || 0) * 100)}%` }),
+      h("span", { text: `dismiss ${Math.round(Number(summary.dismiss_rate || 0) * 100)}%` }),
     ]),
     candidates.length
       ? h("div", { class: "proactive-review-list" }, candidates.map((item) => h("article", { class: "proactive-review-item" }, [
