@@ -491,6 +491,16 @@ def proactive_contact_candidate_preview(user: dict = Depends(current_user), limi
     return proactive_contact_candidates(int(user["id"]), limit=limit)
 
 
+@app.get("/api/admin/proactive-contact/candidates")
+def admin_proactive_contact_candidates(
+    admin: dict = Depends(current_admin),
+    target_user_id: int | None = None,
+    limit: int = 5,
+):
+    owner_id = _admin_target_user_id(admin, target_user_id)
+    return proactive_contact_candidates(owner_id, limit=limit)
+
+
 @app.get("/api/persona-options")
 def persona_options():
     return {"options": PERSONA_OPTIONS, "max_per_group": 4}

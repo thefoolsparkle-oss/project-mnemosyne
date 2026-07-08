@@ -295,14 +295,17 @@ small {
 .llm-call-list,
 .llm-route-list,
 .llm-health-list,
-.llm-health-panel {
+.llm-health-panel,
+.proactive-review,
+.proactive-review-list {
   display: grid;
   gap: 8px;
 }
 
 .llm-call,
 .llm-route,
-.llm-health-item {
+.llm-health-item,
+.proactive-review-item {
   display: grid;
   gap: 6px;
   padding: 10px;
@@ -340,7 +343,8 @@ small {
 }
 
 .llm-call pre,
-.llm-health-item pre {
+.llm-health-item pre,
+.proactive-review-item pre {
   max-height: 120px;
   margin: 0;
   padding: 8px;
@@ -350,6 +354,10 @@ small {
   background: #101114;
   color: var(--muted);
   white-space: pre-wrap;
+}
+
+.proactive-review-item p {
+  margin: 0;
 }
 
 .conflict-list {

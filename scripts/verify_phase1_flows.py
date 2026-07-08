@@ -408,6 +408,8 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
     api_preview = server.proactive_contact_candidate_preview(user, limit=5)
     assert api_preview["settings"]["enabled"] is True
     assert api_preview["candidates"][0]["conversation_id"] == conversation_id
+    admin_preview = server.admin_proactive_contact_candidates({"id": user_id, "role": "admin"}, target_user_id=user_id, limit=5)
+    assert admin_preview["candidates"][0]["conversation_id"] == conversation_id
 
     server.update_profile(
         server.ProfileUpdateRequest(

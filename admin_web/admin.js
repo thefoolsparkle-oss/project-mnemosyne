@@ -19,6 +19,7 @@ let state = {
   llmCalls: [],
   llmRoutes: null,
   llmHealth: null,
+  proactiveContact: null,
   growthDemo: null,
   expressionAssetFilter: "all",
   runningEval: false,
@@ -125,9 +126,10 @@ async function loadReview() {
     state.versions = [];
     state.llmRoutes = null;
     state.llmHealth = null;
+    state.proactiveContact = null;
     return;
   }
-  const [data, traceData, expressionData, assetData, revisionData, growthData, versionData, evalData, llmData, routeData, healthData] = await Promise.all([
+  const [data, traceData, expressionData, assetData, revisionData, growthData, versionData, evalData, llmData, routeData, healthData, proactiveData] = await Promise.all([
     api(`/api/admin/memory/review?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}&include_history=true`),
     api(`/api/admin/chat-context-traces?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}&limit=6`),
     api(`/api/admin/expression-usage?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}&limit=12&usage_limit=80`),
@@ -139,6 +141,7 @@ async function loadReview() {
     api("/api/admin/llm-calls?limit=20"),
     api("/api/admin/llm-routes"),
     api("/api/admin/llm-health?limit=120"),
+    api(`/api/admin/proactive-contact/candidates?target_user_id=${state.selectedUserId}&limit=8`),
   ]);
   state.review = data.review;
   state.traces = traceData.traces;
@@ -151,6 +154,7 @@ async function loadReview() {
   state.llmCalls = llmData.calls;
   state.llmRoutes = routeData;
   state.llmHealth = healthData;
+  state.proactiveContact = proactiveData;
 }
 
 function render() {
@@ -1653,6 +1657,7 @@ function renderReview() {
     card("人格成长", renderGrowthPanel(), "wide"),
     card("状态变量", renderStateList(review.state || [])),
     card("模型健康", renderLlmHealth(), "wide"),
+    card("主动联系候选", renderProactiveContactReview(), "wide"),
     card("模型调用记录", renderLlmCalls(), "wide"),
     card("模型路由", renderLlmRoutes(), "wide"),
     card("记忆评测", renderEvalPanel(), "wide"),
@@ -1692,6 +1697,34 @@ function renderLlmHealth() {
       item.last_error ? h("pre", { text: item.last_error }) : null,
     ]);
     })),
+  ]);
+}
+
+function renderProactiveContactReview() {
+  const data = state.proactiveContact || {};
+  const settings = data.settings || {};
+  const candidates = Array.isArray(data.candidates) ? data.candidates : [];
+  const status = data.allowed_now
+    ? "\u53ef\u5728\u5f53\u524d\u65f6\u6bb5\u5019\u9009"
+    : (data.blocked_reason === "quiet_hours" ? "\u5b89\u9759\u65f6\u6bb5\u963b\u6b62" : "\u7528\u6237\u672a\u5f00\u542f");
+  return h("div", { class: "proactive-review" }, [
+    h("div", { class: "expression-usage-summary" }, [
+      h("span", { text: settings.enabled ? "\u5df2\u8bb8\u53ef" : "\u672a\u8bb8\u53ef" }),
+      h("span", { text: `max ${settings.max_per_day || 1}/day` }),
+      h("span", { text: `${settings.quiet_start || "22:00"}-${settings.quiet_end || "09:00"}` }),
+      h("span", { text: status }),
+    ]),
+    candidates.length
+      ? h("div", { class: "proactive-review-list" }, candidates.map((item) => h("article", { class: "proactive-review-item" }, [
+        h("div", { class: "memory-title" }, [
+          h("strong", { text: `${item.persona_name || "persona"} / ${item.type || "candidate"}` }),
+          h("small", { text: item.reason || "" }),
+        ]),
+        h("p", { text: item.draft_text || "" }),
+        h("small", { text: `conversation #${item.conversation_id} / idle ${Math.round(Number(item.idle_seconds || 0) / 3600)}h / last ${item.last_message_at ? formatTs(item.last_message_at) : "-"}` }),
+        item.last_excerpt ? h("pre", { text: item.last_excerpt }) : null,
+      ])))
+      : h("p", { class: "muted", text: settings.enabled ? "\u6682\u65e0\u5019\u9009" : "\u7528\u6237\u672a\u5f00\u542f\u4e3b\u52a8\u8054\u7cfb\u8bb8\u53ef\u3002" }),
   ]);
 }
 
