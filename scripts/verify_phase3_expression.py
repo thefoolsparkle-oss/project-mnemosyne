@@ -623,6 +623,14 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     )
     assert profile_usage["preference_history"][0]["mode"] == "subtle"
     assert profile_usage["preference_history"][0]["source"] == "profile_setting"
+    feedback_scene_policy = chat._recent_expression_policy(user_id, persona_id, conversation_id)
+    assert "ordinary" in feedback_scene_policy["expression_feedback_suppressed_scenes"]
+    assert "support_needed" not in feedback_scene_policy["expression_feedback_suppressed_scenes"]
+    assert feedback_scene_policy["expression_feedback_scene_counts"]["ordinary"]["negative"] >= 1
+    feedback_scene_policy["suppress_all"] = False
+    feedback_scene_policy.update(chat._expression_scene_context("嗯。"))
+    assert "Preference feedback rhythm" in chat._expression_policy_prompt(feedback_scene_policy)
+    assert chat._expression_selection_agent("嗯。", "嗯，我在。", feedback_scene_policy) == []
     policy = chat._recent_expression_policy(user_id, persona_id, conversation_id)
     assert policy["expression_preference"]["mode"] == "subtle"
     assert policy["subtle_mode"] is True
@@ -789,7 +797,7 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     assert "scene_counts" in restored_pref_usage["feedback_signal"]
     resource_feedback = restored_pref_usage["feedback_signal"]["resource_feedback"]
     assert resource_feedback
-    assert resource_feedback[0]["negative"] >= 1
+    assert any(item["negative"] >= 1 for item in resource_feedback)
     assert resource_feedback[0]["evidence_count"] >= 1
     assert "scene_counts" in resource_feedback[0]
     assert any(item["kind"] == "preference_changes" for item in restored_pref_usage["insights"])

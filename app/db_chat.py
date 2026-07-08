@@ -14,7 +14,11 @@ from .expression_assets import (
     expression_asset,
     expression_protocol_prompt,
 )
-from .expression_preferences import expression_preference_churn, record_expression_preference_event
+from .expression_preferences import (
+    expression_preference_churn,
+    expression_preference_events,
+    record_expression_preference_event,
+)
 from .expression_style import persona_expression_style_context
 from .identity import IDENTITY_REPLACEMENTS, scrub_identity_obj, scrub_identity_text
 from .layered_memory import layered_memory_prompt, recall_layered_memory, state_prompt, summary_prompt
@@ -999,6 +1003,7 @@ def _maybe_update_expression_preference_from_chat(
 
 def _recent_expression_policy(user_id: int, persona_id: int, conversation_id: int) -> dict:
     preference_feedback = expression_preference_churn(user_id, persona_id)
+    feedback_scene_adjustment = _expression_preference_scene_adjustment(user_id, persona_id)
     with get_db() as db:
         preference_row = db.execute(
             """
@@ -1033,6 +1038,7 @@ def _recent_expression_policy(user_id: int, persona_id: int, conversation_id: in
                 "recent_assistant_messages_checked": 0,
                 "suppress_all": True,
                 "recent_labels": [],
+                **feedback_scene_adjustment,
             }
         message_rows = db.execute(
             """
@@ -1088,8 +1094,81 @@ def _recent_expression_policy(user_id: int, persona_id: int, conversation_id: in
         ),
         "recent_labels": recent_labels,
         "recent_label_distances": recent_label_distances,
+        **feedback_scene_adjustment,
         **scene_feedback,
     }
+
+
+def _empty_expression_preference_scene_adjustment() -> dict:
+    return {
+        "expression_feedback_scene_counts": {
+            "support_needed": {"positive": 0, "negative": 0, "net": 0},
+            "playful": {"positive": 0, "negative": 0, "net": 0},
+            "ordinary": {"positive": 0, "negative": 0, "net": 0},
+        },
+        "expression_feedback_suppressed_scenes": [],
+    }
+
+
+def _expression_preference_scene_adjustment(user_id: int, persona_id: int) -> dict:
+    events = expression_preference_events(user_id, persona_id, limit=8)
+    if not events:
+        return _empty_expression_preference_scene_adjustment()
+    with get_db() as db:
+        single_rows = db.execute(
+            """
+            SELECT message_id, 0 AS group_message_id, source_text, created_at
+            FROM message_expressions
+            WHERE user_id = ? AND persona_id = ?
+            ORDER BY id DESC
+            LIMIT 80
+            """,
+            (user_id, persona_id),
+        ).fetchall()
+        group_rows = db.execute(
+            """
+            SELECT 0 AS message_id, group_message_id, source_text, created_at
+            FROM group_message_expressions
+            WHERE user_id = ? AND persona_id = ?
+            ORDER BY id DESC
+            LIMIT 80
+            """,
+            (user_id, persona_id),
+        ).fetchall()
+    rows = [dict_from_row(row) for row in [*single_rows, *group_rows]]
+    rows.sort(key=lambda item: (int(item.get("created_at") or 0), int(item.get("message_id") or item.get("group_message_id") or 0)), reverse=True)
+    adjustment = _empty_expression_preference_scene_adjustment()
+    counts = adjustment["expression_feedback_scene_counts"]
+    for event in events:
+        mode = str(event.get("mode") or "")
+        if mode not in {"off", "subtle", "normal"}:
+            continue
+        for row in rows:
+            if not _expression_usage_before_preference_event(row, event):
+                continue
+            scene = _expression_scene_from_source(row.get("source_text"))
+            if scene not in counts:
+                continue
+            key = "positive" if mode == "normal" else "negative"
+            counts[scene][key] += 1
+            counts[scene]["net"] = counts[scene]["positive"] - counts[scene]["negative"]
+            break
+    adjustment["expression_feedback_suppressed_scenes"] = [
+        scene
+        for scene in ("ordinary", "playful")
+        if int(counts[scene]["negative"]) > int(counts[scene]["positive"])
+    ]
+    return adjustment
+
+
+def _expression_usage_before_preference_event(row: dict, event: dict) -> bool:
+    source_message_id = int(event.get("source_message_id") or 0)
+    message_id = int(row.get("message_id") or 0)
+    if source_message_id and message_id:
+        return message_id < source_message_id
+    event_ts = int(event.get("created_at") or 0)
+    row_ts = int(row.get("created_at") or 0)
+    return bool(event_ts and row_ts and row_ts <= event_ts)
 
 
 def _empty_expression_scene_feedback() -> dict:
@@ -1256,15 +1335,26 @@ def _expression_scene_context(user_text: str) -> dict:
 
 def _expression_scene_pressure_prompt(policy: dict, scene: str) -> str:
     congested_scenes = {str(item) for item in policy.get("expression_congested_scenes") or [] if item}
+    feedback_suppressed_scenes = {str(item) for item in policy.get("expression_feedback_suppressed_scenes") or [] if item}
+    prompts: list[str] = []
+    if scene in feedback_suppressed_scenes:
+        counts = (policy.get("expression_feedback_scene_counts") or {}).get(scene) or {}
+        prompts.append(
+            "\nPreference feedback rhythm: recent user preference changes point against "
+            f"automatic expression labels in the {scene} scene "
+            f"(negative {int(counts.get('negative') or 0)}, positive {int(counts.get('positive') or 0)}). "
+            "Prefer plain text here unless the user clearly needs emotional support."
+        )
     if scene not in congested_scenes:
-        return ""
+        return "".join(prompts)
     counts = policy.get("recent_expression_scene_counts") or {}
     count = int(counts.get(scene) or 0)
-    return (
+    prompts.append(
         "\nScene rhythm feedback: recent assistant replies already used "
         f"{count} expression labels in the {scene} scene. Prefer plain text in this scene now; "
         "only use a label if the user clearly needs emotional support."
     )
+    return "".join(prompts)
 
 
 def _expression_scene_prompt(policy: dict) -> str:
@@ -1319,7 +1409,10 @@ def _apply_expression_policy(expressions: list[dict], policy: dict) -> list[dict
         return []
     scene = str(policy.get("expression_scene") or "")
     congested_scenes = {str(item) for item in policy.get("expression_congested_scenes") or [] if item}
+    feedback_suppressed_scenes = {str(item) for item in policy.get("expression_feedback_suppressed_scenes") or [] if item}
     if scene in congested_scenes and scene != "support_needed":
+        return []
+    if scene in feedback_suppressed_scenes and scene != "support_needed":
         return []
     allowed_groups = {str(group) for group in policy.get("expression_allowed_groups") or [] if group}
     avoid_labels = {str(label) for label in policy.get("expression_persona_avoid_labels") or [] if label}
@@ -1355,7 +1448,10 @@ def _expression_selection_agent(user_text: str, reply_text: str, policy: dict) -
         return []
     scene = str(policy.get("expression_scene") or "ordinary")
     congested_scenes = {str(item) for item in policy.get("expression_congested_scenes") or [] if item}
+    feedback_suppressed_scenes = {str(item) for item in policy.get("expression_feedback_suppressed_scenes") or [] if item}
     if scene in congested_scenes and scene != "support_needed":
+        return []
+    if scene in feedback_suppressed_scenes and scene != "support_needed":
         return []
     if policy.get("preference_churn") and scene != "support_needed":
         return []
