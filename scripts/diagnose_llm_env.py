@@ -42,12 +42,12 @@ def _safe_row(task: str, config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _recent_llm_health(limit: int = 80) -> list[dict[str, Any]]:
+def _recent_llm_health(routes: dict[str, dict[str, Any]], limit: int = 80) -> list[dict[str, Any]]:
     try:
         with get_db() as db:
             rows = db.execute(
                 """
-                SELECT task, status, duration_ms, error_text, created_at
+                SELECT task, provider, model, status, duration_ms, error_text, created_at
                 FROM llm_call_logs
                 ORDER BY id DESC
                 LIMIT ?
@@ -69,6 +69,8 @@ def _recent_llm_health(limit: int = 80) -> list[dict[str, Any]]:
                 "last_status": "",
                 "last_error": "",
                 "last_created_at": 0,
+                "provider": "",
+                "model": "",
             },
         )
         item["total"] += 1
@@ -83,10 +85,22 @@ def _recent_llm_health(limit: int = 80) -> list[dict[str, Any]]:
         if not item["last_created_at"] or created_at > int(item["last_created_at"] or 0):
             item["last_status"] = status
             item["last_created_at"] = created_at
+            item["provider"] = str(row["provider"] or "")
+            item["model"] = str(row["model"] or "")
             if status == "failed":
                 item["last_error"] = str(row["error_text"] or "")[:160]
     for item in stats.values():
-        item["current_failed"] = item.get("last_status") == "failed"
+        route = routes.get(str(item.get("task") or "")) or routes.get("default") or {}
+        current_provider = str(route.get("provider") or route.get("provider_name") or "")
+        current_model = str(route.get("model") or "")
+        item["current_provider"] = current_provider
+        item["current_model"] = current_model
+        item["stale_config_failure"] = (
+            item.get("last_status") == "failed"
+            and bool(current_provider or current_model)
+            and (str(item.get("provider") or ""), str(item.get("model") or "")) != (current_provider, current_model)
+        )
+        item["current_failed"] = item.get("last_status") == "failed" and not item["stale_config_failure"]
         item["historical_failed"] = int(item.get("failed") or 0) > 0 and not item["current_failed"]
     return sorted(
         stats.values(),
@@ -112,13 +126,16 @@ def main() -> None:
                 status=status,
             )
         )
-    health = _recent_llm_health()
+    routes = _merged_routes(config)
+    health = _recent_llm_health(routes)
     if health:
         print("\nRecent local LLM health:")
         for item in health:
             line = "  {task}: total={total} failed={failed} slow={slow} last_status={last_status} last_at={last_created_at}".format(**item)
             if item.get("current_failed") and item.get("last_error"):
                 line += f" current_error={item['last_error']}"
+            elif item.get("stale_config_failure"):
+                line += " historical_failed=true stale_config_failure=true"
             elif item.get("historical_failed"):
                 line += " historical_failed=true"
             print(line)

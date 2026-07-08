@@ -75,6 +75,15 @@ def main() -> None:
 
             from app.server import _safe_llm_config
             import app.server as server
+            original_server_load_config = server.load_config
+            server.load_config = lambda: {
+                "llm": {
+                    "provider": "kimi",
+                    "model": "moonshot-v1-auto",
+                    "api_key_env": "MOONSHOT_API_KEY",
+                },
+                "llm_routes": {},
+            }
 
             safe = _safe_llm_config({
                 "provider": "kimi",
@@ -105,11 +114,13 @@ def main() -> None:
                         ("group_chat", "kimi", "moonshot-v1-auto", "success", 80, 40, 900, "", ts + 2),
                         ("recovered_probe", "kimi", "moonshot-v1-auto", "failed", 80, 0, 1200, "old timeout", ts + 3),
                         ("recovered_probe", "kimi", "moonshot-v1-auto", "success", 80, 40, 900, "", ts + 4),
+                        ("stale_config_probe", "not-a-provider", "", "failed", 80, 0, 1200, "old route", ts + 5),
                     ],
                 )
             health = server.admin_llm_health({"id": 1, "role": "admin"}, limit=10)
             probe_health = next(item for item in health["tasks"] if item["task"] == "health_probe")
             recovered_health = next(item for item in health["tasks"] if item["task"] == "recovered_probe")
+            stale_health = next(item for item in health["tasks"] if item["task"] == "stale_config_probe")
             assert health["window"] >= 3
             assert health["failed"] >= 1
             assert health["slow"] >= 1
@@ -120,7 +131,13 @@ def main() -> None:
             assert recovered_health["failed"] == 1
             assert recovered_health["current_failed"] is False
             assert recovered_health["historical_failed"] is True
+            assert stale_health["failed"] == 1
+            assert stale_health["current_failed"] is False
+            assert stale_health["historical_failed"] is True
+            assert stale_health["stale_config_failure"] is True
     finally:
+        if "server" in locals() and "original_server_load_config" in locals():
+            server.load_config = original_server_load_config
         llm.load_config = original_load_config
         llm._get_env = original_get_env
         llm.requests.post = original_post

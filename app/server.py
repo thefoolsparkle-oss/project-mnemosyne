@@ -1385,9 +1385,22 @@ def admin_llm_health(admin: dict = Depends(current_admin), limit: int = 120):
     tasks = []
     for item in by_task.values():
         total = max(1, int(item["total"] or 0))
+        current_route = _llm_route_config_for_task(str(item.get("task") or "default"))
+        current_provider = str(current_route.get("provider") or current_route.get("provider_name") or "")
+        current_model = str(current_route.get("model") or "")
+        logged_provider = str(item.get("provider") or "")
+        logged_model = str(item.get("model") or "")
+        stale_config_failure = (
+            item.get("last_status") == "failed"
+            and bool(current_provider or current_model)
+            and (logged_provider, logged_model) != (current_provider, current_model)
+        )
         item["failure_rate"] = round(int(item["failed"] or 0) / total, 4)
         item["avg_duration_ms"] = round(int(item["duration_total_ms"] or 0) / total)
-        item["current_failed"] = item.get("last_status") == "failed"
+        item["current_provider"] = current_provider
+        item["current_model"] = current_model
+        item["stale_config_failure"] = stale_config_failure
+        item["current_failed"] = item.get("last_status") == "failed" and not stale_config_failure
         item["historical_failed"] = int(item.get("failed") or 0) > 0 and not item["current_failed"]
         item.pop("duration_total_ms", None)
         tasks.append(item)
@@ -1412,6 +1425,18 @@ def _safe_llm_config(config: dict[str, Any]) -> dict[str, Any]:
     if env_name:
         safe["api_key_env_present"] = api_key_env_present(env_name)
     return safe
+
+
+def _llm_route_config_for_task(task: str) -> dict[str, Any]:
+    config = load_config()
+    base = dict(config.get("llm", {}) or {})
+    routes = config.get("llm_routes", {}) or {}
+    route = {}
+    if isinstance(routes, dict):
+        route = routes.get(task) or routes.get("default") or {}
+    if isinstance(route, dict):
+        base.update(route)
+    return base
 
 
 @app.get("/api/admin/memory/items/{uid}")
