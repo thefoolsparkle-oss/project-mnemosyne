@@ -73,19 +73,50 @@ def proactive_contact_candidates(user_id: int, *, at_ts: int | None = None, limi
         blocked_reason = "quiet_hours"
     candidates = _candidate_rows(user_id, ts, limit=max(1, min(int(limit or 5), 20)))
     max_per_day = int(settings.get("max_per_day") or 1)
+    usage_today = proactive_contact_daily_usage(user_id, at_ts=ts)
+    remaining_today = max(0, max_per_day - usage_today)
+    if allowed_now and remaining_today <= 0:
+        allowed_now = False
+        blocked_reason = "daily_limit"
     allowed_types = set(settings.get("allowed_types") or [])
     candidates = [
         item
         for item in candidates
         if str(item.get("type") or "") in allowed_types
     ]
-    candidates = candidates[:max_per_day]
+    if blocked_reason == "daily_limit":
+        candidates = []
+    else:
+        candidate_limit = remaining_today if allowed_now else max_per_day
+        candidates = candidates[:max(0, candidate_limit)]
     return {
         "settings": settings,
         "allowed_now": allowed_now,
         "blocked_reason": blocked_reason,
+        "usage_today": usage_today,
+        "remaining_today": remaining_today,
         "candidates": candidates if settings.get("enabled") else [],
     }
+
+
+def proactive_contact_daily_usage(user_id: int, *, at_ts: int | None = None) -> int:
+    ts = int(at_ts or now_ts())
+    start_ts = _local_day_start_ts(ts)
+    end_ts = start_ts + 24 * 60 * 60
+    with get_db() as db:
+        row = db.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM proactive_contact_events
+            WHERE user_id = ?
+              AND event_type IN ('candidate_opened', 'candidate_seen')
+              AND created_at >= ?
+              AND created_at < ?
+              AND created_at <= ?
+            """,
+            (user_id, start_ts, end_ts, ts),
+        ).fetchone()
+    return int(row["count"] if row else 0)
 
 
 def record_proactive_contact_event(
@@ -254,3 +285,7 @@ def _normalize_time_of_day(value: Any, default: str) -> str:
     if re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", text):
         return text
     return default
+
+
+def _local_day_start_ts(ts: int) -> int:
+    return int(datetime.fromtimestamp(ts).replace(hour=0, minute=0, second=0, microsecond=0).timestamp())

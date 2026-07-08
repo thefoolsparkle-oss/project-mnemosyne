@@ -1706,11 +1706,17 @@ function renderProactiveContactReview() {
   const candidates = Array.isArray(data.candidates) ? data.candidates : [];
   const status = data.allowed_now
     ? "\u53ef\u5728\u5f53\u524d\u65f6\u6bb5\u5019\u9009"
-    : (data.blocked_reason === "quiet_hours" ? "\u5b89\u9759\u65f6\u6bb5\u963b\u6b62" : "\u7528\u6237\u672a\u5f00\u542f");
+    : (
+      data.blocked_reason === "quiet_hours"
+        ? "\u5b89\u9759\u65f6\u6bb5\u963b\u6b62"
+        : (data.blocked_reason === "daily_limit" ? "\u4eca\u65e5\u5df2\u8fbe\u4e0a\u9650" : "\u7528\u6237\u672a\u5f00\u542f")
+    );
   return h("div", { class: "proactive-review" }, [
     h("div", { class: "expression-usage-summary" }, [
       h("span", { text: settings.enabled ? "\u5df2\u8bb8\u53ef" : "\u672a\u8bb8\u53ef" }),
       h("span", { text: `max ${settings.max_per_day || 1}/day` }),
+      h("span", { text: `used ${Number(data.usage_today || 0)}` }),
+      h("span", { text: `left ${Number(data.remaining_today || 0)}` }),
       h("span", { text: `${settings.quiet_start || "22:00"}-${settings.quiet_end || "09:00"}` }),
       h("span", { text: status }),
     ]),

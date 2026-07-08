@@ -636,7 +636,11 @@ function renderProactiveContactPanel() {
   if (!settings.enabled && !candidates.length) return null;
   const status = data.allowed_now
     ? "\u53ef\u4ee5\u5728\u7ad9\u5185\u663e\u793a"
-    : (data.blocked_reason === "quiet_hours" ? "\u5b89\u9759\u65f6\u6bb5\u5185" : "\u672a\u5f00\u542f");
+    : (
+      data.blocked_reason === "quiet_hours"
+        ? "\u5b89\u9759\u65f6\u6bb5\u5185"
+        : (data.blocked_reason === "daily_limit" ? "\u4eca\u65e5\u5df2\u8fbe\u4e0a\u9650" : "\u672a\u5f00\u542f")
+    );
   return h("section", { class: "proactive-panel" }, [
     h("div", { class: "proactive-panel-head" }, [
       h("strong", { text: "\u4e3b\u52a8\u8054\u7cfb\u5019\u9009" }),

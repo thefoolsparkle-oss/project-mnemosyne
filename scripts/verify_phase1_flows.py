@@ -435,6 +435,29 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
     except HTTPException as exc:
         assert exc.status_code == 400
 
+    after_event_ts = database.now_ts()
+    server.update_profile(
+        server.ProfileUpdateRequest(
+            nickname="\u6708",
+            preferences={
+                "proactive_contact": {
+                    "enabled": True,
+                    "max_per_day": 1,
+                    "quiet_start": "00:00",
+                    "quiet_end": "00:00",
+                    "allowed_types": ["followup", "care"],
+                },
+            },
+        ),
+        user,
+    )
+    limited_preview = proactive_contact.proactive_contact_candidates(user_id, at_ts=after_event_ts, limit=5)
+    assert limited_preview["allowed_now"] is False
+    assert limited_preview["blocked_reason"] == "daily_limit"
+    assert limited_preview["usage_today"] == 1
+    assert limited_preview["remaining_today"] == 0
+    assert limited_preview["candidates"] == []
+
     with database.get_db() as db:
         care_conversation_id = int(
             db.execute(
@@ -464,8 +487,10 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
         ),
         user,
     )
-    care_preview = proactive_contact.proactive_contact_candidates(user_id, at_ts=ts, limit=5)
+    care_preview = proactive_contact.proactive_contact_candidates(user_id, at_ts=after_event_ts, limit=5)
     assert care_preview["allowed_now"] is True
+    assert care_preview["usage_today"] == 1
+    assert care_preview["remaining_today"] == 1
     assert [item["type"] for item in care_preview["candidates"]] == ["care"]
     assert care_preview["candidates"][0]["conversation_id"] == care_conversation_id
 
@@ -484,7 +509,7 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
         ),
         user,
     )
-    quiet_preview = proactive_contact.proactive_contact_candidates(user_id, at_ts=ts, limit=5)
+    quiet_preview = proactive_contact.proactive_contact_candidates(user_id, at_ts=after_event_ts, limit=5)
     assert quiet_preview["allowed_now"] is False
     assert quiet_preview["blocked_reason"] == "quiet_hours"
     assert quiet_preview["candidates"][0]["conversation_id"] == conversation_id
