@@ -1074,6 +1074,8 @@ async function applyExpressionReviewCooldowns() {
     });
     state.expressionAssets = data.assets || [];
     state.expressionUsage = data.expression_usage || state.expressionUsage;
+    const summary = data.review_summary || {};
+    window.alert(`已应用 ${summary.applied_count || 0} 条冷却建议，跳过 ${summary.skipped_count || 0} 条。`);
     await loadReview();
   } catch (err) {
     state.error = err.message;

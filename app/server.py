@@ -1215,17 +1215,25 @@ def admin_apply_expression_review_cooldowns(
         limit=req.limit,
         usage_limit=req.usage_limit,
     )
+    review_items = list(usage.get("review_items") or [])
     candidates: dict[tuple[str, str], dict[str, Any]] = {}
-    for item in usage.get("review_items") or []:
+    skipped: list[dict[str, Any]] = []
+    for item in review_items:
         suggested = item.get("suggested_cooldown_turns")
-        if suggested is None or item.get("asset_enabled") is False:
+        if suggested is None:
+            skipped.append(_expression_review_skip(item, "no_cooldown_suggestion"))
+            continue
+        if item.get("asset_enabled") is False:
+            skipped.append(_expression_review_skip(item, "asset_disabled"))
             continue
         key = (str(item.get("expression_type") or ""), str(item.get("label") or ""))
         if not key[0] or not key[1]:
+            skipped.append(_expression_review_skip(item, "missing_asset_key"))
             continue
         cooldown = max(0, min(int(suggested), 20))
         current = int(item.get("cooldown_turns") or 0)
         if cooldown == current:
+            skipped.append(_expression_review_skip(item, "cooldown_unchanged"))
             continue
         previous = candidates.get(key)
         if previous is None or cooldown > int(previous["cooldown_turns"]):
@@ -1261,8 +1269,26 @@ def admin_apply_expression_review_cooldowns(
     return {
         "applied_count": len(applied),
         "applied": applied,
+        "review_summary": {
+            "reviewed_count": len(review_items),
+            "candidate_count": len(candidates),
+            "applied_count": len(applied),
+            "skipped_count": len(skipped),
+            "skipped": skipped[:10],
+            "applied_tags": [f"{item['expression_type']}:{item['label']}" for item in applied],
+        },
         "expression_usage": refreshed_usage,
         "assets": expression_assets_public(include_disabled=True, include_admin_metadata=True),
+    }
+
+
+def _expression_review_skip(item: dict[str, Any], reason: str) -> dict[str, Any]:
+    return {
+        "tag": item.get("tag") or f"{item.get('expression_type') or ''}:{item.get('label') or ''}",
+        "label": item.get("label") or "",
+        "display_text": item.get("display_text") or item.get("label") or item.get("tag") or "",
+        "kind": item.get("kind") or "",
+        "reason": reason,
     }
 
 

@@ -844,6 +844,10 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
         {"id": user_id, "role": "admin"},
     )
     assert bulk["applied_count"] >= 1
+    assert bulk["review_summary"]["reviewed_count"] >= bulk["review_summary"]["applied_count"]
+    assert bulk["review_summary"]["applied_count"] == bulk["applied_count"]
+    assert bulk["review_summary"]["applied_tags"]
+    assert bulk["review_summary"]["skipped_count"] >= 0
     applied_smile = next(item for item in bulk["applied"] if item["label"] == "微笑")
     assert applied_smile["previous_cooldown_turns"] == 4
     assert applied_smile["cooldown_turns"] == 6
