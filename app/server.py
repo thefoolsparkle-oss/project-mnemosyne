@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import html
 import json
-import re
 import uuid
 from pathlib import Path
 from typing import Any
@@ -81,6 +80,7 @@ from .memory_rag import semantic_memory_recall, sync_memory_embeddings
 from .memory_policy import policy_snapshot
 from .mirror import get_user_insight, update_user_insight
 from .persona_forge import build_prompt, forge_persona
+from .proactive_contact import normalize_profile_preferences, proactive_contact_candidates
 from .growth_demo import clear_growth_demo_data, seed_growth_demo_data
 from .growth_guidance import deactivate_guidance, supersede_conflicting_guidance
 from .sculptor import (
@@ -191,16 +191,6 @@ class ProfileUpdateRequest(BaseModel):
     signature: str | None = Field(default=None, max_length=200)
     bio: str | None = Field(default=None, max_length=1000)
     preferences: dict[str, Any] | None = None
-
-
-PROACTIVE_CONTACT_TYPES = {"followup", "care", "reminder", "interest"}
-DEFAULT_PROACTIVE_CONTACT = {
-    "enabled": False,
-    "max_per_day": 1,
-    "quiet_start": "22:00",
-    "quiet_end": "09:00",
-    "allowed_types": ["followup", "care", "reminder"],
-}
 
 
 class PersonaCreateRequest(BaseModel):
@@ -467,7 +457,7 @@ def profile(user: dict = Depends(current_user)):
 def update_profile(req: ProfileUpdateRequest, user: dict = Depends(current_user)):
     user_id = int(user["id"])
     current = _get_profile(user_id)
-    preferences = _normalize_profile_preferences(
+    preferences = normalize_profile_preferences(
         req.preferences if req.preferences is not None else current.get("preferences", {})
     )
     ts = now_ts()
@@ -494,6 +484,11 @@ def update_profile(req: ProfileUpdateRequest, user: dict = Depends(current_user)
         )
 
     return {"profile": _get_profile(user_id)}
+
+
+@app.get("/api/proactive-contact/candidates")
+def proactive_contact_candidate_preview(user: dict = Depends(current_user), limit: int = 5):
+    return proactive_contact_candidates(int(user["id"]), limit=limit)
 
 
 @app.get("/api/persona-options")
@@ -3680,45 +3675,8 @@ def _get_profile(user_id: int) -> dict:
         profile["preferences"] = json.loads(preferences_json or "{}")
     except Exception:
         profile["preferences"] = {}
-    profile["preferences"] = _normalize_profile_preferences(profile.get("preferences") or {})
+    profile["preferences"] = normalize_profile_preferences(profile.get("preferences") or {})
     return profile
-
-
-def _normalize_profile_preferences(preferences: Any) -> dict[str, Any]:
-    base = dict(preferences or {}) if isinstance(preferences, dict) else {}
-    raw_contact = base.get("proactive_contact")
-    contact = dict(raw_contact or {}) if isinstance(raw_contact, dict) else {}
-    enabled = bool(contact.get("enabled", DEFAULT_PROACTIVE_CONTACT["enabled"]))
-    try:
-        max_per_day = int(contact.get("max_per_day", DEFAULT_PROACTIVE_CONTACT["max_per_day"]))
-    except Exception:
-        max_per_day = int(DEFAULT_PROACTIVE_CONTACT["max_per_day"])
-    max_per_day = max(1, min(max_per_day, 3))
-    allowed_types = contact.get("allowed_types", DEFAULT_PROACTIVE_CONTACT["allowed_types"])
-    if not isinstance(allowed_types, list):
-        allowed_types = DEFAULT_PROACTIVE_CONTACT["allowed_types"]
-    allowed_types = [
-        str(item)
-        for item in allowed_types
-        if str(item) in PROACTIVE_CONTACT_TYPES
-    ]
-    if not allowed_types:
-        allowed_types = list(DEFAULT_PROACTIVE_CONTACT["allowed_types"])
-    base["proactive_contact"] = {
-        "enabled": enabled,
-        "max_per_day": max_per_day,
-        "quiet_start": _normalize_time_of_day(contact.get("quiet_start"), DEFAULT_PROACTIVE_CONTACT["quiet_start"]),
-        "quiet_end": _normalize_time_of_day(contact.get("quiet_end"), DEFAULT_PROACTIVE_CONTACT["quiet_end"]),
-        "allowed_types": list(dict.fromkeys(allowed_types))[:4],
-    }
-    return base
-
-
-def _normalize_time_of_day(value: Any, default: str) -> str:
-    text = str(value or "").strip()
-    if re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", text):
-        return text
-    return default
 
 
 def _clean_selections(selections: dict[str, list[str]]) -> dict[str, list[str]]:

@@ -341,6 +341,8 @@ def verify_tab_scoped_login(server, auth) -> None:
 
 
 def verify_profile_proactive_preferences(server, user_id: int) -> None:
+    import app.proactive_contact as proactive_contact
+
     user = {"id": user_id}
     profile = server.profile(user)["profile"]
     proactive = profile["preferences"]["proactive_contact"]
@@ -372,6 +374,60 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
     assert proactive["quiet_start"] == "22:00"
     assert proactive["quiet_end"] == "08:30"
     assert proactive["allowed_types"] == ["followup", "care"]
+
+    ts = database.now_ts()
+    old_ts = ts - 8 * 60 * 60
+    with database.get_db() as db:
+        persona_id = int(
+            db.execute(
+                """
+                INSERT INTO personas (user_id, name, summary, prompt, relationship, speaking_style, created_at, updated_at)
+                VALUES (?, '主动候选', '安静', '自然聊天', ?, '短句', ?, ?)
+                """,
+                (user_id, NEUTRAL, old_ts, old_ts),
+            ).lastrowid
+        )
+        conversation_id = int(
+            db.execute(
+                "INSERT INTO conversations (user_id, persona_id, title, created_at, updated_at) VALUES (?, ?, '主动候选', ?, ?)",
+                (user_id, persona_id, old_ts, old_ts),
+            ).lastrowid
+        )
+        db.execute(
+            """
+            INSERT INTO messages (conversation_id, user_id, persona_id, role, content, created_at)
+            VALUES (?, ?, ?, 'user', '我明天要去办一件事', ?)
+            """,
+            (conversation_id, user_id, persona_id, old_ts),
+        )
+    preview = proactive_contact.proactive_contact_candidates(user_id, at_ts=ts, limit=5)
+    assert preview["allowed_now"] is True
+    assert preview["blocked_reason"] == ""
+    assert preview["candidates"][0]["type"] == "followup"
+    assert preview["candidates"][0]["conversation_id"] == conversation_id
+    api_preview = server.proactive_contact_candidate_preview(user, limit=5)
+    assert api_preview["settings"]["enabled"] is True
+    assert api_preview["candidates"][0]["conversation_id"] == conversation_id
+
+    server.update_profile(
+        server.ProfileUpdateRequest(
+            nickname="\u6708",
+            preferences={
+                "proactive_contact": {
+                    "enabled": True,
+                    "max_per_day": 1,
+                    "quiet_start": "00:00",
+                    "quiet_end": "23:59",
+                    "allowed_types": ["followup"],
+                },
+            },
+        ),
+        user,
+    )
+    quiet_preview = proactive_contact.proactive_contact_candidates(user_id, at_ts=ts, limit=5)
+    assert quiet_preview["allowed_now"] is False
+    assert quiet_preview["blocked_reason"] == "quiet_hours"
+    assert quiet_preview["candidates"][0]["conversation_id"] == conversation_id
 
 
 def main() -> None:
