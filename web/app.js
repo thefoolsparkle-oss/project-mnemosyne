@@ -66,6 +66,7 @@ let state = {
   messages: [],
   groupMessages: [],
   view: "chat",
+  groupAutoStatus: "",
   editingPersona: false,
   profileOpen: false,
   personaPanelOpen: false,
@@ -1620,7 +1621,11 @@ function renderGroupChat() {
               text: autoTurnEnabled ? "\u81ea\u4e3b\u7eed\u804a\u5f00" : "\u81ea\u4e3b\u7eed\u804a\u5173",
             }),
           ]),
-          h("p", { text: "群聊模式：大家会视情况接话，也可以保持沉默。" }),
+          h("p", {
+            text: autoTurnEnabled
+              ? (state.groupAutoStatus || "群聊会在安静一会儿后判断是否自然接话。")
+              : "群聊模式：大家会视情况接话，也可以保持沉默。",
+          }),
         ]),
         h("div", { class: "chat-header-actions" }, [
           h("button", {
@@ -3028,14 +3033,27 @@ function setGroupAutoTurnEnabled(groupId, enabled) {
   } catch {
     // Local storage may be unavailable in restricted browser modes.
   }
-  if (enabled) scheduleGroupAutoPrompt(groupId);
-  else clearGroupAutoPrompt();
+  if (enabled) {
+    scheduleGroupAutoPrompt(groupId);
+  } else {
+    setGroupAutoStatus("自主续聊已关闭。");
+    clearGroupAutoPrompt();
+  }
 }
 
 function clearGroupAutoPrompt() {
   if (groupAutoPromptTimer) {
     clearTimeout(groupAutoPromptTimer);
     groupAutoPromptTimer = null;
+  }
+}
+
+function setGroupAutoStatus(message, { renderNow = false } = {}) {
+  const textValue = String(message || "");
+  if (state.groupAutoStatus === textValue) return;
+  state.groupAutoStatus = textValue;
+  if (renderNow && state.view === "group") {
+    renderShell();
   }
 }
 
@@ -3046,6 +3064,10 @@ function scheduleGroupAutoPrompt(groupId, delayMs = GROUP_AUTO_PROMPT_DELAY_MS) 
     return;
   }
   clearGroupAutoPrompt();
+  const seconds = Math.max(1, Math.round((Number(delayMs) || GROUP_AUTO_PROMPT_DELAY_MS) / 1000));
+  if (state.view === "group" && Number(state.activeGroupConversationId) === id) {
+    setGroupAutoStatus(`自主续聊会在约 ${seconds} 秒后检查。`);
+  }
   groupAutoPromptTimer = setTimeout(() => {
     groupAutoPromptTimer = null;
     if (state.view === "group" && Number(state.activeGroupConversationId) === id) {
@@ -3307,25 +3329,47 @@ async function maybeRequestGroupAutonomousTurn() {
     return;
   }
   const messages = state.groupMessages || [];
-  if (!messages.length) return;
+  if (!messages.length) {
+    setGroupAutoStatus("还没有群聊消息，自主续聊暂不启动。", { renderNow: true });
+    return;
+  }
   const now = nowSeconds();
   const latest = messages[messages.length - 1];
   if (
     latest.speaker_type === "user"
     && ["error", "generating"].includes(latest.reply_status)
   ) {
+    setGroupAutoStatus("上一条用户消息还没稳定落地，暂不自主续聊。", { renderNow: true });
     return;
   }
-  if (now - Number(latest.created_at || 0) < GROUP_AUTO_MIN_IDLE_SECONDS) return;
+  const idleSeconds = now - Number(latest.created_at || 0);
+  if (idleSeconds < GROUP_AUTO_MIN_IDLE_SECONDS) {
+    setGroupAutoStatus(`还要安静约 ${Math.max(1, GROUP_AUTO_MIN_IDLE_SECONDS - idleSeconds)} 秒再判断是否接话。`, { renderNow: true });
+    return;
+  }
   const latestUser = [...messages].reverse().find((message) => message.speaker_type === "user");
-  if (!latestUser || now - Number(latestUser.created_at || 0) > GROUP_AUTO_USER_WINDOW_SECONDS) return;
+  if (!latestUser) {
+    setGroupAutoStatus("最近没有用户发起的话题，暂不自主续聊。", { renderNow: true });
+    return;
+  }
+  if (now - Number(latestUser.created_at || 0) > GROUP_AUTO_USER_WINDOW_SECONDS) {
+    setGroupAutoStatus("距离你的上一条话太久了，群聊不会自行重启旧话题。", { renderNow: true });
+    return;
+  }
 
   const groupId = Number(state.activeGroupConversationId);
-  if (!groupAutoTurnEnabled(groupId)) return;
+  if (!groupAutoTurnEnabled(groupId)) {
+    setGroupAutoStatus("自主续聊已关闭。", { renderNow: true });
+    return;
+  }
   const cooldownKey = String(groupId);
   const nextAllowedAt = Number(groupAutoCooldowns.get(cooldownKey) || 0);
-  if (now < nextAllowedAt) return;
+  if (now < nextAllowedAt) {
+    setGroupAutoStatus(`自主续聊冷却中，约 ${Math.max(1, nextAllowedAt - now)} 秒后再试。`, { renderNow: true });
+    return;
+  }
   groupAutoCooldowns.set(cooldownKey, now + GROUP_AUTO_MIN_IDLE_SECONDS);
+  setGroupAutoStatus("正在判断谁适合自然接话...", { renderNow: true });
 
   try {
     const data = await api(`/api/group-conversations/${groupId}/autonomous-turn`, {
@@ -3334,6 +3378,7 @@ async function maybeRequestGroupAutonomousTurn() {
     });
     if (data.degraded) {
       groupAutoCooldowns.set(cooldownKey, nowSeconds() + GROUP_AUTO_FAILURE_BACKOFF_SECONDS);
+      setGroupAutoStatus(data.error_message || "这轮自主续聊没有成功接上，稍后再试。", { renderNow: true });
     }
     if (state.view !== "group" || Number(state.activeGroupConversationId) !== groupId) return;
     if ((data.messages || []).length) {
@@ -3344,13 +3389,31 @@ async function maybeRequestGroupAutonomousTurn() {
       }
       await markGroupConversationRead(groupId);
       await loadMainData();
+      setGroupAutoStatus(`刚刚有 ${data.messages.length} 条自主接话。`);
       renderShell();
       scrollChat();
+    } else if (!data.degraded) {
+      setGroupAutoStatus(groupAutoSkipText(data.reason), { renderNow: true });
     }
   } catch {
     groupAutoCooldowns.set(cooldownKey, nowSeconds() + GROUP_AUTO_FAILURE_BACKOFF_SECONDS);
+    setGroupAutoStatus("自主续聊请求失败，稍后会自动再试。", { renderNow: true });
     // Autonomous turns are opportunistic; visible errors belong to user-sent messages.
   }
+}
+
+function groupAutoSkipText(reason) {
+  const labels = {
+    empty: "还没有群聊消息，自主续聊暂不启动。",
+    last_user_turn_unresolved: "上一条用户消息还没稳定落地，暂不自主续聊。",
+    too_fresh: "刚刚才有人说话，继续等一等。",
+    no_recent_user: "最近没有用户发起的话题，暂不自主续聊。",
+    user_window_expired: "距离你的上一条话太久了，群聊不会自行重启旧话题。",
+    turn_cap: "这一轮大家已经接过话了，先保持安静。",
+    quiet: "这轮判断为保持安静更自然。",
+    reused: "这轮自主续聊已经处理过。",
+  };
+  return labels[reason] || "这轮没有合适的自主接话。";
 }
 
 function renderChatEmpty() {
