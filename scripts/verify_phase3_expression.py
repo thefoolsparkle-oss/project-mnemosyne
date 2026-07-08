@@ -787,6 +787,11 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     assert restored_pref_usage["feedback_signal"]["negative"] >= 2
     assert restored_pref_usage["feedback_signal"]["net"] <= -1
     assert "scene_counts" in restored_pref_usage["feedback_signal"]
+    resource_feedback = restored_pref_usage["feedback_signal"]["resource_feedback"]
+    assert resource_feedback
+    assert resource_feedback[0]["negative"] >= 1
+    assert resource_feedback[0]["evidence_count"] >= 1
+    assert "scene_counts" in resource_feedback[0]
     assert any(item["kind"] == "preference_changes" for item in restored_pref_usage["insights"])
     assert any(item["kind"] == "expression_negative_feedback" for item in restored_pref_usage["insights"])
     assert any("运行时已收紧" in item["text"] for item in restored_pref_usage["insights"])

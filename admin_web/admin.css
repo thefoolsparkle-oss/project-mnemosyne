@@ -501,6 +501,40 @@ small {
   font-size: 12px;
 }
 
+.expression-resource-feedback {
+  display: grid;
+  gap: 6px;
+}
+
+.expression-resource-feedback small {
+  color: var(--muted);
+}
+
+.expression-resource-feedback article {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.expression-resource-feedback article.negative {
+  border-color: rgba(218, 83, 83, 0.28);
+  background: rgba(218, 83, 83, 0.05);
+}
+
+.expression-resource-feedback strong {
+  font-size: 13px;
+}
+
+.expression-resource-feedback span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .expression-usage-tags {
   display: flex;
   flex-wrap: wrap;

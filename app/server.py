@@ -948,7 +948,7 @@ def admin_expression_usage(
             "severity": "tune",
             "text": "最近轻表达偏好有多次切换，运行时已收紧非安慰场景的自动补标签；建议先观察用户对频率的真实反应。",
         })
-    feedback_signal = _expression_feedback_signal(preference_history, summary)
+    feedback_signal = _expression_feedback_signal(preference_history, summary, usage_rows)
     if feedback_signal.get("negative") and feedback_signal.get("negative") >= feedback_signal.get("positive"):
         insights.append({
             "kind": "expression_negative_feedback",
@@ -958,6 +958,19 @@ def admin_expression_usage(
                 f"主导场景为 {feedback_signal['dominant_scene'] or '未知'}；优先降低非安慰场景触发。"
             ),
         })
+    resource_feedback = feedback_signal.get("resource_feedback") or []
+    if resource_feedback:
+        top_resource = resource_feedback[0]
+        if int(top_resource.get("negative") or 0) > int(top_resource.get("positive") or 0):
+            insights.append({
+                "kind": "expression_resource_feedback",
+                "severity": "tune",
+                "text": (
+                    f"{top_resource.get('display_text') or top_resource.get('label') or '某个轻表达'} "
+                    f"最近更接近负反馈线索；建议优先观察该资源的冷却、场景和用途说明。"
+                ),
+                "tag": top_resource.get("tag") or "",
+            })
     return {
         "preference": preference,
         "preference_history": preference_history,
@@ -975,7 +988,11 @@ def admin_expression_usage(
     }
 
 
-def _expression_feedback_signal(preference_history: list[dict[str, Any]], summary: dict[str, Any]) -> dict[str, Any]:
+def _expression_feedback_signal(
+    preference_history: list[dict[str, Any]],
+    summary: dict[str, Any],
+    usage_rows: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     positive = sum(1 for item in preference_history if item.get("mode") == "normal")
     negative = sum(1 for item in preference_history if item.get("mode") in {"off", "subtle"})
     total = max(1, int(summary.get("window") or 0))
@@ -995,7 +1012,85 @@ def _expression_feedback_signal(preference_history: list[dict[str, Any]], summar
         "dominant_scene": dominant_scene,
         "scene_counts": scene_counts,
         "selection_agent_share": round(source_selection_agent / total, 4),
+        "resource_feedback": _expression_resource_feedback(preference_history, usage_rows or []),
     }
+
+
+def _expression_resource_feedback(
+    preference_history: list[dict[str, Any]],
+    usage_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    resources: dict[str, dict[str, Any]] = {}
+    if not preference_history or not usage_rows:
+        return []
+    rows = sorted(usage_rows, key=lambda item: (int(item.get("created_at") or 0), int(item.get("id") or 0)), reverse=True)
+    for event in preference_history:
+        mode = str(event.get("mode") or "")
+        if mode not in {"off", "subtle", "normal"}:
+            continue
+        signal = "positive" if mode == "normal" else "negative"
+        seen_tags: set[str] = set()
+        for row in rows:
+            if not _expression_usage_before_preference(row, event):
+                continue
+            tag = f"{row.get('expression_type') or 'gesture'}:{row.get('label') or ''}"
+            if not row.get("label") or tag in seen_tags:
+                continue
+            seen_tags.add(tag)
+            entry = resources.setdefault(
+                tag,
+                {
+                    "tag": tag,
+                    "label": row.get("label") or "",
+                    "display_text": row.get("display_text") or row.get("label") or tag,
+                    "expression_type": row.get("expression_type") or "gesture",
+                    "group": row.get("group") or "unknown",
+                    "risk_level": row.get("risk_level") or "unknown",
+                    "cooldown_turns": int(row.get("cooldown_turns") or 0),
+                    "positive": 0,
+                    "negative": 0,
+                    "net": 0,
+                    "evidence_count": 0,
+                    "last_feedback_mode": mode,
+                    "last_seen_at": int(row.get("created_at") or 0),
+                    "scene_counts": {"support_needed": 0, "playful": 0, "ordinary": 0, "unknown": 0},
+                    "source_counts": {"model": 0, "selection_agent": 0, "compat": 0, "unknown": 0},
+                },
+            )
+            entry[signal] += 1
+            entry["net"] = int(entry["positive"]) - int(entry["negative"])
+            entry["evidence_count"] += 1
+            entry["last_feedback_mode"] = mode
+            entry["last_seen_at"] = max(int(entry.get("last_seen_at") or 0), int(row.get("created_at") or 0))
+            scene = str(row.get("scene_kind") or "unknown")
+            if scene not in entry["scene_counts"]:
+                scene = "unknown"
+            entry["scene_counts"][scene] += 1
+            source = str(row.get("source_kind") or "unknown")
+            if source not in entry["source_counts"]:
+                source = "unknown"
+            entry["source_counts"][source] += 1
+            if len(seen_tags) >= 3:
+                break
+    return sorted(
+        resources.values(),
+        key=lambda item: (
+            -int(item.get("negative") or 0),
+            int(item.get("net") or 0),
+            -int(item.get("evidence_count") or 0),
+            str(item.get("tag") or ""),
+        ),
+    )[:6]
+
+
+def _expression_usage_before_preference(row: dict[str, Any], event: dict[str, Any]) -> bool:
+    source_message_id = int(event.get("source_message_id") or 0)
+    message_id = int(row.get("message_id") or 0)
+    if source_message_id and message_id:
+        return message_id < source_message_id
+    event_ts = int(event.get("created_at") or 0)
+    row_ts = int(row.get("created_at") or row.get("message_created_at") or 0)
+    return bool(event_ts and row_ts and row_ts <= event_ts)
 
 
 def _expression_review_items(counts: list[dict[str, Any]], summary: dict[str, Any]) -> list[dict[str, Any]]:

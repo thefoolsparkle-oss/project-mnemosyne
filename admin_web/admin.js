@@ -335,6 +335,7 @@ function renderExpressionUsage(data) {
   const recent = Array.isArray(data.recent) ? data.recent : [];
   const summary = data.summary || {};
   const feedbackSignal = data.feedback_signal || {};
+  const resourceFeedback = Array.isArray(feedbackSignal.resource_feedback) ? feedbackSignal.resource_feedback : [];
   const insights = Array.isArray(data.insights) ? data.insights : [];
   const reviewItems = Array.isArray(data.review_items) ? data.review_items : [];
   return h("div", { class: "expression-usage-panel" }, [
@@ -372,6 +373,9 @@ function renderExpressionUsage(data) {
         text: item.text || "",
       })))
       : null,
+    resourceFeedback.length
+      ? renderExpressionResourceFeedback(resourceFeedback)
+      : null,
     reviewItems.length
       ? renderExpressionReviewItems(reviewItems)
       : null,
@@ -387,6 +391,19 @@ function renderExpressionUsage(data) {
     recent.length
       ? h("div", { class: "expression-usage-list" }, recent.slice(0, 8).map(renderExpressionUsageItem))
       : null,
+  ]);
+}
+
+function renderExpressionResourceFeedback(items) {
+  return h("div", { class: "expression-resource-feedback" }, [
+    h("small", { text: "资源反馈线索" }),
+    ...items.slice(0, 4).map((item) => h("article", {
+      class: Number(item.net || 0) < 0 ? "negative" : "positive",
+    }, [
+      h("strong", { text: item.display_text || item.label || item.tag || "" }),
+      h("span", { text: `正 ${item.positive || 0} / 负 ${item.negative || 0} / 净 ${item.net || 0}` }),
+      h("span", { text: `${expressionGroupLabel(item.group)} · ${expressionRiskLabel(item.risk_level)} · 冷却 ${item.cooldown_turns || 0}` }),
+    ])),
   ]);
 }
 
@@ -1103,6 +1120,27 @@ function expressionSourceCountLabel(counts = {}) {
     ["未知", counts.unknown],
   ].filter(([, count]) => Number(count || 0) > 0);
   return parts.length ? parts.map(([label, count]) => `${label}${count}`).join(" / ") : "来源暂无";
+}
+
+function expressionGroupLabel(group) {
+  return {
+    acknowledgement: "回应",
+    support: "支持",
+    care: "关心",
+    warmth: "温暖",
+    playful: "玩笑",
+    neutral: "中性",
+    unknown: "未知分组",
+  }[group] || group || "未知分组";
+}
+
+function expressionRiskLabel(risk) {
+  return {
+    low: "低风险",
+    medium: "中风险",
+    high: "高风险",
+    unknown: "未知风险",
+  }[risk] || risk || "未知风险";
 }
 
 function expressionSceneLabel(scene) {
