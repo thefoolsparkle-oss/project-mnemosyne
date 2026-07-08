@@ -497,6 +497,21 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
     assert [item["type"] for item in care_preview["candidates"]] == ["care"]
     assert care_preview["candidates"][0]["conversation_id"] == care_conversation_id
 
+    server.record_proactive_contact_event_endpoint(
+        server.ProactiveContactEventRequest(
+            event_type="candidate_dismissed",
+            conversation_id=care_conversation_id,
+            persona_id=persona_id,
+            candidate_type="care",
+            detail={"reason": "not_today"},
+        ),
+        user,
+    )
+    dismissed_preview = proactive_contact.proactive_contact_candidates(user_id, at_ts=database.now_ts(), limit=5)
+    assert dismissed_preview["allowed_now"] is True
+    assert dismissed_preview["usage_today"] == 1
+    assert dismissed_preview["candidates"] == []
+
     server.update_profile(
         server.ProfileUpdateRequest(
             nickname="\u6708",

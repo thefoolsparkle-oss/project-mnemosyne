@@ -653,16 +653,25 @@ function renderProactiveContactPanel() {
 }
 
 function renderProactiveCandidate(item) {
-  return h("button", {
-    type: "button",
-    class: "proactive-candidate",
-    onclick: () => openProactiveCandidate(item),
-  }, [
-    avatar(item.persona_name || "M", item.persona_avatar_url),
-    h("span", {}, [
-      h("strong", { text: item.persona_name || "\u672a\u547d\u540d" }),
-      h("small", { text: item.draft_text || item.reason || "" }),
+  return h("div", { class: "proactive-candidate" }, [
+    h("button", {
+      type: "button",
+      class: "proactive-candidate-main",
+      onclick: () => openProactiveCandidate(item),
+    }, [
+      avatar(item.persona_name || "M", item.persona_avatar_url),
+      h("span", {}, [
+        h("strong", { text: item.persona_name || "\u672a\u547d\u540d" }),
+        h("small", { text: item.draft_text || item.reason || "" }),
+      ]),
     ]),
+    h("button", {
+      type: "button",
+      class: "proactive-candidate-dismiss",
+      title: "\u4eca\u5929\u4e0d\u518d\u63d0\u793a\u8fd9\u4e2a",
+      "aria-label": "\u5ffd\u7565\u4e3b\u52a8\u8054\u7cfb\u5019\u9009",
+      onclick: () => dismissProactiveCandidate(item),
+    }, "\u00d7"),
   ]);
 }
 
@@ -687,6 +696,30 @@ async function openProactiveCandidate(item) {
     console.warn("proactive contact event failed", err);
   }
   await openConversationItem(conversation);
+}
+
+async function dismissProactiveCandidate(item) {
+  if (state.proactiveContact?.candidates) {
+    state.proactiveContact.candidates = state.proactiveContact.candidates.filter((candidate) => (
+      Number(candidate.conversation_id) !== Number(item.conversation_id)
+      || String(candidate.type || "") !== String(item.type || "")
+    ));
+    render();
+  }
+  try {
+    await api("/api/proactive-contact/events", {
+      method: "POST",
+      body: JSON.stringify({
+        event_type: "candidate_dismissed",
+        conversation_id: item.conversation_id,
+        persona_id: item.persona_id,
+        candidate_type: item.type || "",
+        detail: { reason: item.reason || "" },
+      }),
+    });
+  } catch (err) {
+    console.warn("proactive contact dismissal failed", err);
+  }
 }
 
 function renderProfileModal() {

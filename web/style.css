@@ -602,12 +602,24 @@ small {
 
 .proactive-candidate {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) 24px;
+  gap: 4px;
   align-items: center;
   padding: 7px;
   border: 1px solid transparent;
   border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+}
+
+.proactive-candidate-main {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  padding: 0;
+  border: 0;
   background: transparent;
   color: var(--text);
   text-align: left;
@@ -616,6 +628,25 @@ small {
 .proactive-candidate:hover {
   border-color: var(--line);
   background: rgba(23, 28, 37, 0.04);
+}
+
+.proactive-candidate-dismiss {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.proactive-candidate-dismiss:hover {
+  background: rgba(23, 28, 37, 0.08);
+  color: var(--text);
 }
 
 .proactive-candidate strong,
