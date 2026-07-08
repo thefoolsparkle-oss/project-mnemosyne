@@ -103,16 +103,23 @@ def main() -> None:
                         ("health_probe", "kimi", "moonshot-v1-auto", "success", 100, 50, 1200, "", ts),
                         ("health_probe", "kimi", "moonshot-v1-auto", "failed", 120, 0, 31000, "timeout", ts + 1),
                         ("group_chat", "kimi", "moonshot-v1-auto", "success", 80, 40, 900, "", ts + 2),
+                        ("recovered_probe", "kimi", "moonshot-v1-auto", "failed", 80, 0, 1200, "old timeout", ts + 3),
+                        ("recovered_probe", "kimi", "moonshot-v1-auto", "success", 80, 40, 900, "", ts + 4),
                     ],
                 )
             health = server.admin_llm_health({"id": 1, "role": "admin"}, limit=10)
             probe_health = next(item for item in health["tasks"] if item["task"] == "health_probe")
+            recovered_health = next(item for item in health["tasks"] if item["task"] == "recovered_probe")
             assert health["window"] >= 3
             assert health["failed"] >= 1
             assert health["slow"] >= 1
             assert probe_health["failed"] == 1
             assert probe_health["slow"] == 1
             assert probe_health["last_error"] == "timeout"
+            assert probe_health["current_failed"] is True
+            assert recovered_health["failed"] == 1
+            assert recovered_health["current_failed"] is False
+            assert recovered_health["historical_failed"] is True
     finally:
         llm.load_config = original_load_config
         llm._get_env = original_get_env

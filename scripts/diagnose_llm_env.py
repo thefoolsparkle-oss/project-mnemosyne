@@ -59,15 +59,44 @@ def _recent_llm_health(limit: int = 80) -> list[dict[str, Any]]:
     stats: dict[str, dict[str, Any]] = {}
     for row in rows:
         task = str(row["task"] or "default")
-        item = stats.setdefault(task, {"task": task, "total": 0, "failed": 0, "slow": 0, "last_error": ""})
+        item = stats.setdefault(
+            task,
+            {
+                "task": task,
+                "total": 0,
+                "failed": 0,
+                "slow": 0,
+                "last_status": "",
+                "last_error": "",
+                "last_created_at": 0,
+            },
+        )
         item["total"] += 1
-        if str(row["status"] or "") == "failed":
+        status = str(row["status"] or "")
+        created_at = int(row["created_at"] or 0)
+        if status == "failed":
             item["failed"] += 1
             if not item["last_error"]:
                 item["last_error"] = str(row["error_text"] or "")[:160]
         if int(row["duration_ms"] or 0) >= 30000:
             item["slow"] += 1
-    return sorted(stats.values(), key=lambda item: (-int(item["failed"]), -int(item["slow"]), str(item["task"])))
+        if not item["last_created_at"] or created_at > int(item["last_created_at"] or 0):
+            item["last_status"] = status
+            item["last_created_at"] = created_at
+            if status == "failed":
+                item["last_error"] = str(row["error_text"] or "")[:160]
+    for item in stats.values():
+        item["current_failed"] = item.get("last_status") == "failed"
+        item["historical_failed"] = int(item.get("failed") or 0) > 0 and not item["current_failed"]
+    return sorted(
+        stats.values(),
+        key=lambda item: (
+            0 if item.get("current_failed") else 1,
+            -int(item["failed"]),
+            -int(item["slow"]),
+            str(item["task"]),
+        ),
+    )
 
 
 def main() -> None:
@@ -87,9 +116,11 @@ def main() -> None:
     if health:
         print("\nRecent local LLM health:")
         for item in health:
-            line = "  {task}: total={total} failed={failed} slow={slow}".format(**item)
-            if item.get("last_error"):
-                line += f" last_error={item['last_error']}"
+            line = "  {task}: total={total} failed={failed} slow={slow} last_status={last_status} last_at={last_created_at}".format(**item)
+            if item.get("current_failed") and item.get("last_error"):
+                line += f" current_error={item['last_error']}"
+            elif item.get("historical_failed"):
+                line += " historical_failed=true"
             print(line)
     else:
         print("\nRecent local LLM health: no local call logs")

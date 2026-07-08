@@ -1323,9 +1323,16 @@ def admin_llm_health(admin: dict = Depends(current_admin), limit: int = 120):
         total = max(1, int(item["total"] or 0))
         item["failure_rate"] = round(int(item["failed"] or 0) / total, 4)
         item["avg_duration_ms"] = round(int(item["duration_total_ms"] or 0) / total)
+        item["current_failed"] = item.get("last_status") == "failed"
+        item["historical_failed"] = int(item.get("failed") or 0) > 0 and not item["current_failed"]
         item.pop("duration_total_ms", None)
         tasks.append(item)
-    tasks.sort(key=lambda item: (-int(item["failed"] or 0), -int(item["slow"] or 0), str(item["task"])))
+    tasks.sort(key=lambda item: (
+        0 if item.get("current_failed") else 1,
+        -int(item["failed"] or 0),
+        -int(item["slow"] or 0),
+        str(item["task"]),
+    ))
     return {
         "window": len(calls),
         "failed": sum(int(item.get("failed") or 0) for item in tasks),

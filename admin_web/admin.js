@@ -1678,17 +1678,20 @@ function renderLlmHealth() {
       h("span", { text: `失败 ${health.failed || 0}` }),
       h("span", { text: `慢调用 ${health.slow || 0}` }),
     ]),
-    h("div", { class: "llm-health-list" }, tasks.slice(0, 8).map((item) => h("article", {
-      class: `llm-health-item ${Number(item.failed || 0) ? "failed" : "ok"}`,
-    }, [
+    h("div", { class: "llm-health-list" }, tasks.slice(0, 8).map((item) => {
+      const statusClass = item.current_failed ? "failed" : (item.historical_failed ? "recovered" : "ok");
+      return h("article", {
+        class: `llm-health-item ${statusClass}`,
+      }, [
       h("div", { class: "memory-title" }, [
         h("strong", { text: `${item.task} / ${item.last_status || "unknown"}` }),
-        h("small", { text: `${Math.round(Number(item.failure_rate || 0) * 100)}% fail` }),
+        h("small", { text: item.current_failed ? "current failure" : (item.historical_failed ? "historical failures" : "ok") }),
       ]),
       h("p", { text: `${item.provider || ""} ${item.model || ""}`.trim() || "route unknown" }),
-      h("small", { text: `total ${item.total || 0} / avg ${item.avg_duration_ms || 0}ms / max ${item.max_duration_ms || 0}ms / slow ${item.slow || 0}` }),
+      h("small", { text: `total ${item.total || 0} / failed ${item.failed || 0} (${Math.round(Number(item.failure_rate || 0) * 100)}%) / avg ${item.avg_duration_ms || 0}ms / max ${item.max_duration_ms || 0}ms / slow ${item.slow || 0} / last ${item.last_created_at ? formatTs(item.last_created_at) : "-"}` }),
       item.last_error ? h("pre", { text: item.last_error }) : null,
-    ]))),
+    ]);
+    })),
   ]);
 }
 

@@ -323,6 +323,10 @@ small {
   border-color: rgba(242, 160, 160, 0.7);
 }
 
+.llm-health-item.recovered {
+  border-color: rgba(238, 196, 126, 0.65);
+}
+
 .llm-call p,
 .llm-route p,
 .llm-health-item p {
