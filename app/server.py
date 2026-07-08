@@ -34,7 +34,7 @@ from .config import load_config
 from .database import dict_from_row, get_db, init_db, now_ts
 from .db_chat import db_chat, normalize_existing_assistant_messages
 from .expression_assets import active_expression_labels, expression_asset, expression_assets_public, update_expression_asset_setting
-from .expression_preferences import expression_preference_events, record_expression_preference_event
+from .expression_preferences import expression_preference_churn, expression_preference_events, record_expression_preference_event
 from .expression_style import (
     persona_expression_style_events,
     persona_expression_style_setting,
@@ -865,6 +865,7 @@ def admin_expression_usage(
     style_setting = persona_expression_style_setting(owner_id, persona_filter) if persona_filter else None
     style_suggestions = _expression_style_suggestions(sorted_counts, summary, style_setting) if persona_filter else []
     preference_history = expression_preference_events(owner_id, persona_filter, limit=5) if persona_filter else []
+    preference_feedback = expression_preference_churn(owner_id, persona_filter) if persona_filter else {"recent_modes": [], "change_count": 0, "churn": False}
     preference = {"enabled": True, "mode": "normal", "explicit": False}
     if preference_row:
         row = dict_from_row(preference_row) or {}
@@ -876,15 +877,16 @@ def admin_expression_usage(
             "updated_at": int(row.get("updated_at") or 0),
             "source_message_id": row.get("source_message_id"),
         }
-    if len(preference_history) >= 3 and len({str(item.get("mode") or "") for item in preference_history[:5]}) >= 2:
+    if preference_feedback.get("churn"):
         insights.append({
             "kind": "preference_changes",
             "severity": "tune",
-            "text": "最近轻表达偏好有多次切换，建议先观察用户对频率的真实反应，再继续提高表达触发。",
+            "text": "最近轻表达偏好有多次切换，运行时已收紧非安慰场景的自动补标签；建议先观察用户对频率的真实反应。",
         })
     return {
         "preference": preference,
         "preference_history": preference_history,
+        "preference_feedback": preference_feedback,
         "style_setting": style_setting,
         "style_suggestions": style_suggestions,
         "style_history": persona_expression_style_events(owner_id, persona_filter, limit=5) if persona_filter else [],
