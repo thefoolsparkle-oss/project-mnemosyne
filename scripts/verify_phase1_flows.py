@@ -411,6 +411,64 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
     admin_preview = server.admin_proactive_contact_candidates({"id": user_id, "role": "admin"}, target_user_id=user_id, limit=5)
     assert admin_preview["candidates"][0]["conversation_id"] == conversation_id
 
+    event = server.record_proactive_contact_event_endpoint(
+        server.ProactiveContactEventRequest(
+            event_type="candidate_opened",
+            conversation_id=conversation_id,
+            persona_id=persona_id,
+            candidate_type="followup",
+            detail={"reason": preview["candidates"][0]["reason"]},
+        ),
+        user,
+    )["event"]
+    assert event["event_type"] == "candidate_opened"
+    assert event["conversation_id"] == conversation_id
+    assert event["persona_id"] == persona_id
+    assert event["candidate_type"] == "followup"
+    assert event["detail"]["reason"] == "old_user_message"
+    try:
+        server.record_proactive_contact_event_endpoint(
+            server.ProactiveContactEventRequest(event_type="bad", conversation_id=conversation_id),
+            user,
+        )
+        raise AssertionError("unsupported proactive event type should fail")
+    except HTTPException as exc:
+        assert exc.status_code == 400
+
+    with database.get_db() as db:
+        care_conversation_id = int(
+            db.execute(
+                "INSERT INTO conversations (user_id, persona_id, title, created_at, updated_at) VALUES (?, ?, '涓诲姩鍏冲績', ?, ?)",
+                (user_id, persona_id, old_ts + 1, old_ts + 1),
+            ).lastrowid
+        )
+        db.execute(
+            """
+            INSERT INTO messages (conversation_id, user_id, persona_id, role, content, created_at)
+            VALUES (?, ?, ?, 'assistant', ?, ?)
+            """,
+            (care_conversation_id, user_id, persona_id, "\u6211\u4e4b\u524d\u5728\u8fd9\u91cc\u3002", old_ts + 1),
+        )
+    server.update_profile(
+        server.ProfileUpdateRequest(
+            nickname="\u6708",
+            preferences={
+                "proactive_contact": {
+                    "enabled": True,
+                    "max_per_day": 2,
+                    "quiet_start": "00:00",
+                    "quiet_end": "00:00",
+                    "allowed_types": ["care"],
+                },
+            },
+        ),
+        user,
+    )
+    care_preview = proactive_contact.proactive_contact_candidates(user_id, at_ts=ts, limit=5)
+    assert care_preview["allowed_now"] is True
+    assert [item["type"] for item in care_preview["candidates"]] == ["care"]
+    assert care_preview["candidates"][0]["conversation_id"] == care_conversation_id
+
     server.update_profile(
         server.ProfileUpdateRequest(
             nickname="\u6708",

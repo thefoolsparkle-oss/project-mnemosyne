@@ -80,7 +80,7 @@ from .memory_rag import semantic_memory_recall, sync_memory_embeddings
 from .memory_policy import policy_snapshot
 from .mirror import get_user_insight, update_user_insight
 from .persona_forge import build_prompt, forge_persona
-from .proactive_contact import normalize_profile_preferences, proactive_contact_candidates
+from .proactive_contact import normalize_profile_preferences, proactive_contact_candidates, record_proactive_contact_event
 from .growth_demo import clear_growth_demo_data, seed_growth_demo_data
 from .growth_guidance import deactivate_guidance, supersede_conflicting_guidance
 from .sculptor import (
@@ -191,6 +191,14 @@ class ProfileUpdateRequest(BaseModel):
     signature: str | None = Field(default=None, max_length=200)
     bio: str | None = Field(default=None, max_length=1000)
     preferences: dict[str, Any] | None = None
+
+
+class ProactiveContactEventRequest(BaseModel):
+    event_type: str = Field(..., max_length=40)
+    conversation_id: int | None = None
+    persona_id: int | None = None
+    candidate_type: str | None = Field(default="", max_length=40)
+    detail: dict[str, Any] = Field(default_factory=dict)
 
 
 class PersonaCreateRequest(BaseModel):
@@ -489,6 +497,25 @@ def update_profile(req: ProfileUpdateRequest, user: dict = Depends(current_user)
 @app.get("/api/proactive-contact/candidates")
 def proactive_contact_candidate_preview(user: dict = Depends(current_user), limit: int = 5):
     return proactive_contact_candidates(int(user["id"]), limit=limit)
+
+
+@app.post("/api/proactive-contact/events")
+def record_proactive_contact_event_endpoint(req: ProactiveContactEventRequest, user: dict = Depends(current_user)):
+    try:
+        event = record_proactive_contact_event(
+            int(user["id"]),
+            req.event_type,
+            persona_id=req.persona_id,
+            conversation_id=req.conversation_id,
+            candidate_type=req.candidate_type or "",
+            detail=req.detail,
+        )
+    except ValueError as exc:
+        message = str(exc)
+        if message == "conversation_not_found":
+            raise HTTPException(status_code=404, detail="conversation_not_found") from exc
+        raise HTTPException(status_code=400, detail=message) from exc
+    return {"event": event}
 
 
 @app.get("/api/admin/proactive-contact/candidates")

@@ -709,6 +709,20 @@ def init_db() -> None:
                 created_at INTEGER NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS proactive_contact_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                persona_id INTEGER,
+                conversation_id INTEGER,
+                event_type TEXT NOT NULL DEFAULT '',
+                candidate_type TEXT NOT NULL DEFAULT '',
+                detail_json TEXT NOT NULL DEFAULT '{}',
+                created_at INTEGER NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE SET NULL,
+                FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE SET NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
             CREATE INDEX IF NOT EXISTS idx_personas_user_id ON personas(user_id);
             CREATE INDEX IF NOT EXISTS idx_persona_growth_views_user
@@ -766,6 +780,8 @@ def init_db() -> None:
                 ON memory_eval_runs(user_id, persona_id, suite_name, created_at);
             CREATE INDEX IF NOT EXISTS idx_llm_call_logs_task
                 ON llm_call_logs(task, status, created_at);
+            CREATE INDEX IF NOT EXISTS idx_proactive_contact_events_scope
+                ON proactive_contact_events(user_id, persona_id, conversation_id, created_at);
             """
         )
         _ensure_column(db, "memory_links", "user_id", "INTEGER")

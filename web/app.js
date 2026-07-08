@@ -665,6 +665,23 @@ function renderProactiveCandidate(item) {
 async function openProactiveCandidate(item) {
   const conversation = state.conversations.find((entry) => Number(entry.id) === Number(item.conversation_id));
   if (!conversation) return;
+  try {
+    await api("/api/proactive-contact/events", {
+      method: "POST",
+      body: JSON.stringify({
+        event_type: "candidate_opened",
+        conversation_id: item.conversation_id,
+        persona_id: item.persona_id,
+        candidate_type: item.type || "",
+        detail: {
+          reason: item.reason || "",
+          idle_seconds: Number(item.idle_seconds || 0),
+        },
+      }),
+    });
+  } catch (err) {
+    console.warn("proactive contact event failed", err);
+  }
   await openConversationItem(conversation);
 }
 

@@ -9,6 +9,7 @@ from .database import dict_from_row, get_db, now_ts
 
 
 PROACTIVE_CONTACT_TYPES = {"followup", "care", "reminder", "interest"}
+PROACTIVE_CONTACT_EVENT_TYPES = {"candidate_opened", "candidate_seen", "candidate_dismissed"}
 DEFAULT_PROACTIVE_CONTACT = {
     "enabled": False,
     "max_per_day": 1,
@@ -72,8 +73,12 @@ def proactive_contact_candidates(user_id: int, *, at_ts: int | None = None, limi
         blocked_reason = "quiet_hours"
     candidates = _candidate_rows(user_id, ts, limit=max(1, min(int(limit or 5), 20)))
     max_per_day = int(settings.get("max_per_day") or 1)
-    if "followup" not in set(settings.get("allowed_types") or []):
-        candidates = []
+    allowed_types = set(settings.get("allowed_types") or [])
+    candidates = [
+        item
+        for item in candidates
+        if str(item.get("type") or "") in allowed_types
+    ]
     candidates = candidates[:max_per_day]
     return {
         "settings": settings,
@@ -81,6 +86,71 @@ def proactive_contact_candidates(user_id: int, *, at_ts: int | None = None, limi
         "blocked_reason": blocked_reason,
         "candidates": candidates if settings.get("enabled") else [],
     }
+
+
+def record_proactive_contact_event(
+    user_id: int,
+    event_type: str,
+    *,
+    persona_id: int | None = None,
+    conversation_id: int | None = None,
+    candidate_type: str = "",
+    detail: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    event_type = str(event_type or "").strip()
+    if event_type not in PROACTIVE_CONTACT_EVENT_TYPES:
+        raise ValueError("unsupported_event_type")
+    candidate_type = str(candidate_type or "").strip()
+    if candidate_type and candidate_type not in PROACTIVE_CONTACT_TYPES:
+        raise ValueError("unsupported_candidate_type")
+    detail_json = json.dumps(detail or {}, ensure_ascii=False)
+    ts = now_ts()
+    with get_db() as db:
+        owner = db.execute(
+            """
+            SELECT conversations.id AS conversation_id, conversations.persona_id
+            FROM conversations
+            WHERE conversations.id = ?
+              AND conversations.user_id = ?
+            """,
+            (conversation_id, user_id),
+        ).fetchone() if conversation_id is not None else None
+        if conversation_id is not None and not owner:
+            raise ValueError("conversation_not_found")
+        final_persona_id = persona_id
+        if owner:
+            final_persona_id = int(owner["persona_id"])
+        row_id = int(
+            db.execute(
+                """
+                INSERT INTO proactive_contact_events (
+                    user_id, persona_id, conversation_id, event_type, candidate_type, detail_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (user_id, final_persona_id, conversation_id, event_type, candidate_type, detail_json, ts),
+            ).lastrowid
+        )
+        row = db.execute(
+            "SELECT * FROM proactive_contact_events WHERE id = ?",
+            (row_id,),
+        ).fetchone()
+    return _event_from_row(row)
+
+
+def proactive_contact_events(user_id: int, *, limit: int = 20) -> list[dict[str, Any]]:
+    with get_db() as db:
+        rows = db.execute(
+            """
+            SELECT *
+            FROM proactive_contact_events
+            WHERE user_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (user_id, max(1, min(int(limit or 20), 100))),
+        ).fetchall()
+    return [_event_from_row(row) for row in rows]
 
 
 def _candidate_rows(user_id: int, ts: int, *, limit: int) -> list[dict[str, Any]]:
@@ -149,6 +219,17 @@ def _candidate_rows(user_id: int, ts: int, *, limit: int) -> list[dict[str, Any]
         if len(candidates) >= limit:
             break
     return candidates
+
+
+def _event_from_row(row: Any) -> dict[str, Any]:
+    item = dict_from_row(row) or {}
+    try:
+        detail = json.loads(str(item.get("detail_json") or "{}"))
+    except Exception:
+        detail = {}
+    item["detail"] = detail if isinstance(detail, dict) else {}
+    item.pop("detail_json", None)
+    return item
 
 
 def _draft_text(candidate_type: str) -> str:
