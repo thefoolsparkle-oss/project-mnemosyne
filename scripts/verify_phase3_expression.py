@@ -564,6 +564,13 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     assert any(item["kind"] == "selection_agent_label" for item in selector_usage["review_items"])
     assert selector_usage["style_suggestions"][0]["style"] == "restrained"
     assert "acknowledgement" in selector_usage["style_suggestions"][0]["preferred_groups"]
+    scene_pressure_policy = chat._recent_expression_policy(user_id, persona_id, conversation_id)
+    assert scene_pressure_policy["recent_expression_scene_counts"]["ordinary"] >= 5
+    assert "ordinary" in scene_pressure_policy["expression_congested_scenes"]
+    scene_pressure_policy["suppress_all"] = False
+    scene_pressure_policy.update(chat._expression_scene_context("嗯。"))
+    assert "Scene rhythm feedback" in chat._expression_policy_prompt(scene_pressure_policy)
+    assert chat._expression_selection_agent("嗯。", "嗯，我在。", scene_pressure_policy) == []
 
     assert chat._expression_preference_intent("以后别发表情了") == "disable"
     assert chat._expression_preference_intent("表情少一点") == "subtle"

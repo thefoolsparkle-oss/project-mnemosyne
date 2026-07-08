@@ -8,6 +8,7 @@ from .database import dict_from_row, get_db, now_ts
 from .db_chat import (
     EXPRESSION_POLICY_LOOKBACK,
     _apply_expression_policy,
+    _expression_scene_feedback,
     _expression_scene_context,
     _expression_selection_agent,
     _extract_reply_presentation,
@@ -1436,7 +1437,7 @@ def _recent_group_expression_policy(user_id: int, persona_id: int, group_convers
             placeholders = ", ".join("?" for _ in message_ids)
             expression_rows = db.execute(
                 f"""
-                SELECT group_message_id, label
+                SELECT group_message_id, label, source_text
                 FROM group_message_expressions
                 WHERE user_id = ? AND persona_id = ? AND group_conversation_id = ?
                   AND group_message_id IN ({placeholders})
@@ -1456,6 +1457,11 @@ def _recent_group_expression_policy(user_id: int, persona_id: int, group_convers
     for distance, message_id in enumerate(message_ids):
         for label in labels_by_message.get(message_id, []):
             recent_label_distances.setdefault(label, distance)
+    scene_feedback = _expression_scene_feedback(
+        expression_rows,
+        message_count=len(message_ids),
+        message_id_key="group_message_id",
+    )
     return {
         "expression_preference": preference,
         "disabled_by_user": False,
@@ -1469,6 +1475,7 @@ def _recent_group_expression_policy(user_id: int, persona_id: int, group_convers
         ),
         "recent_labels": recent_labels,
         "recent_label_distances": recent_label_distances,
+        **scene_feedback,
     }
 
 

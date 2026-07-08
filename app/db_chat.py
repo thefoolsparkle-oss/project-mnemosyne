@@ -70,6 +70,8 @@ for asset in EXPRESSION_ASSETS:
     STRUCTURED_EXPRESSION_LABELS.setdefault(str(asset["expression_type"]), set()).add(str(asset["label"]))
 EXPRESSION_RECENT_WINDOW = 4
 EXPRESSION_POLICY_LOOKBACK = 8
+EXPRESSION_SCENE_PRESSURE_MIN_COUNT = 3
+EXPRESSION_SCENE_PRESSURE_SHARE = 0.5
 EXPRESSION_DISABLE_PATTERNS = (
     "以后别发表情",
     "以后不要发表情",
@@ -1048,7 +1050,7 @@ def _recent_expression_policy(user_id: int, persona_id: int, conversation_id: in
             placeholders = ", ".join("?" for _ in message_ids)
             expression_rows = db.execute(
                 f"""
-                SELECT message_id, label
+                SELECT message_id, label, source_text
                 FROM message_expressions
                 WHERE user_id = ? AND persona_id = ? AND conversation_id = ?
                   AND message_id IN ({placeholders})
@@ -1068,6 +1070,11 @@ def _recent_expression_policy(user_id: int, persona_id: int, conversation_id: in
     for distance, message_id in enumerate(message_ids):
         for label in labels_by_message.get(message_id, []):
             recent_label_distances.setdefault(label, distance)
+    scene_feedback = _expression_scene_feedback(
+        expression_rows,
+        message_count=len(message_ids),
+        message_id_key="message_id",
+    )
     return {
         "expression_preference": preference,
         "disabled_by_user": False,
@@ -1081,7 +1088,60 @@ def _recent_expression_policy(user_id: int, persona_id: int, conversation_id: in
         ),
         "recent_labels": recent_labels,
         "recent_label_distances": recent_label_distances,
+        **scene_feedback,
     }
+
+
+def _empty_expression_scene_feedback() -> dict:
+    return {
+        "recent_expression_scene_counts": {
+            "support_needed": 0,
+            "playful": 0,
+            "ordinary": 0,
+        },
+        "expression_congested_scenes": [],
+    }
+
+
+def _expression_scene_from_source(source_text: object) -> str:
+    source = str(source_text or "").strip()
+    if not source.startswith("selection_agent:"):
+        return "unknown"
+    scene = source.split(":", 1)[1].strip()
+    if scene in {"support_needed", "playful", "ordinary"}:
+        return scene
+    return "unknown"
+
+
+def _expression_scene_feedback(
+    expression_rows: list,
+    *,
+    message_count: int,
+    message_id_key: str,
+) -> dict:
+    feedback = _empty_expression_scene_feedback()
+    scene_message_ids: dict[str, set[int]] = {
+        "support_needed": set(),
+        "playful": set(),
+        "ordinary": set(),
+    }
+    for row in expression_rows:
+        scene = _expression_scene_from_source(row["source_text"])
+        if scene == "unknown":
+            continue
+        feedback["recent_expression_scene_counts"][scene] += 1
+        try:
+            scene_message_ids[scene].add(int(row[message_id_key]))
+        except Exception:
+            pass
+    denominator = max(1, int(message_count or 0))
+    congested = []
+    for scene, count in feedback["recent_expression_scene_counts"].items():
+        scene_messages = len(scene_message_ids.get(scene, set()))
+        if count >= EXPRESSION_SCENE_PRESSURE_MIN_COUNT and (scene_messages / denominator) >= EXPRESSION_SCENE_PRESSURE_SHARE:
+            congested.append(scene)
+    feedback["expression_congested_scenes"] = congested
+    return feedback
 
 
 def _active_preference_prompt(user_id: int, persona_id: int) -> str:
@@ -1194,23 +1254,40 @@ def _expression_scene_context(user_text: str) -> dict:
     }
 
 
+def _expression_scene_pressure_prompt(policy: dict, scene: str) -> str:
+    congested_scenes = {str(item) for item in policy.get("expression_congested_scenes") or [] if item}
+    if scene not in congested_scenes:
+        return ""
+    counts = policy.get("recent_expression_scene_counts") or {}
+    count = int(counts.get(scene) or 0)
+    return (
+        "\nScene rhythm feedback: recent assistant replies already used "
+        f"{count} expression labels in the {scene} scene. Prefer plain text in this scene now; "
+        "only use a label if the user clearly needs emotional support."
+    )
+
+
 def _expression_scene_prompt(policy: dict) -> str:
     scene = str(policy.get("expression_scene") or "unspecified")
     allowed = "、".join(str(item) for item in policy.get("expression_allowed_groups") or [])
+    pressure_prompt = _expression_scene_pressure_prompt(policy, scene)
     if scene == "support_needed":
         return (
             "本轮轻表达场景：support_needed（用户明显疲惫、低落、求陪伴或需要安慰）。"
             f"如确实需要，优先从这些资源分组选择：{allowed}；中风险标签仍要克制。"
+            + pressure_prompt
         )
     if scene == "playful":
         return (
             "本轮轻表达场景：playful（轻松、打趣或玩笑）。"
             f"如确实需要，只从这些资源分组选择：{allowed}；不要使用担心类表达。"
+            + pressure_prompt
         )
     if scene == "ordinary":
         return (
             "本轮轻表达场景：ordinary（普通信息、短确认或无明显情绪承接需求）。"
             f"普通闲聊不要为了活泼硬加标签；如确实需要，只从这些资源分组选择：{allowed}。"
+            + pressure_prompt
         )
     return "本轮轻表达场景：unspecified。按总体节奏约束保持稀少。"
 
@@ -1241,6 +1318,9 @@ def _apply_expression_policy(expressions: list[dict], policy: dict) -> list[dict
     if policy.get("suppress_all"):
         return []
     scene = str(policy.get("expression_scene") or "")
+    congested_scenes = {str(item) for item in policy.get("expression_congested_scenes") or [] if item}
+    if scene in congested_scenes and scene != "support_needed":
+        return []
     allowed_groups = {str(group) for group in policy.get("expression_allowed_groups") or [] if group}
     avoid_labels = {str(label) for label in policy.get("expression_persona_avoid_labels") or [] if label}
     recent_labels = {str(label) for label in policy.get("recent_labels") or [] if label}
@@ -1274,6 +1354,9 @@ def _expression_selection_agent(user_text: str, reply_text: str, policy: dict) -
     if policy.get("disabled_by_user") or policy.get("suppress_all"):
         return []
     scene = str(policy.get("expression_scene") or "ordinary")
+    congested_scenes = {str(item) for item in policy.get("expression_congested_scenes") or [] if item}
+    if scene in congested_scenes and scene != "support_needed":
+        return []
     if policy.get("preference_churn") and scene != "support_needed":
         return []
     if policy.get("subtle_mode") and scene == "ordinary":
