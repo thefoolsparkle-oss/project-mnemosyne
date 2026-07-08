@@ -44,6 +44,19 @@ function Invoke-Checked {
     }
 }
 
+function Test-PowerShellScriptSyntax {
+    param([string[]]$Paths)
+    foreach ($path in $Paths) {
+        $tokens = $null
+        $errors = $null
+        [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $path), [ref]$tokens, [ref]$errors) | Out-Null
+        if ($errors.Count) {
+            $messages = $errors | ForEach-Object { "${path}: $($_.Message)" }
+            throw ($messages -join [Environment]::NewLine)
+        }
+    }
+}
+
 $Python = Resolve-PythonExecutable $Python
 Write-Host "Using Python: $Python"
 
@@ -59,6 +72,13 @@ try {
     Invoke-Checked "diagnose_llm_env" { & $Python scripts\diagnose_llm_env.py }
     Invoke-Checked "node web app check" { node --check web\app.js }
     Invoke-Checked "node admin app check" { node --check admin_web\admin.js }
+    Invoke-Checked "powershell script syntax" {
+        Test-PowerShellScriptSyntax @(
+            "scripts\start_local_server.ps1",
+            "scripts\start_remote_tunnel.ps1",
+            "scripts\stop_project_services.ps1"
+        )
+    }
 } finally {
     Pop-Location
 }
