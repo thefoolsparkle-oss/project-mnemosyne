@@ -400,16 +400,39 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
             """,
             (conversation_id, user_id, persona_id, old_ts),
         )
+        db.execute(
+            """
+            INSERT INTO conversation_summaries (
+                user_id, persona_id, conversation_id, summary_text, key_points_json,
+                source_message_count, status, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, 1, 'active', ?, ?)
+            """,
+            (
+                user_id,
+                persona_id,
+                conversation_id,
+                "用户提到明天要去办一件事，后续可以低频确认进展。",
+                '["明天要去办一件事"]',
+                old_ts,
+                old_ts,
+            ),
+        )
     preview = proactive_contact.proactive_contact_candidates(user_id, at_ts=ts, limit=5)
     assert preview["allowed_now"] is True
     assert preview["blocked_reason"] == ""
     assert preview["candidates"][0]["type"] == "followup"
     assert preview["candidates"][0]["conversation_id"] == conversation_id
+    assert preview["candidates"][0]["memory_basis"]["strength"] == "direct"
+    assert preview["candidates"][0]["memory_basis"]["has_summary"] is True
+    assert any(item["kind"] == "key_point" for item in preview["candidates"][0]["memory_basis"]["evidence"])
     api_preview = server.proactive_contact_candidate_preview(user, limit=5)
     assert api_preview["settings"]["enabled"] is True
     assert api_preview["candidates"][0]["conversation_id"] == conversation_id
+    assert api_preview["candidates"][0]["memory_basis"]["evidence"]
     admin_preview = server.admin_proactive_contact_candidates({"id": user_id, "role": "admin"}, target_user_id=user_id, limit=5)
     assert admin_preview["candidates"][0]["conversation_id"] == conversation_id
+    assert admin_preview["candidates"][0]["memory_basis"]["has_summary"] is True
 
     event = server.record_proactive_contact_event_endpoint(
         server.ProactiveContactEventRequest(
@@ -517,6 +540,8 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
     assert care_preview["remaining_today"] == 1
     assert [item["type"] for item in care_preview["candidates"]] == ["care"]
     assert care_preview["candidates"][0]["conversation_id"] == care_conversation_id
+    assert care_preview["candidates"][0]["memory_basis"]["strength"] == "weak"
+    assert "long_idle_only" in care_preview["candidates"][0]["risk_notes"]
 
     server.record_proactive_contact_event_endpoint(
         server.ProactiveContactEventRequest(

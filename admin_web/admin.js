@@ -1792,6 +1792,7 @@ function renderProactiveContactReview() {
         ]),
         h("p", { text: item.draft_text || "" }),
         h("small", { text: `conversation #${item.conversation_id} / idle ${Math.round(Number(item.idle_seconds || 0) / 3600)}h / last ${item.last_message_at ? formatTs(item.last_message_at) : "-"}` }),
+        renderProactiveMemoryBasis(item.memory_basis || {}, item.risk_notes || []),
         item.last_excerpt ? h("pre", { text: item.last_excerpt }) : null,
       ])))
       : h("p", { class: "muted", text: settings.enabled ? "\u6682\u65e0\u5019\u9009" : "\u7528\u6237\u672a\u5f00\u542f\u4e3b\u52a8\u8054\u7cfb\u8bb8\u53ef\u3002" }),
@@ -1820,6 +1821,17 @@ function renderLlmCalls() {
     h("small", { text: `prompt ${item.prompt_chars} chars / response ${item.response_chars} chars / ${formatTs(item.created_at)}` }),
     item.error_text ? h("pre", { text: item.error_text }) : null,
   ])));
+}
+
+function renderProactiveMemoryBasis(basis, riskNotes) {
+  const evidence = Array.isArray(basis.evidence) ? basis.evidence : [];
+  const risks = Array.isArray(riskNotes) ? riskNotes : [];
+  return h("div", { class: "proactive-memory-basis" }, [
+    h("small", { text: `依据 ${basis.strength || "weak"}${basis.has_summary ? " / 有摘要" : ""}${risks.length ? ` / ${risks.join(", ")}` : ""}` }),
+    evidence.length
+      ? h("ul", {}, evidence.slice(0, 4).map((item) => h("li", { text: `${item.kind || "evidence"}: ${item.text || ""}` })))
+      : h("small", { text: "暂无可审查记忆依据" }),
+  ]);
 }
 
 function renderLlmRoutes() {

@@ -360,6 +360,18 @@ small {
   margin: 0;
 }
 
+.proactive-memory-basis {
+  display: grid;
+  gap: 4px;
+}
+
+.proactive-memory-basis ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .conflict-list {
   display: grid;
   gap: 10px;

@@ -277,8 +277,13 @@ def _candidate_rows(user_id: int, ts: int, *, limit: int) -> list[dict[str, Any]
                        ORDER BY messages.id DESC
                        LIMIT 1
                    ) AS last_message_at
+                   , conversation_summaries.summary_text
+                   , conversation_summaries.key_points_json
             FROM conversations
             JOIN personas ON personas.id = conversations.persona_id
+            LEFT JOIN conversation_summaries
+              ON conversation_summaries.conversation_id = conversations.id
+             AND conversation_summaries.status = 'active'
             WHERE conversations.user_id = ?
               AND conversations.status = 'active'
               AND personas.status = 'active'
@@ -297,6 +302,7 @@ def _candidate_rows(user_id: int, ts: int, *, limit: int) -> list[dict[str, Any]
         if last_role not in {"user", "assistant"}:
             continue
         candidate_type = "followup" if last_role == "user" else "care"
+        memory_basis = _candidate_memory_basis(item, candidate_type)
         candidates.append({
             "type": candidate_type,
             "conversation_id": int(item["conversation_id"]),
@@ -307,11 +313,56 @@ def _candidate_rows(user_id: int, ts: int, *, limit: int) -> list[dict[str, Any]
             "last_message_at": last_at,
             "idle_seconds": max(0, ts - last_at),
             "last_excerpt": str(item.get("last_content") or "")[:80],
+            "memory_basis": memory_basis,
+            "risk_notes": _candidate_risk_notes(memory_basis, candidate_type),
             "draft_text": _draft_text(candidate_type),
         })
         if len(candidates) >= limit:
             break
     return candidates
+
+
+def _candidate_memory_basis(item: dict[str, Any], candidate_type: str) -> dict[str, Any]:
+    last_excerpt = str(item.get("last_content") or "").strip()[:80]
+    summary_text = str(item.get("summary_text") or "").strip()
+    key_points = _decode_key_points(item.get("key_points_json"))[:3]
+    evidence = []
+    if last_excerpt:
+        evidence.append({"kind": "last_message", "text": last_excerpt})
+    if key_points:
+        for point in key_points:
+            evidence.append({"kind": "key_point", "text": point[:120]})
+    elif summary_text:
+        evidence.append({"kind": "summary", "text": summary_text[:120]})
+    strength = "weak"
+    if candidate_type == "followup" and last_excerpt:
+        strength = "direct"
+    elif key_points or summary_text:
+        strength = "contextual"
+    return {
+        "strength": strength,
+        "has_summary": bool(summary_text or key_points),
+        "evidence": evidence[:4],
+    }
+
+
+def _candidate_risk_notes(memory_basis: dict[str, Any], candidate_type: str) -> list[str]:
+    notes = []
+    if not (memory_basis.get("evidence") or []):
+        notes.append("no_memory_basis")
+    if candidate_type == "care" and memory_basis.get("strength") == "weak":
+        notes.append("long_idle_only")
+    return notes
+
+
+def _decode_key_points(raw: Any) -> list[str]:
+    try:
+        value = json.loads(str(raw or "[]"))
+    except Exception:
+        value = []
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
 
 
 def _event_from_row(row: Any) -> dict[str, Any]:
