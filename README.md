@@ -136,8 +136,10 @@ py scripts\diagnose_llm_env.py
 ```powershell
 git clone https://github.com/thefoolsparkle-oss/project-mnemosyne.git
 cd project-mnemosyne
-py -m uvicorn app.server:app --host 127.0.0.1 --port 8000
+.\scripts\start_local_server.ps1
 ```
+
+调试时也可以手动运行 `py -m uvicorn app.server:app --host 127.0.0.1 --port 8000`。
 
 普通用户页面：
 
