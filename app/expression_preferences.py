@@ -56,6 +56,17 @@ def expression_preference_events(user_id: int, persona_id: int, limit: int = 5) 
     return [dict_from_row(row) for row in rows]
 
 
+def expression_preference_churn(user_id: int, persona_id: int, limit: int = 5) -> dict[str, Any]:
+    events = expression_preference_events(user_id, persona_id, limit=limit)
+    modes = [str(item.get("mode") or "") for item in events if item.get("mode")]
+    changes = sum(1 for current, previous in zip(modes, modes[1:]) if current != previous)
+    return {
+        "recent_modes": modes,
+        "change_count": changes,
+        "churn": len(modes) >= 3 and len(set(modes)) >= 2 and changes >= 2,
+    }
+
+
 def _normalize_expression_mode(mode: str) -> str:
     value = str(mode or "normal").strip()
     return value if value in VALID_EXPRESSION_MODES else "normal"

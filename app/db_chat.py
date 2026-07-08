@@ -14,7 +14,7 @@ from .expression_assets import (
     expression_asset,
     expression_protocol_prompt,
 )
-from .expression_preferences import record_expression_preference_event
+from .expression_preferences import expression_preference_churn, record_expression_preference_event
 from .expression_style import persona_expression_style_context
 from .identity import IDENTITY_REPLACEMENTS, scrub_identity_obj, scrub_identity_text
 from .layered_memory import layered_memory_prompt, recall_layered_memory, state_prompt, summary_prompt
@@ -996,6 +996,7 @@ def _maybe_update_expression_preference_from_chat(
 
 
 def _recent_expression_policy(user_id: int, persona_id: int, conversation_id: int) -> dict:
+    preference_feedback = expression_preference_churn(user_id, persona_id)
     with get_db() as db:
         preference_row = db.execute(
             """
@@ -1024,6 +1025,8 @@ def _recent_expression_policy(user_id: int, persona_id: int, conversation_id: in
         if not preference["enabled"]:
             return {
                 "expression_preference": preference,
+                "preference_feedback": preference_feedback,
+                "preference_churn": bool(preference_feedback.get("churn")),
                 "disabled_by_user": True,
                 "recent_assistant_messages_checked": 0,
                 "suppress_all": True,
@@ -1070,6 +1073,8 @@ def _recent_expression_policy(user_id: int, persona_id: int, conversation_id: in
         "disabled_by_user": False,
         "recent_assistant_messages_checked": len(message_ids),
         "subtle_mode": preference["mode"] == "subtle",
+        "preference_feedback": preference_feedback,
+        "preference_churn": bool(preference_feedback.get("churn")),
         "suppress_all": (
             bool(message_ids and labels_by_message.get(message_ids[0]))
             or (preference["mode"] == "subtle" and bool(recent_labels))
@@ -1110,11 +1115,18 @@ def _active_preference_prompt(user_id: int, persona_id: int) -> str:
 def _expression_policy_prompt(policy: dict) -> str:
     scene_prompt = _expression_scene_prompt(policy)
     style_prompt = _expression_persona_style_prompt(policy)
+    churn_prompt = (
+        "\n近期用户多次切换轻表达偏好；除非用户明显需要安慰或承接情绪，"
+        "本轮不要主动添加轻表达标签，先观察用户对频率的真实反应。"
+        if policy.get("preference_churn")
+        else ""
+    )
     if policy.get("disabled_by_user"):
         return (
             scene_prompt
             + "\n"
             + style_prompt
+            + churn_prompt
             + "\n"
             "Light expression preference: the user has explicitly turned off expression labels. "
             "Do not output [[expression:...]] tags, bracketed actions, emoji-like stage directions, "
@@ -1126,6 +1138,7 @@ def _expression_policy_prompt(policy: dict) -> str:
                 scene_prompt
                 + "\n"
                 + style_prompt
+                + churn_prompt
                 + "\n"
                 "本轮轻表达节奏约束：用户选择了克制轻表达，且近期已经展示过非语言提示，"
                 "本轮不得输出 expression 标签，也不要用括号动作替代。"
@@ -1134,6 +1147,7 @@ def _expression_policy_prompt(policy: dict) -> str:
             scene_prompt
             + "\n"
             + style_prompt
+            + churn_prompt
             + "\n"
             "本轮轻表达节奏约束：上一条回复刚显示过非语言提示，"
             "本轮不得输出 expression 标签，也不要用括号动作替代。"
@@ -1143,6 +1157,7 @@ def _expression_policy_prompt(policy: dict) -> str:
             scene_prompt
             + "\n"
             + style_prompt
+            + churn_prompt
             + "\n"
             "本轮轻表达节奏约束：用户选择了克制轻表达。只有在明显需要安慰、确认或停顿时，"
             "才可使用至多一个 expression 标签；普通闲聊不要添加。"
@@ -1153,11 +1168,12 @@ def _expression_policy_prompt(policy: dict) -> str:
             scene_prompt
             + "\n"
             + style_prompt
+            + churn_prompt
             + "\n"
             "本轮轻表达节奏约束：近期已经展示过这些标签："
             f"{'、'.join(recent_labels)}。本轮不得重复这些标签；没有真正必要的新提示时不要添加标签。"
         )
-    return scene_prompt + "\n" + style_prompt + "\n本轮轻表达节奏约束：近期没有已展示的提示；即便如此，也仅在确有必要时使用至多一个标签。"
+    return scene_prompt + "\n" + style_prompt + churn_prompt + "\n本轮轻表达节奏约束：近期没有已展示的提示；即便如此，也仅在确有必要时使用至多一个标签。"
 
 
 def _expression_scene_context(user_text: str) -> dict:
@@ -1258,6 +1274,8 @@ def _expression_selection_agent(user_text: str, reply_text: str, policy: dict) -
     if policy.get("disabled_by_user") or policy.get("suppress_all"):
         return []
     scene = str(policy.get("expression_scene") or "ordinary")
+    if policy.get("preference_churn") and scene != "support_needed":
+        return []
     if policy.get("subtle_mode") and scene == "ordinary":
         return []
     if scene == "support_needed":

@@ -314,6 +314,27 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     )
     assert playful_agent[0]["label"] == "微笑"
     assert chat._expression_selection_agent(
+        "哈哈这个好好玩",
+        "确实有点好笑。",
+        {
+            "suppress_all": False,
+            "preference_churn": True,
+            "expression_scene": "playful",
+            "expression_allowed_groups": ["warmth", "acknowledgement"],
+        },
+    ) == []
+    churn_support_agent = chat._expression_selection_agent(
+        "我今天有点累，陪我一下",
+        "我在，先慢慢来。",
+        {
+            "suppress_all": False,
+            "preference_churn": True,
+            "expression_scene": "support_needed",
+            "expression_allowed_groups": ["support", "care", "warmth", "acknowledgement"],
+        },
+    )
+    assert churn_support_agent[0]["label"] == "轻声"
+    assert chat._expression_selection_agent(
         "我们继续讨论一下今天要做的事情",
         "好，我们慢慢拆。",
         {"suppress_all": False, "expression_scene": "ordinary", "expression_allowed_groups": ["warmth", "acknowledgement"]},
@@ -726,6 +747,13 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     assert restored_pref_usage["preference_history"][0]["mode"] == "normal"
     assert restored_pref_usage["preference_history"][0]["source"] == "chat_intent"
     assert any(item["kind"] == "preference_changes" for item in restored_pref_usage["insights"])
+    churn_policy = chat._recent_expression_policy(user_id, persona_id, conversation_id)
+    assert churn_policy["preference_churn"] is True
+    assert churn_policy["preference_feedback"]["change_count"] >= 2
+    churn_prompt = chat._expression_policy_prompt(churn_policy)
+    assert "近期用户多次切换轻表达偏好" in churn_prompt
+    churn_policy.update(chat._expression_scene_context("哈哈这个有点好笑"))
+    assert chat._expression_selection_agent("哈哈这个有点好笑", "确实挺有意思。", churn_policy) == []
 
     ts = database.now_ts()
     with database.get_db() as db:

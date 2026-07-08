@@ -17,6 +17,7 @@ from .db_chat import (
     get_persona_for_user,
 )
 from .expression_assets import active_expression_labels
+from .expression_preferences import expression_preference_churn
 from .identity import scrub_identity_text
 from .layered_memory import layered_memory_prompt, recall_layered_memory, summary_prompt
 from .llm_client import LLMProviderError, call_llm_api
@@ -1386,6 +1387,7 @@ def _with_group_members(group: dict) -> dict:
 
 
 def _recent_group_expression_policy(user_id: int, persona_id: int, group_conversation_id: int) -> dict:
+    preference_feedback = expression_preference_churn(user_id, persona_id)
     with get_db() as db:
         preference_row = db.execute(
             """
@@ -1410,6 +1412,8 @@ def _recent_group_expression_policy(user_id: int, persona_id: int, group_convers
         if not preference["enabled"]:
             return {
                 "expression_preference": preference,
+                "preference_feedback": preference_feedback,
+                "preference_churn": bool(preference_feedback.get("churn")),
                 "disabled_by_user": True,
                 "recent_assistant_messages_checked": 0,
                 "suppress_all": True,
@@ -1457,6 +1461,8 @@ def _recent_group_expression_policy(user_id: int, persona_id: int, group_convers
         "disabled_by_user": False,
         "recent_assistant_messages_checked": len(message_ids),
         "subtle_mode": preference["mode"] == "subtle",
+        "preference_feedback": preference_feedback,
+        "preference_churn": bool(preference_feedback.get("churn")),
         "suppress_all": (
             bool(message_ids and labels_by_message.get(message_ids[0]))
             or (preference["mode"] == "subtle" and bool(recent_labels))
