@@ -608,6 +608,7 @@ function renderExpressionAsset(asset) {
   const enabled = asset.enabled !== false;
   const lifecycle = asset.lifecycle_status || "active";
   const archived = lifecycle === "archived";
+  const paused = lifecycle === "paused";
   const mediaUrl = asset.thumbnail_url || asset.media_url || "";
   return h("article", { class: `expression-asset-item ${asset.expression_type || "gesture"} ${enabled ? "enabled" : "disabled"}` }, [
     mediaUrl
@@ -622,8 +623,15 @@ function renderExpressionAsset(asset) {
         type: "button",
         class: enabled ? "ghost compact" : "compact",
         text: enabled ? "禁用" : "启用",
-        disabled: archived ? "disabled" : null,
+        disabled: archived || paused ? "disabled" : null,
         onclick: () => toggleExpressionAsset(asset),
+      }),
+      h("button", {
+        type: "button",
+        class: paused ? "compact" : "ghost compact",
+        text: paused ? "\u89e3\u9664\u6682\u505c" : "\u6682\u505c",
+        disabled: archived ? "disabled" : null,
+        onclick: () => updateExpressionAssetLifecycle(asset, paused ? "active" : "paused"),
       }),
       h("button", {
         type: "button",
@@ -753,7 +761,7 @@ async function updateExpressionAssetLifecycle(asset, lifecycleStatus) {
         body: JSON.stringify({
           enabled: lifecycleStatus === "active" ? true : asset.enabled !== false,
           lifecycle_status: lifecycleStatus,
-          admin_note: lifecycleStatus === "archived" ? "管理台归档" : "管理台恢复为 active",
+          admin_note: expressionAssetLifecycleNote(lifecycleStatus),
         }),
       }
     );
@@ -763,6 +771,14 @@ async function updateExpressionAssetLifecycle(asset, lifecycleStatus) {
     state.error = err.message;
   }
   render();
+}
+
+function expressionAssetLifecycleNote(lifecycleStatus) {
+  return {
+    active: "\u7ba1\u7406\u53f0\u6062\u590d\u4e3a active",
+    paused: "\u7ba1\u7406\u53f0\u6682\u505c",
+    archived: "\u7ba1\u7406\u53f0\u5f52\u6863",
+  }[lifecycleStatus] || "\u7ba1\u7406\u53f0\u8c03\u6574\u751f\u547d\u5468\u671f";
 }
 
 async function editExpressionAssetNote(asset) {

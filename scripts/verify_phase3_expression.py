@@ -165,6 +165,34 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     )["asset"]
     assert restored_lifecycle["enabled"] is True
     assert restored_lifecycle["lifecycle_status"] == "active"
+    paused_asset = server.admin_update_expression_asset(
+        "gesture",
+        "\u70b9\u5934",
+        server.ExpressionAssetUpdateRequest(
+            enabled=True,
+            lifecycle_status="paused",
+            admin_note="phase3 pause",
+        ),
+        {"id": user_id, "role": "admin"},
+    )["asset"]
+    assert paused_asset["lifecycle_status"] == "paused"
+    assert paused_asset["enabled"] is False
+    assert paused_asset["history"][0]["event_kind"] == "lifecycle"
+    assert "\u70b9\u5934" not in {item["label"] for item in server.expression_assets({"id": user_id})["assets"]}
+    assert "\u70b9\u5934" not in chat.active_expression_labels().get("gesture", set())
+    resumed_asset = server.admin_update_expression_asset(
+        "gesture",
+        "\u70b9\u5934",
+        server.ExpressionAssetUpdateRequest(
+            enabled=True,
+            lifecycle_status="active",
+            admin_note="phase3 resume",
+        ),
+        {"id": user_id, "role": "admin"},
+    )["asset"]
+    assert resumed_asset["lifecycle_status"] == "active"
+    assert resumed_asset["enabled"] is True
+    assert "\u70b9\u5934" in chat.active_expression_labels().get("gesture", set())
     assert "[[expression:tone:停顿]]" in chat.chat_rendering_rules_prompt()
     media_asset = server.admin_update_expression_asset(
         "mood",
