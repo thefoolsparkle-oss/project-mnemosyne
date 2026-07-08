@@ -574,6 +574,64 @@ small {
   background: #f7f8fa;
 }
 
+.proactive-panel {
+  display: grid;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(23, 28, 37, 0.035);
+}
+
+.proactive-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.proactive-panel-head small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.proactive-list {
+  display: grid;
+  gap: 6px;
+}
+
+.proactive-candidate {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  padding: 7px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+
+.proactive-candidate:hover {
+  border-color: var(--line);
+  background: rgba(23, 28, 37, 0.04);
+}
+
+.proactive-candidate strong,
+.proactive-candidate small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.proactive-candidate small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .conversation-editor input {
   min-height: 36px;
   padding: 8px 10px;

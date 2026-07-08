@@ -57,6 +57,7 @@ let state = {
   archivedConversations: [],
   groupConversations: [],
   archivedGroupConversations: [],
+  proactiveContact: null,
   activePersona: null,
   activeConversationId: null,
   activeGroupConversationId: null,
@@ -282,7 +283,7 @@ function renderAuth(mode) {
 }
 
 async function loadMainData({ openLatest = false } = {}) {
-  const [options, expressionAssets, personas, deletedPersonas, conversations, archivedConversations, groupConversations, archivedGroupConversations] = await Promise.all([
+  const [options, expressionAssets, personas, deletedPersonas, conversations, archivedConversations, groupConversations, archivedGroupConversations, proactiveContact] = await Promise.all([
     api("/api/persona-options"),
     api("/api/expression-assets").catch(() => ({ assets: [] })),
     api("/api/personas"),
@@ -291,6 +292,7 @@ async function loadMainData({ openLatest = false } = {}) {
     api("/api/conversations?status=archived"),
     api("/api/group-conversations?status=active"),
     api("/api/group-conversations?status=archived"),
+    api("/api/proactive-contact/candidates").catch(() => ({ candidates: [], settings: { enabled: false } })),
   ]);
   state.options = options.options;
   state.expressionAssets = expressionAssets.assets || [];
@@ -300,6 +302,7 @@ async function loadMainData({ openLatest = false } = {}) {
   state.archivedConversations = archivedConversations.conversations;
   state.groupConversations = groupConversations.group_conversations || [];
   state.archivedGroupConversations = archivedGroupConversations.group_conversations || [];
+  state.proactiveContact = proactiveContact;
   if (state.activeGroupConversationId) {
     state.activeGroupConversation = [...state.groupConversations, ...state.archivedGroupConversations]
       .find((item) => Number(item.id) === Number(state.activeGroupConversationId)) || state.activeGroupConversation;
@@ -589,6 +592,7 @@ function renderSidebar() {
       ]),
       renderConversationSearch(),
       renderChatList(),
+      renderProactiveContactPanel(),
     ]),
     renderUserEntry(),
     isAdmin()
@@ -623,6 +627,45 @@ function renderUserEntry() {
       ]),
     ]),
   ]);
+}
+
+function renderProactiveContactPanel() {
+  const data = state.proactiveContact || {};
+  const settings = data.settings || {};
+  const candidates = Array.isArray(data.candidates) ? data.candidates : [];
+  if (!settings.enabled && !candidates.length) return null;
+  const status = data.allowed_now
+    ? "\u53ef\u4ee5\u5728\u7ad9\u5185\u663e\u793a"
+    : (data.blocked_reason === "quiet_hours" ? "\u5b89\u9759\u65f6\u6bb5\u5185" : "\u672a\u5f00\u542f");
+  return h("section", { class: "proactive-panel" }, [
+    h("div", { class: "proactive-panel-head" }, [
+      h("strong", { text: "\u4e3b\u52a8\u8054\u7cfb\u5019\u9009" }),
+      h("small", { text: status }),
+    ]),
+    candidates.length
+      ? h("div", { class: "proactive-list" }, candidates.slice(0, 2).map(renderProactiveCandidate))
+      : h("small", { class: "muted", text: settings.enabled ? "\u6682\u65e0\u5408\u9002\u5019\u9009" : "\u5728\u8d44\u6599\u91cc\u5f00\u542f\u540e\u624d\u4f1a\u8ba1\u7b97" }),
+  ]);
+}
+
+function renderProactiveCandidate(item) {
+  return h("button", {
+    type: "button",
+    class: "proactive-candidate",
+    onclick: () => openProactiveCandidate(item),
+  }, [
+    avatar(item.persona_name || "M", item.persona_avatar_url),
+    h("span", {}, [
+      h("strong", { text: item.persona_name || "\u672a\u547d\u540d" }),
+      h("small", { text: item.draft_text || item.reason || "" }),
+    ]),
+  ]);
+}
+
+async function openProactiveCandidate(item) {
+  const conversation = state.conversations.find((entry) => Number(entry.id) === Number(item.conversation_id));
+  if (!conversation) return;
+  await openConversationItem(conversation);
 }
 
 function renderProfileModal() {
