@@ -445,6 +445,27 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
             preferences={
                 "proactive_contact": {
                     "enabled": True,
+                    "max_per_day": 2,
+                    "quiet_start": "00:00",
+                    "quiet_end": "00:00",
+                    "allowed_types": ["followup", "care"],
+                },
+            },
+        ),
+        user,
+    )
+    handled_preview = proactive_contact.proactive_contact_candidates(user_id, at_ts=after_event_ts, limit=5)
+    assert handled_preview["allowed_now"] is True
+    assert handled_preview["usage_today"] == 1
+    assert handled_preview["remaining_today"] == 1
+    assert handled_preview["candidates"] == []
+
+    server.update_profile(
+        server.ProfileUpdateRequest(
+            nickname="\u6708",
+            preferences={
+                "proactive_contact": {
+                    "enabled": True,
                     "max_per_day": 1,
                     "quiet_start": "00:00",
                     "quiet_end": "00:00",
@@ -542,7 +563,7 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
     quiet_preview = proactive_contact.proactive_contact_candidates(user_id, at_ts=after_event_ts, limit=5)
     assert quiet_preview["allowed_now"] is False
     assert quiet_preview["blocked_reason"] == "quiet_hours"
-    assert quiet_preview["candidates"][0]["conversation_id"] == conversation_id
+    assert quiet_preview["candidates"] == []
 
 
 def main() -> None:

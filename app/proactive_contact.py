@@ -79,12 +79,12 @@ def proactive_contact_candidates(user_id: int, *, at_ts: int | None = None, limi
         allowed_now = False
         blocked_reason = "daily_limit"
     allowed_types = set(settings.get("allowed_types") or [])
-    dismissed_today = _dismissed_candidates_today(user_id, ts)
+    handled_today = _handled_candidates_today(user_id, ts)
     candidates = [
         item
         for item in candidates
         if str(item.get("type") or "") in allowed_types
-        and (int(item.get("conversation_id") or 0), str(item.get("type") or "")) not in dismissed_today
+        and (int(item.get("conversation_id") or 0), str(item.get("type") or "")) not in handled_today
     ]
     if blocked_reason == "daily_limit":
         candidates = []
@@ -121,7 +121,7 @@ def proactive_contact_daily_usage(user_id: int, *, at_ts: int | None = None) -> 
     return int(row["count"] if row else 0)
 
 
-def _dismissed_candidates_today(user_id: int, ts: int) -> set[tuple[int, str]]:
+def _handled_candidates_today(user_id: int, ts: int) -> set[tuple[int, str]]:
     start_ts = _local_day_start_ts(ts)
     end_ts = start_ts + 24 * 60 * 60
     with get_db() as db:
@@ -130,7 +130,7 @@ def _dismissed_candidates_today(user_id: int, ts: int) -> set[tuple[int, str]]:
             SELECT conversation_id, candidate_type
             FROM proactive_contact_events
             WHERE user_id = ?
-              AND event_type = 'candidate_dismissed'
+              AND event_type IN ('candidate_opened', 'candidate_seen', 'candidate_dismissed', 'candidate_replied')
               AND conversation_id IS NOT NULL
               AND created_at >= ?
               AND created_at < ?
