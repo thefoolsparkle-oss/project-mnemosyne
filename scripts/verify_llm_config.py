@@ -128,6 +128,13 @@ def main() -> None:
             assert probe_health["slow"] == 1
             assert probe_health["last_error"] == "timeout"
             assert probe_health["current_failed"] is True
+            assert probe_health["prompt_chars_total"] == 220
+            assert probe_health["response_chars_total"] == 50
+            assert probe_health["estimated_prompt_tokens"] == 55
+            assert probe_health["estimated_response_tokens"] == 12
+            assert probe_health["estimated_total_tokens"] == 67
+            assert probe_health["avg_prompt_chars"] == 110
+            assert probe_health["avg_response_chars"] == 25
             assert recovered_health["failed"] == 1
             assert recovered_health["current_failed"] is False
             assert recovered_health["historical_failed"] is True

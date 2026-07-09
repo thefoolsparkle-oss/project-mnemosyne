@@ -1539,6 +1539,8 @@ def admin_llm_health(admin: dict = Depends(current_admin), limit: int = 120):
                 "slow": 0,
                 "duration_total_ms": 0,
                 "max_duration_ms": 0,
+                "prompt_chars_total": 0,
+                "response_chars_total": 0,
                 "last_status": "",
                 "last_error": "",
                 "last_created_at": 0,
@@ -1551,6 +1553,8 @@ def admin_llm_health(admin: dict = Depends(current_admin), limit: int = 120):
         stats["total"] += 1
         stats["duration_total_ms"] += duration_ms
         stats["max_duration_ms"] = max(int(stats["max_duration_ms"] or 0), duration_ms)
+        stats["prompt_chars_total"] += int(item.get("prompt_chars") or 0)
+        stats["response_chars_total"] += int(item.get("response_chars") or 0)
         if duration_ms >= 30000:
             stats["slow"] += 1
         if status == "success":
@@ -1578,6 +1582,11 @@ def admin_llm_health(admin: dict = Depends(current_admin), limit: int = 120):
         )
         item["failure_rate"] = round(int(item["failed"] or 0) / total, 4)
         item["avg_duration_ms"] = round(int(item["duration_total_ms"] or 0) / total)
+        item["avg_prompt_chars"] = round(int(item["prompt_chars_total"] or 0) / total)
+        item["avg_response_chars"] = round(int(item["response_chars_total"] or 0) / total)
+        item["estimated_prompt_tokens"] = _estimate_tokens_from_chars(int(item["prompt_chars_total"] or 0))
+        item["estimated_response_tokens"] = _estimate_tokens_from_chars(int(item["response_chars_total"] or 0))
+        item["estimated_total_tokens"] = int(item["estimated_prompt_tokens"] or 0) + int(item["estimated_response_tokens"] or 0)
         item["current_provider"] = current_provider
         item["current_model"] = current_model
         item["stale_config_failure"] = stale_config_failure
@@ -1597,6 +1606,10 @@ def admin_llm_health(admin: dict = Depends(current_admin), limit: int = 120):
         "slow": sum(int(item.get("slow") or 0) for item in tasks),
         "tasks": tasks,
     }
+
+
+def _estimate_tokens_from_chars(value: int) -> int:
+    return max(0, round(max(0, int(value or 0)) / 4))
 
 
 def _safe_llm_config(config: dict[str, Any]) -> dict[str, Any]:

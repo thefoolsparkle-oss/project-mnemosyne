@@ -1760,6 +1760,7 @@ function renderLlmHealth() {
       h("p", { text: `${item.provider || ""} ${item.model || ""}`.trim() || "route unknown" }),
       item.stale_config_failure ? h("small", { text: `current route ${[item.current_provider, item.current_model].filter(Boolean).join(" ") || "unknown"}` }) : null,
       h("small", { text: `total ${item.total || 0} / failed ${item.failed || 0} (${Math.round(Number(item.failure_rate || 0) * 100)}%) / avg ${item.avg_duration_ms || 0}ms / max ${item.max_duration_ms || 0}ms / slow ${item.slow || 0} / last ${item.last_created_at ? formatTs(item.last_created_at) : "-"}` }),
+      h("small", { text: `est tokens ${Number(item.estimated_total_tokens || 0)} (prompt ${Number(item.estimated_prompt_tokens || 0)} / response ${Number(item.estimated_response_tokens || 0)}) / avg chars ${Number(item.avg_prompt_chars || 0)} -> ${Number(item.avg_response_chars || 0)}` }),
       item.last_error ? h("pre", { text: item.last_error }) : null,
     ]);
     })),
