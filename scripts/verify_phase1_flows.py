@@ -511,7 +511,7 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
     with database.get_db() as db:
         care_conversation_id = int(
             db.execute(
-                "INSERT INTO conversations (user_id, persona_id, title, created_at, updated_at) VALUES (?, ?, '涓诲姩鍏冲績', ?, ?)",
+                "INSERT INTO conversations (user_id, persona_id, title, created_at, updated_at) VALUES (?, ?, '主动关心', ?, ?)",
                 (user_id, persona_id, old_ts + 1, old_ts + 1),
             ).lastrowid
         )
