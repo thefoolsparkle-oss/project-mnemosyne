@@ -1760,6 +1760,8 @@ function renderProactiveContactReview() {
   const data = state.proactiveContact || {};
   const settings = data.settings || {};
   const candidates = Array.isArray(data.candidates) ? data.candidates : [];
+  const blockedCandidates = Array.isArray(data.blocked_candidates) ? data.blocked_candidates : [];
+  const arbitrationSummary = data.arbitration_summary || {};
   const events = Array.isArray(state.proactiveContactEvents) ? state.proactiveContactEvents : [];
   const summary = state.proactiveContactSummary || {};
   const feedbackPolicy = data.feedback_policy || {};
@@ -1786,19 +1788,39 @@ function renderProactiveContactReview() {
       h("span", { text: `reply ${Math.round(Number(summary.reply_rate || 0) * 100)}%` }),
       h("span", { text: `dismiss ${Math.round(Number(summary.dismiss_rate || 0) * 100)}%` }),
       h("span", { text: `suppressed ${suppressedTypes.length ? suppressedTypes.join(", ") : "-"}` }),
+      h("span", { text: `risk low ${Number(arbitrationSummary.low || 0)}` }),
+      h("span", { text: `watch ${Number(arbitrationSummary.watch || 0)}` }),
+      h("span", { text: `blocked ${Number(arbitrationSummary.blocked || 0)}` }),
     ]),
     candidates.length
-      ? h("div", { class: "proactive-review-list" }, candidates.map((item) => h("article", { class: "proactive-review-item" }, [
+      ? h("div", { class: "proactive-review-list" }, candidates.map((item) => h("article", { class: `proactive-review-item risk-${item.risk_level || "low"}` }, [
         h("div", { class: "memory-title" }, [
           h("strong", { text: `${item.persona_name || "persona"} / ${item.type || "candidate"}` }),
-          h("small", { text: item.reason || "" }),
+          h("small", { text: `${item.risk_level || "low"} / ${item.reason || ""}` }),
         ]),
         h("p", { text: item.draft_text || "" }),
         h("small", { text: `conversation #${item.conversation_id} / idle ${Math.round(Number(item.idle_seconds || 0) / 3600)}h / last ${item.last_message_at ? formatTs(item.last_message_at) : "-"}` }),
+        renderProactiveArbitration(item),
         renderProactiveMemoryBasis(item.memory_basis || {}, item.risk_notes || []),
         item.last_excerpt ? h("pre", { text: item.last_excerpt }) : null,
       ])))
       : h("p", { class: "muted", text: settings.enabled ? "\u6682\u65e0\u5019\u9009" : "\u7528\u6237\u672a\u5f00\u542f\u4e3b\u52a8\u8054\u7cfb\u8bb8\u53ef\u3002" }),
+    blockedCandidates.length
+      ? h("div", { class: "proactive-review-list blocked" }, [
+        h("small", { text: "Blocked candidates" }),
+        ...blockedCandidates.map((item) => h("article", { class: "proactive-review-item risk-blocked" }, [
+          h("div", { class: "memory-title" }, [
+            h("strong", { text: `${item.persona_name || "persona"} / ${item.type || "candidate"}` }),
+            h("small", { text: `${item.risk_level || "blocked"} / ${item.reason || ""}` }),
+          ]),
+          h("p", { text: item.draft_text || "" }),
+          h("small", { text: `conversation #${item.conversation_id} / idle ${Math.round(Number(item.idle_seconds || 0) / 3600)}h / last ${item.last_message_at ? formatTs(item.last_message_at) : "-"}` }),
+          renderProactiveArbitration(item),
+          renderProactiveMemoryBasis(item.memory_basis || {}, item.risk_notes || []),
+          item.last_excerpt ? h("pre", { text: item.last_excerpt }) : null,
+        ])),
+      ])
+      : null,
     h("div", { class: "proactive-review-list compact" }, events.length
       ? events.map((item) => h("article", { class: "proactive-review-item" }, [
         h("div", { class: "memory-title" }, [
@@ -1810,6 +1832,38 @@ function renderProactiveContactReview() {
       ]))
       : [h("p", { class: "muted", text: "\u6682\u65e0\u53cd\u5e94\u8bb0\u5f55" })]),
   ]);
+}
+
+function renderProactiveArbitration(item) {
+  const arbitration = item.arbitration || {};
+  const reasons = Array.isArray(arbitration.reasons) ? arbitration.reasons : [];
+  const boundaryHits = Array.isArray(item.boundary_hits) ? item.boundary_hits : [];
+  const sensitivity = item.sensitivity || {};
+  const blocked = Array.isArray(sensitivity.blocked) ? sensitivity.blocked : [];
+  const watch = Array.isArray(sensitivity.watch) ? sensitivity.watch : [];
+  return h("div", { class: `proactive-arbitration ${item.risk_level || "low"}` }, [
+    h("small", { text: `arbitration ${arbitration.decision || "allow"} / ${arbitration.policy || "local"}` }),
+    reasons.length
+      ? h("ul", {}, reasons.map((reason) => h("li", { text: proactiveArbitrationReasonLabel(reason) })))
+      : null,
+    boundaryHits.length ? h("small", { text: `boundary: ${boundaryHits.join(", ")}` }) : null,
+    blocked.length || watch.length ? h("small", { text: `sensitive: ${[...blocked, ...watch].join(", ")}` }) : null,
+  ]);
+}
+
+function proactiveArbitrationReasonLabel(reason) {
+  const labels = {
+    memory_basis_direct: "direct memory basis",
+    memory_basis_contextual: "contextual memory basis",
+    memory_basis_weak: "weak memory basis",
+    long_idle_only: "watch: long idle without richer context",
+    no_memory_basis: "blocked: no auditable memory basis",
+    topic_boundary_match: "blocked: matches explicit topic boundary",
+    sensitive_content_blocked: "blocked: sensitive content",
+    sensitive_content_watch: "watch: potentially sensitive content",
+    recent_dismissals_without_replies: "blocked: recent dismissals without replies",
+  };
+  return labels[reason] || reason;
 }
 
 function renderLlmCalls() {

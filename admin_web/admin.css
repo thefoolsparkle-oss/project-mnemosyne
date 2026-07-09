@@ -326,6 +326,15 @@ small {
   border-color: rgba(242, 160, 160, 0.7);
 }
 
+.proactive-review-item.risk-watch {
+  border-color: rgba(238, 196, 126, 0.65);
+}
+
+.proactive-review-item.risk-blocked {
+  border-color: rgba(242, 160, 160, 0.7);
+  background: rgba(242, 160, 160, 0.08);
+}
+
 .llm-health-item.recovered {
   border-color: rgba(238, 196, 126, 0.65);
 }
@@ -363,6 +372,18 @@ small {
 .proactive-memory-basis {
   display: grid;
   gap: 4px;
+}
+
+.proactive-arbitration {
+  display: grid;
+  gap: 4px;
+}
+
+.proactive-arbitration ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .proactive-memory-basis ul {

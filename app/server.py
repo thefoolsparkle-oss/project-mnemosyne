@@ -531,7 +531,7 @@ def admin_proactive_contact_candidates(
     limit: int = 5,
 ):
     owner_id = _admin_target_user_id(admin, target_user_id)
-    return proactive_contact_candidates(owner_id, limit=limit)
+    return proactive_contact_candidates(owner_id, limit=limit, include_blocked=True)
 
 
 @app.get("/api/admin/proactive-contact/events")

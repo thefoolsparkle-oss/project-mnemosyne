@@ -18,6 +18,15 @@ DEFAULT_PROACTIVE_CONTACT = {
     "allowed_types": ["followup", "care", "reminder"],
 }
 PROACTIVE_CONTACT_MIN_IDLE_SECONDS = 6 * 60 * 60
+SENSITIVE_BLOCK_PATTERNS = {
+    "self_harm": r"自杀|轻生|不想活|伤害自己|suicide|kill myself|self[-\s]?harm",
+    "violence_or_abuse": r"家暴|性侵|强迫|威胁我|要杀|打死|violence|abuse|assault",
+    "medical_or_legal_crisis": r"急诊|抢救|报警|起诉|被抓|emergency|lawsuit|arrested",
+}
+SENSITIVE_WATCH_PATTERNS = {
+    "emotional_distress": r"难过|崩溃|焦虑|抑郁|失眠|分手|去世|死亡|葬礼|panic|depress|grief",
+    "high_stakes_life": r"裁员|失业|欠债|考试|手术|住院|debt|surgery|hospital",
+}
 
 
 def normalize_profile_preferences(preferences: Any) -> dict[str, Any]:
@@ -63,7 +72,13 @@ def proactive_contact_settings(user_id: int) -> dict[str, Any]:
     return normalize_profile_preferences(preferences)["proactive_contact"]
 
 
-def proactive_contact_candidates(user_id: int, *, at_ts: int | None = None, limit: int = 5) -> dict[str, Any]:
+def proactive_contact_candidates(
+    user_id: int,
+    *,
+    at_ts: int | None = None,
+    limit: int = 5,
+    include_blocked: bool = False,
+) -> dict[str, Any]:
     ts = int(at_ts or now_ts())
     settings = proactive_contact_settings(user_id)
     allowed_now = bool(settings.get("enabled"))
@@ -82,18 +97,33 @@ def proactive_contact_candidates(user_id: int, *, at_ts: int | None = None, limi
     feedback_policy = proactive_contact_feedback_policy(user_id)
     suppressed_types = set(feedback_policy.get("suppressed_types") or [])
     handled_today = _handled_candidates_today(user_id, ts)
-    candidates = [
-        item
-        for item in candidates
-        if str(item.get("type") or "") in allowed_types
-        and str(item.get("type") or "") not in suppressed_types
-        and (int(item.get("conversation_id") or 0), str(item.get("type") or "")) not in handled_today
-    ]
+    topic_boundaries = _user_topic_boundaries(user_id)
+    reviewed_candidates = []
+    blocked_candidates = []
+    for item in candidates:
+        candidate_type = str(item.get("type") or "")
+        if candidate_type not in allowed_types:
+            continue
+        if (int(item.get("conversation_id") or 0), candidate_type) in handled_today:
+            continue
+        reviewed = _with_arbitration(
+            item,
+            feedback_policy=feedback_policy,
+            topic_boundaries=topic_boundaries,
+            suppressed_types=suppressed_types,
+        )
+        if reviewed.get("risk_level") == "blocked":
+            blocked_candidates.append(reviewed)
+        else:
+            reviewed_candidates.append(reviewed)
+    candidates = reviewed_candidates
     if blocked_reason == "daily_limit":
         candidates = []
+        blocked_candidates = []
     else:
         candidate_limit = remaining_today if allowed_now else max_per_day
         candidates = candidates[:max(0, candidate_limit)]
+        blocked_candidates = blocked_candidates[:max(0, int(limit or 5))]
     return {
         "settings": settings,
         "allowed_now": allowed_now,
@@ -102,6 +132,12 @@ def proactive_contact_candidates(user_id: int, *, at_ts: int | None = None, limi
         "remaining_today": remaining_today,
         "feedback_policy": feedback_policy,
         "candidates": candidates if settings.get("enabled") else [],
+        "blocked_candidates": blocked_candidates if include_blocked and settings.get("enabled") else [],
+        "arbitration_summary": {
+            "low": sum(1 for item in candidates if item.get("risk_level") == "low"),
+            "watch": sum(1 for item in candidates if item.get("risk_level") == "watch"),
+            "blocked": len(blocked_candidates) if include_blocked and settings.get("enabled") else 0,
+        },
     }
 
 
@@ -375,6 +411,176 @@ def _candidate_risk_notes(memory_basis: dict[str, Any], candidate_type: str) -> 
     if candidate_type == "care" and memory_basis.get("strength") == "weak":
         notes.append("long_idle_only")
     return notes
+
+
+def _with_arbitration(
+    item: dict[str, Any],
+    *,
+    feedback_policy: dict[str, Any],
+    topic_boundaries: list[str],
+    suppressed_types: set[str],
+) -> dict[str, Any]:
+    reviewed = dict(item)
+    candidate_type = str(reviewed.get("type") or "")
+    risk_notes = list(reviewed.get("risk_notes") or [])
+    reasons = []
+    decision = "allow"
+    risk_level = "low"
+
+    if candidate_type in suppressed_types:
+        reasons.append("recent_dismissals_without_replies")
+        decision = "block"
+        risk_level = "blocked"
+
+    if "no_memory_basis" in risk_notes:
+        reasons.append("no_memory_basis")
+        decision = "block"
+        risk_level = "blocked"
+    elif "long_idle_only" in risk_notes:
+        reasons.append("long_idle_only")
+        if decision != "block":
+            decision = "watch"
+            risk_level = "watch"
+    else:
+        reasons.append(f"memory_basis_{(reviewed.get('memory_basis') or {}).get('strength') or 'weak'}")
+
+    boundary_hits = _topic_boundary_hits(reviewed, topic_boundaries)
+    if boundary_hits:
+        reviewed["boundary_hits"] = boundary_hits
+        reasons.append("topic_boundary_match")
+        decision = "block"
+        risk_level = "blocked"
+
+    sensitivity = _sensitivity_hits(reviewed)
+    if sensitivity["blocked"]:
+        reviewed["sensitivity"] = sensitivity
+        reasons.append("sensitive_content_blocked")
+        decision = "block"
+        risk_level = "blocked"
+    elif sensitivity["watch"]:
+        reviewed["sensitivity"] = sensitivity
+        reasons.append("sensitive_content_watch")
+        if decision != "block":
+            decision = "watch"
+            risk_level = "watch"
+
+    reviewed["risk_level"] = risk_level
+    reviewed["arbitration"] = {
+        "decision": decision,
+        "reasons": list(dict.fromkeys(reasons)),
+        "policy": "proactive_contact_local_rules_v1",
+    }
+    return reviewed
+
+
+def _topic_boundary_hits(item: dict[str, Any], topics: list[str]) -> list[str]:
+    haystack = _candidate_text_blob(item).lower()
+    hits = []
+    for topic in topics:
+        topic_text = str(topic or "").strip()
+        if topic_text and topic_text.lower() in haystack:
+            hits.append(topic_text)
+    return list(dict.fromkeys(hits))[:5]
+
+
+def _sensitivity_hits(item: dict[str, Any]) -> dict[str, list[str]]:
+    haystack = _candidate_text_blob(item)
+    blocked = [
+        key
+        for key, pattern in SENSITIVE_BLOCK_PATTERNS.items()
+        if re.search(pattern, haystack, flags=re.IGNORECASE)
+    ]
+    watch = [
+        key
+        for key, pattern in SENSITIVE_WATCH_PATTERNS.items()
+        if re.search(pattern, haystack, flags=re.IGNORECASE)
+    ]
+    return {"blocked": blocked, "watch": watch}
+
+
+def _candidate_text_blob(item: dict[str, Any]) -> str:
+    parts = [
+        str(item.get("last_excerpt") or ""),
+        str(item.get("reason") or ""),
+        str(item.get("draft_text") or ""),
+    ]
+    basis = item.get("memory_basis") or {}
+    for evidence in basis.get("evidence") or []:
+        if isinstance(evidence, dict):
+            parts.append(str(evidence.get("text") or ""))
+    return "\n".join(parts)
+
+
+def _user_topic_boundaries(user_id: int) -> list[str]:
+    topics = []
+    with get_db() as db:
+        insight = db.execute(
+            "SELECT topic_model_json, guidance_json FROM user_insights WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        memory_rows = db.execute(
+            """
+            SELECT text, object
+            FROM memory_relations
+            WHERE user_id = ?
+              AND archived = 0
+              AND predicate = 'boundary'
+              AND valid_to IS NULL
+            ORDER BY updated_at DESC
+            LIMIT 50
+            """,
+            (user_id,),
+        ).fetchall()
+        flat_rows = db.execute(
+            """
+            SELECT text
+            FROM memories
+            WHERE user_id = ?
+              AND archived = 0
+              AND type = 'boundary'
+            ORDER BY updated_at DESC
+            LIMIT 50
+            """,
+            (user_id,),
+        ).fetchall()
+    if insight:
+        topic_model = _json_dict(insight["topic_model_json"])
+        guidance = _json_dict(insight["guidance_json"])
+        topics.extend(str(item) for item in topic_model.get("avoid_topics") or [])
+        for rule in guidance.get("do_not") or []:
+            topics.extend(_topics_from_boundary_text(str(rule)))
+    for row in memory_rows:
+        text = str(row["text"] or "")
+        obj = str(row["object"] or "").strip()
+        if "不要主动提" in text and obj:
+            topics.append(obj)
+        topics.extend(_topics_from_boundary_text(text))
+    for row in flat_rows:
+        topics.extend(_topics_from_boundary_text(str(row["text"] or "")))
+    return [item for item in dict.fromkeys(topic.strip(" 。.!?") for topic in topics) if item]
+
+
+def _topics_from_boundary_text(text: str) -> list[str]:
+    patterns = [
+        r"Do not proactively bring up\s+(.+?)(?:[.。]|$)",
+        r"不要(?:再)?主动(?:提|聊|提起|说起)\s*([^，。！？,.!?]{1,40})",
+        r"别(?:再)?主动(?:提|聊|提起|说起)\s*([^，。！？,.!?]{1,40})",
+    ]
+    topics = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            topic = str(match.group(1) or "").strip()
+            if topic:
+                topics.append(topic)
+    return topics
+
+
+def _json_dict(raw: Any) -> dict[str, Any]:
+    try:
+        value = json.loads(str(raw or "{}"))
+    except Exception:
+        value = {}
+    return value if isinstance(value, dict) else {}
 
 
 def _decode_key_points(raw: Any) -> list[str]:

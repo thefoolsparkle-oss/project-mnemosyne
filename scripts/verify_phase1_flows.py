@@ -426,6 +426,8 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
     assert preview["candidates"][0]["memory_basis"]["strength"] == "direct"
     assert preview["candidates"][0]["memory_basis"]["has_summary"] is True
     assert any(item["kind"] == "key_point" for item in preview["candidates"][0]["memory_basis"]["evidence"])
+    assert preview["candidates"][0]["risk_level"] == "low"
+    assert preview["candidates"][0]["arbitration"]["decision"] == "allow"
     api_preview = server.proactive_contact_candidate_preview(user, limit=5)
     assert api_preview["settings"]["enabled"] is True
     assert api_preview["candidates"][0]["conversation_id"] == conversation_id
@@ -433,6 +435,7 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
     admin_preview = server.admin_proactive_contact_candidates({"id": user_id, "role": "admin"}, target_user_id=user_id, limit=5)
     assert admin_preview["candidates"][0]["conversation_id"] == conversation_id
     assert admin_preview["candidates"][0]["memory_basis"]["has_summary"] is True
+    assert admin_preview["blocked_candidates"] == []
 
     event = server.record_proactive_contact_event_endpoint(
         server.ProactiveContactEventRequest(
@@ -542,6 +545,110 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
     assert care_preview["candidates"][0]["conversation_id"] == care_conversation_id
     assert care_preview["candidates"][0]["memory_basis"]["strength"] == "weak"
     assert "long_idle_only" in care_preview["candidates"][0]["risk_notes"]
+    assert care_preview["candidates"][0]["risk_level"] == "watch"
+    assert care_preview["candidates"][0]["arbitration"]["decision"] == "watch"
+
+    with database.get_db() as db:
+        no_basis_conversation_id = int(
+            db.execute(
+                "INSERT INTO conversations (user_id, persona_id, title, created_at, updated_at) VALUES (?, ?, 'no basis', ?, ?)",
+                (user_id, persona_id, old_ts + 2, old_ts + 2),
+            ).lastrowid
+        )
+        db.execute(
+            """
+            INSERT INTO messages (conversation_id, user_id, persona_id, role, content, created_at)
+            VALUES (?, ?, ?, 'assistant', '', ?)
+            """,
+            (no_basis_conversation_id, user_id, persona_id, old_ts + 2),
+        )
+    blocked_no_basis = proactive_contact.proactive_contact_candidates(user_id, at_ts=after_event_ts, limit=5, include_blocked=True)
+    assert not any(int(item["conversation_id"]) == no_basis_conversation_id for item in blocked_no_basis["candidates"])
+    assert any(
+        int(item["conversation_id"]) == no_basis_conversation_id
+        and item["risk_level"] == "blocked"
+        and "no_memory_basis" in item["arbitration"]["reasons"]
+        for item in blocked_no_basis["blocked_candidates"]
+    )
+
+    with database.get_db() as db:
+        db.execute(
+            """
+            INSERT INTO user_insights (
+                user_id, profile_summary, interaction_style, emotional_patterns_json,
+                inferred_profile_json, topic_model_json, guidance_json,
+                discovery_dimensions_json, curiosity_feedback_json, updated_at
+            )
+            VALUES (?, '', '', '[]', '{}', ?, ?, '{}', '{}', ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                topic_model_json = excluded.topic_model_json,
+                guidance_json = excluded.guidance_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                user_id,
+                json.dumps({"avoid_topics": ["原神"]}, ensure_ascii=False),
+                json.dumps({"do_not": ["Do not proactively bring up 原神."]}, ensure_ascii=False),
+                after_event_ts,
+            ),
+        )
+        boundary_conversation_id = int(
+            db.execute(
+                "INSERT INTO conversations (user_id, persona_id, title, created_at, updated_at) VALUES (?, ?, 'topic boundary', ?, ?)",
+                (user_id, persona_id, old_ts + 3, old_ts + 3),
+            ).lastrowid
+        )
+        db.execute(
+            """
+            INSERT INTO messages (conversation_id, user_id, persona_id, role, content, created_at)
+            VALUES (?, ?, ?, 'user', '我之前提到原神，但别主动聊这个。', ?)
+            """,
+            (boundary_conversation_id, user_id, persona_id, old_ts + 3),
+        )
+    server.update_profile(
+        server.ProfileUpdateRequest(
+            nickname="\u6708",
+            preferences={
+                "proactive_contact": {
+                    "enabled": True,
+                    "max_per_day": 3,
+                    "quiet_start": "00:00",
+                    "quiet_end": "00:00",
+                    "allowed_types": ["followup", "care"],
+                },
+            },
+        ),
+        user,
+    )
+    boundary_preview = server.admin_proactive_contact_candidates({"id": user_id, "role": "admin"}, target_user_id=user_id, limit=8)
+    assert any(
+        int(item["conversation_id"]) == boundary_conversation_id
+        and "topic_boundary_match" in item["arbitration"]["reasons"]
+        and "原神" in item.get("boundary_hits", [])
+        for item in boundary_preview["blocked_candidates"]
+    )
+
+    with database.get_db() as db:
+        sensitive_conversation_id = int(
+            db.execute(
+                "INSERT INTO conversations (user_id, persona_id, title, created_at, updated_at) VALUES (?, ?, 'sensitive', ?, ?)",
+                (user_id, persona_id, old_ts + 4, old_ts + 4),
+            ).lastrowid
+        )
+        db.execute(
+            """
+            INSERT INTO messages (conversation_id, user_id, persona_id, role, content, created_at)
+            VALUES (?, ?, ?, 'assistant', '你刚刚说你不想活，我在这里。', ?)
+            """,
+            (sensitive_conversation_id, user_id, persona_id, old_ts + 4),
+        )
+    sensitive_preview = server.admin_proactive_contact_candidates({"id": user_id, "role": "admin"}, target_user_id=user_id, limit=8)
+    assert any(
+        int(item["conversation_id"]) == sensitive_conversation_id
+        and "sensitive_content_blocked" in item["arbitration"]["reasons"]
+        and "self_harm" in item.get("sensitivity", {}).get("blocked", [])
+        for item in sensitive_preview["blocked_candidates"]
+    )
 
     server.record_proactive_contact_event_endpoint(
         server.ProactiveContactEventRequest(
@@ -589,6 +696,36 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
     feedback_policy = proactive_contact.proactive_contact_feedback_policy(user_id)
     assert "interest" in feedback_policy["suppressed_types"]
     assert feedback_policy["reasons"]["interest"] == "recent_dismissals_without_replies"
+
+    for _ in range(2):
+        server.record_proactive_contact_event_endpoint(
+            server.ProactiveContactEventRequest(
+                event_type="candidate_dismissed",
+                candidate_type="followup",
+                detail={"reason": "too_much"},
+            ),
+            user,
+        )
+    with database.get_db() as db:
+        suppressed_conversation_id = int(
+            db.execute(
+                "INSERT INTO conversations (user_id, persona_id, title, created_at, updated_at) VALUES (?, ?, 'suppressed followup', ?, ?)",
+                (user_id, persona_id, old_ts + 5, old_ts + 5),
+            ).lastrowid
+        )
+        db.execute(
+            """
+            INSERT INTO messages (conversation_id, user_id, persona_id, role, content, created_at)
+            VALUES (?, ?, ?, 'user', '我明天还要继续整理房间。', ?)
+            """,
+            (suppressed_conversation_id, user_id, persona_id, old_ts + 5),
+        )
+    suppressed_preview = server.admin_proactive_contact_candidates({"id": user_id, "role": "admin"}, target_user_id=user_id, limit=8)
+    assert any(
+        int(item["conversation_id"]) == suppressed_conversation_id
+        and "recent_dismissals_without_replies" in item["arbitration"]["reasons"]
+        for item in suppressed_preview["blocked_candidates"]
+    )
 
     server.update_profile(
         server.ProfileUpdateRequest(
