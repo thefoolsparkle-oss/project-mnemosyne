@@ -305,6 +305,15 @@ async function loadMainData({ openLatest = false } = {}) {
   state.groupConversations = groupConversations.group_conversations || [];
   state.archivedGroupConversations = archivedGroupConversations.group_conversations || [];
   state.proactiveContact = proactiveContact;
+  if (state.view === "home") {
+    state.activePersona = null;
+    state.activeConversationId = null;
+    state.activeGroupConversationId = null;
+    state.activeGroupConversation = null;
+    state.messages = [];
+    state.groupMessages = [];
+    return;
+  }
   if (state.activeGroupConversationId) {
     state.activeGroupConversation = [...state.groupConversations, ...state.archivedGroupConversations]
       .find((item) => Number(item.id) === Number(state.activeGroupConversationId)) || state.activeGroupConversation;
@@ -329,8 +338,12 @@ async function loadMainData({ openLatest = false } = {}) {
   state.view = state.activePersona || state.activeGroupConversation ? state.view : "forge";
   if (openLatest && state.personas.length) {
     state.view = "home";
+    state.activePersona = null;
     state.activeConversationId = null;
+    state.activeGroupConversationId = null;
+    state.activeGroupConversation = null;
     state.messages = [];
+    state.groupMessages = [];
     return;
   }
   if (openLatest && state.activePersona) {
@@ -538,7 +551,7 @@ function saveLastActive() {
       );
       return;
     }
-    if (!state.activePersona) return;
+    if (state.view !== "chat" || !state.activePersona) return;
     localStorage.setItem(
       lastActiveKey(),
       JSON.stringify({

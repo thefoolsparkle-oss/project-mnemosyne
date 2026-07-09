@@ -927,6 +927,14 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
     assert quiet_preview["candidates"] == []
 
 
+def verify_frontend_home_navigation_state() -> None:
+    source = (PROJECT_ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    assert 'if (state.view === "home") {' in source
+    assert "state.activePersona = null;" in source
+    assert "state.activeGroupConversationId = null;" in source
+    assert 'if (state.view !== "chat" || !state.activePersona) return;' in source
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         database.DB_PATH = Path(tmp) / "phase1.db"
@@ -946,6 +954,7 @@ def main() -> None:
         verify_local_avatar_generation(server, user_id, persona_id)
         verify_profile_proactive_preferences(server, user_id)
         verify_tab_scoped_login(server, auth)
+        verify_frontend_home_navigation_state()
     print("Phase 1 ordinary-user flow verification passed")
 
 
