@@ -1592,6 +1592,8 @@ def admin_llm_health(admin: dict = Depends(current_admin), limit: int = 120):
         item["stale_config_failure"] = stale_config_failure
         item["current_failed"] = item.get("last_status") == "failed" and not stale_config_failure
         item["historical_failed"] = int(item.get("failed") or 0) > 0 and not item["current_failed"]
+        item["cost_pressure"] = _llm_cost_pressure(item)
+        item["route_hint"] = _llm_route_hint(item)
         item.pop("duration_total_ms", None)
         tasks.append(item)
     tasks.sort(key=lambda item: (
@@ -1610,6 +1612,26 @@ def admin_llm_health(admin: dict = Depends(current_admin), limit: int = 120):
 
 def _estimate_tokens_from_chars(value: int) -> int:
     return max(0, round(max(0, int(value or 0)) / 4))
+
+
+def _llm_cost_pressure(item: dict[str, Any]) -> str:
+    if int(item.get("avg_prompt_chars") or 0) >= 8000 or int(item.get("estimated_total_tokens") or 0) >= 5000:
+        return "high_context"
+    if int(item.get("avg_prompt_chars") or 0) >= 3000 or int(item.get("estimated_total_tokens") or 0) >= 2000:
+        return "watch"
+    return "normal"
+
+
+def _llm_route_hint(item: dict[str, Any]) -> str:
+    if item.get("current_failed"):
+        return "current_route_failing"
+    if item.get("stale_config_failure"):
+        return "old_route_failure"
+    if item.get("cost_pressure") == "high_context":
+        return "review_context_size"
+    if int(item.get("slow") or 0) > 0:
+        return "review_latency"
+    return "ok"
 
 
 def _safe_llm_config(config: dict[str, Any]) -> dict[str, Any]:

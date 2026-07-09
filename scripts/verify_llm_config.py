@@ -115,12 +115,14 @@ def main() -> None:
                         ("recovered_probe", "kimi", "moonshot-v1-auto", "failed", 80, 0, 1200, "old timeout", ts + 3),
                         ("recovered_probe", "kimi", "moonshot-v1-auto", "success", 80, 40, 900, "", ts + 4),
                         ("stale_config_probe", "not-a-provider", "", "failed", 80, 0, 1200, "old route", ts + 5),
+                        ("context_probe", "kimi", "moonshot-v1-auto", "success", 40000, 1000, 2000, "", ts + 6),
                     ],
                 )
             health = server.admin_llm_health({"id": 1, "role": "admin"}, limit=10)
             probe_health = next(item for item in health["tasks"] if item["task"] == "health_probe")
             recovered_health = next(item for item in health["tasks"] if item["task"] == "recovered_probe")
             stale_health = next(item for item in health["tasks"] if item["task"] == "stale_config_probe")
+            context_health = next(item for item in health["tasks"] if item["task"] == "context_probe")
             assert health["window"] >= 3
             assert health["failed"] >= 1
             assert health["slow"] >= 1
@@ -142,6 +144,9 @@ def main() -> None:
             assert stale_health["current_failed"] is False
             assert stale_health["historical_failed"] is True
             assert stale_health["stale_config_failure"] is True
+            assert context_health["cost_pressure"] == "high_context"
+            assert context_health["route_hint"] == "review_context_size"
+            assert context_health["estimated_total_tokens"] == 10250
     finally:
         if "server" in locals() and "original_server_load_config" in locals():
             server.load_config = original_server_load_config
