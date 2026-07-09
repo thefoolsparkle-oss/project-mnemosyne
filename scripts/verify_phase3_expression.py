@@ -619,7 +619,7 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
         target_user_id=user_id,
         persona_id=persona_id,
         limit=4,
-        usage_limit=4,
+        usage_limit=20,
     )
     assert profile_usage["preference_history"][0]["mode"] == "subtle"
     assert profile_usage["preference_history"][0]["source"] == "profile_setting"
@@ -785,7 +785,7 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
         target_user_id=user_id,
         persona_id=persona_id,
         limit=4,
-        usage_limit=4,
+        usage_limit=20,
     )
     assert restored_pref_usage["preference_history"][0]["mode"] == "normal"
     assert restored_pref_usage["preference_history"][0]["source"] == "chat_intent"

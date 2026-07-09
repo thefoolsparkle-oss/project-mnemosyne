@@ -772,6 +772,21 @@ function renderProfileModal() {
   const proactiveMaxPerDay = selectControl(["1", "2", "3"], String(proactive.max_per_day || 1), ["1", "2", "3"]);
   const proactiveQuietStart = h("input", { type: "time", value: proactive.quiet_start || "22:00" });
   const proactiveQuietEnd = h("input", { type: "time", value: proactive.quiet_end || "09:00" });
+  const proactiveAllowedTypes = new Set(
+    Array.isArray(proactive.allowed_types) && proactive.allowed_types.length
+      ? proactive.allowed_types
+      : ["followup", "care", "reminder"]
+  );
+  const proactiveTypeInputs = [
+    ["followup", "延续话题", "只从未继续的旧会话生成"],
+    ["care", "轻问候", "长时间未联系时低频出现"],
+    ["reminder", "提醒", "只来自明确计划或提醒状态"],
+    ["interest", "兴趣话题", "只来自明确喜欢且未设边界的话题"],
+  ].map(([value, label, hint]) => {
+    const input = h("input", { type: "checkbox", value });
+    input.checked = proactiveAllowedTypes.has(value);
+    return { value, label, hint, input };
+  });
   const status = h("small", { class: "save-status" });
 
   const syncDays = () => {
@@ -813,6 +828,11 @@ function renderProfileModal() {
           event.preventDefault();
           status.textContent = "";
           try {
+            const selectedProactiveTypes = proactiveTypeInputs.filter((item) => item.input.checked).map((item) => item.value);
+            if (proactiveEnabled.checked && !selectedProactiveTypes.length) {
+              status.textContent = "至少选择一种主动联系类型，或关闭主动联系许可。";
+              return;
+            }
             let avatarValue = avatarUrl.value;
             if (avatarFile.files?.[0]) {
               status.textContent = "正在上传头像...";
@@ -835,6 +855,7 @@ function renderProfileModal() {
                     max_per_day: Number(proactiveMaxPerDay.value || 1),
                     quiet_start: proactiveQuietStart.value,
                     quiet_end: proactiveQuietEnd.value,
+                    allowed_types: selectedProactiveTypes,
                   },
                 },
               }),
@@ -866,6 +887,16 @@ function renderProfileModal() {
             h("label", {}, ["\u6bcf\u5929\u6700\u591a", proactiveMaxPerDay]),
             h("label", {}, ["\u5b89\u9759\u5f00\u59cb", proactiveQuietStart]),
             h("label", {}, ["\u5b89\u9759\u7ed3\u675f", proactiveQuietEnd]),
+          ]),
+          h("div", { class: "profile-consent-types" }, [
+            h("small", { text: "允许的主动联系类型" }),
+            ...proactiveTypeInputs.map((item) => h("label", { class: "checkbox-row compact" }, [
+              item.input,
+              h("span", {}, [
+                h("strong", { text: item.label }),
+                h("small", { text: item.hint }),
+              ]),
+            ])),
           ]),
         ]),
         h("div", { class: "actions modal-actions" }, [

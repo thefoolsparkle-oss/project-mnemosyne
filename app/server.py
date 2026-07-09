@@ -844,7 +844,7 @@ def admin_expression_usage(
         for asset in expression_assets_public(include_disabled=True, include_admin_metadata=True)
     }
     usage_rows = [_with_expression_asset_metadata(dict_from_row(row), asset_map) for row in [*single_rows, *group_rows]]
-    usage_rows.sort(key=lambda item: int(item.get("created_at") or 0), reverse=True)
+    usage_rows.sort(key=lambda item: (int(item.get("created_at") or 0), int(item.get("id") or 0)), reverse=True)
     recent = usage_rows[:limit]
     counts: dict[str, dict[str, Any]] = {}
     summary = {

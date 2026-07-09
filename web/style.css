@@ -477,10 +477,25 @@ small {
   display: block;
 }
 
+.profile-consent .checkbox-row.compact {
+  gap: 8px;
+}
+
 .profile-consent-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
+}
+
+.profile-consent-types {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.profile-consent-types > small {
+  grid-column: 1 / -1;
+  color: var(--muted);
 }
 
 .avatar-url-row {
@@ -2730,6 +2745,10 @@ small {
   }
 
   .profile-consent-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .profile-consent-types {
     grid-template-columns: 1fr;
   }
 
