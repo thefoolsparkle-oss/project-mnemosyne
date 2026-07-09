@@ -7,6 +7,7 @@ const GROUP_AUTO_PROMPT_DELAY_MS = GROUP_AUTO_MIN_IDLE_SECONDS * 1000 + 1200;
 const GROUP_AUTO_USER_WINDOW_SECONDS = 600;
 const GROUP_AUTO_FAILURE_BACKOFF_SECONDS = 300;
 const GROUP_MAX_MEMBERS = 6;
+const MAX_ASSISTANT_SEGMENTS = 8;
 
 const groupAutoCooldowns = new Map();
 let groupAutoPromptTimer = null;
@@ -3652,26 +3653,29 @@ function renderGroupMessage(message) {
     ? state.profile?.avatar_url
     : message.speaker_avatar_url || groupMemberAvatar(message.speaker_persona_id);
   const content = String(message.content || "").trim();
-  const bubbleChildren = [content];
-  if (isNotice && ["error", "pending"].includes(message.status) && message.retry_content) {
-    bubbleChildren.push(
-      h("button", {
-        type: "button",
-        class: "retry-btn",
-        text: state.sending ? "\u7b49\u5f85\u4e2d" : "\u91cd\u8bd5",
-        disabled: state.sending ? "disabled" : null,
-        onclick: () => sendGroupChatMessage(message.retry_content, {
-          retryLocalId: message.local_id,
-          clientMessageId: message.retry_client_message_id || "",
-        }),
-      })
-    );
-  }
+  const segments = !isUser && !isNotice ? splitAssistantContent(content) : [content];
   return h("article", { class: `message group-message ${isUser ? "user" : isNotice ? "notice" : "assistant"}` }, [
     !isUser && !isNotice ? avatar(speakerName, speakerAvatar) : null,
     h("div", { class: "message-stack" }, [
       !isUser && !isNotice ? h("small", { class: "group-speaker-name", text: speakerName }) : null,
-      h("div", { class: `bubble ${message.status || ""}` }, bubbleChildren),
+      ...segments.map((segment, index) => {
+        const bubbleChildren = [segment];
+        if (index === segments.length - 1 && isNotice && ["error", "pending"].includes(message.status) && message.retry_content) {
+          bubbleChildren.push(
+            h("button", {
+              type: "button",
+              class: "retry-btn",
+              text: state.sending ? "\u7b49\u5f85\u4e2d" : "\u91cd\u8bd5",
+              disabled: state.sending ? "disabled" : null,
+              onclick: () => sendGroupChatMessage(message.retry_content, {
+                retryLocalId: message.local_id,
+                clientMessageId: message.retry_client_message_id || "",
+              }),
+            })
+          );
+        }
+        return h("div", { class: `bubble ${message.status || ""}` }, bubbleChildren);
+      }),
       !isUser && !isNotice && Array.isArray(message.expressions) && message.expressions.length
         ? renderExpressionStrip(message.expressions)
         : null,
@@ -3879,7 +3883,12 @@ function splitAssistantContent(content) {
     }
   }
   if (current) segments.push(current);
-  return segments.flatMap((segment) => splitLongSegment(segment, 92)).slice(0, 8);
+  const splitSegments = segments.flatMap((segment) => splitLongSegment(segment, 92));
+  if (splitSegments.length <= MAX_ASSISTANT_SEGMENTS) return splitSegments;
+  return [
+    ...splitSegments.slice(0, MAX_ASSISTANT_SEGMENTS - 1),
+    splitSegments.slice(MAX_ASSISTANT_SEGMENTS - 1).join(" "),
+  ];
 }
 
 function splitLongSegment(text, maxLength) {

@@ -935,6 +935,9 @@ def verify_frontend_home_navigation_state() -> None:
     assert 'if (state.view !== "chat" || !state.activePersona) return;' in source
     assert 'disabled: state.sending ? "disabled" : null' in source
     assert "完成后可继续输入" in source
+    assert "MAX_ASSISTANT_SEGMENTS" in source
+    assert "splitSegments.slice(MAX_ASSISTANT_SEGMENTS - 1).join" in source
+    assert "const segments = !isUser && !isNotice ? splitAssistantContent(content) : [content];" in source
 
 
 def main() -> None:
