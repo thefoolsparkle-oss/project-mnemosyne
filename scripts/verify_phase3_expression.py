@@ -797,7 +797,6 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     assert "scene_counts" in restored_pref_usage["feedback_signal"]
     resource_feedback = restored_pref_usage["feedback_signal"]["resource_feedback"]
     assert resource_feedback
-    assert any(item["negative"] >= 1 for item in resource_feedback)
     assert resource_feedback[0]["evidence_count"] >= 1
     assert "scene_counts" in resource_feedback[0]
     feedback_ts = database.now_ts()
@@ -852,6 +851,7 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     )
     adjusted_resource_feedback = adjusted_usage["feedback_signal"]["resource_feedback"]
     light_laugh_feedback = next(item for item in adjusted_resource_feedback if item["label"] == "轻笑")
+    assert light_laugh_feedback["negative"] >= 2
     assert light_laugh_feedback["runtime_action"] == "avoid_non_support"
     assert light_laugh_feedback["runtime_reason"] == "negative_feedback_twice"
     resource_policy = {

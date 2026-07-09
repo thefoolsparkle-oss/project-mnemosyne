@@ -3498,7 +3498,16 @@ function groupConversationTitle(group) {
 
 function groupConversationPreview(group) {
   const content = String(group?.last_message || "").trim();
-  if (content) return content.slice(0, 42);
+  if (content) {
+    if (group.last_message_speaker_type === "user" && group.last_message_reply_status === "error") {
+      return `群聊未接上 · 你：${content}`.slice(0, 42);
+    }
+    if (group.last_message_speaker_type === "user" && group.last_message_reply_status === "generating") {
+      return `等待群聊接话 · 你：${content}`.slice(0, 42);
+    }
+    const prefix = group.last_message_speaker_type === "user" ? "你：" : "";
+    return `${prefix}${content}`.slice(0, 42);
+  }
   const names = (group?.members || []).map((member) => member.display_name || member.name).filter(Boolean);
   return names.length ? `${names.slice(0, 4).join("、")} 在群里` : "还没有消息";
 }

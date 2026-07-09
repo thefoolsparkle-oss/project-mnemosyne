@@ -105,6 +105,20 @@ def list_group_conversations(user_id: int, status: str = "active") -> list[dict]
                        LIMIT 1
                    ) AS last_message_speaker_persona_id,
                    (
+                       SELECT group_messages.reply_status
+                       FROM group_messages
+                       WHERE group_messages.group_conversation_id = group_conversations.id
+                       ORDER BY group_messages.id DESC
+                       LIMIT 1
+                   ) AS last_message_reply_status,
+                   (
+                       SELECT group_messages.reply_error
+                       FROM group_messages
+                       WHERE group_messages.group_conversation_id = group_conversations.id
+                       ORDER BY group_messages.id DESC
+                       LIMIT 1
+                   ) AS last_message_reply_error,
+                   (
                        SELECT COUNT(*)
                        FROM group_messages
                        WHERE group_messages.group_conversation_id = group_conversations.id

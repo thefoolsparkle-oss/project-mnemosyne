@@ -352,6 +352,9 @@ def verify_group_chat_flow() -> None:
     assert pending_retry["pending"] is True
     assert pending_retry["degraded_reason"] == "existing_generation_still_pending"
     assert pending_retry["messages"][0]["id"] == pending_user_message_id
+    pending_listed = server.group_conversations({"id": user_id})["group_conversations"][0]
+    assert pending_listed["last_message_speaker_type"] == "user"
+    assert pending_listed["last_message_reply_status"] == "generating"
 
     with database.get_db() as db:
         db.execute(
@@ -439,6 +442,10 @@ def verify_group_chat_flow() -> None:
     assert len(fallback["messages"]) == 1
     assert fallback["messages"][0]["speaker_type"] == "user"
     assert fallback["messages"][0]["reply_status"] == "error"
+    fallback_listed = server.group_conversations({"id": user_id})["group_conversations"][0]
+    assert fallback_listed["last_message_speaker_type"] == "user"
+    assert fallback_listed["last_message_reply_status"] == "error"
+    assert fallback_listed["last_message_reply_error"]
 
     recovery_calls: list[str] = []
 
