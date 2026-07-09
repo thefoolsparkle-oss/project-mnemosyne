@@ -1807,7 +1807,7 @@ function renderProactiveContactReview() {
     ]),
     typeScoreItems.length
       ? h("div", { class: "expression-usage-summary" }, typeScoreItems.map(([type, score]) => h("span", {
-        text: `${type}: ${Number(score.score || 0).toFixed(2)} / ${proactiveFeedbackOutcomeLabel(score.outcome)}`,
+        text: `${type}: ${Number(score.score || 0).toFixed(2)} / ${proactiveFeedbackOutcomeLabel(score.outcome)} / ${proactiveFeedbackActionLabel(score.action)}`,
       })))
       : null,
     candidates.length
@@ -1856,9 +1856,14 @@ function renderProactiveContactReview() {
 
 function renderProactiveFeedbackScore(item) {
   const counts = item.feedback_counts || {};
-  return h("small", {
-    text: `feedback ${Number(item.feedback_score || 0).toFixed(2)} / ${proactiveFeedbackOutcomeLabel(item.feedback_outcome)} / priority ${Number(item.priority || 0).toFixed(2)} -> ${Number(item.adjusted_priority || item.priority || 0).toFixed(2)} / opened ${Number(counts.opened || 0)} replied ${Number(counts.replied || 0)} dismissed ${Number(counts.dismissed || 0)}`,
-  });
+  return h("div", { class: "proactive-feedback-score" }, [
+    h("small", {
+      text: `feedback ${Number(item.feedback_score || 0).toFixed(2)} / ${proactiveFeedbackOutcomeLabel(item.feedback_outcome)} / ${proactiveFeedbackActionLabel(item.feedback_action)} / priority ${Number(item.priority || 0).toFixed(2)} -> ${Number(item.adjusted_priority || item.priority || 0).toFixed(2)}`,
+    }),
+    h("small", { text: `opened ${Number(counts.opened || 0)} replied ${Number(counts.replied || 0)} dismissed ${Number(counts.dismissed || 0)}` }),
+    item.feedback_explanation ? h("small", { text: item.feedback_explanation }) : null,
+    item.feedback_recovery_hint ? h("small", { text: item.feedback_recovery_hint }) : null,
+  ]);
 }
 
 function proactiveFeedbackOutcomeLabel(outcome) {
@@ -1869,6 +1874,15 @@ function proactiveFeedbackOutcomeLabel(outcome) {
     suppressed: "suppressed",
     unknown: "unknown",
   }[outcome] || "unknown";
+}
+
+function proactiveFeedbackActionLabel(action) {
+  return {
+    suppress_preview: "suppress preview",
+    cool_down: "cool down",
+    slightly_prioritize: "slightly prioritize",
+    observe: "observe",
+  }[action] || "observe";
 }
 
 function renderProactiveArbitration(item) {

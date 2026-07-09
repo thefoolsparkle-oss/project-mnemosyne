@@ -861,6 +861,8 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
     assert feedback_policy["reasons"]["interest"] == "recent_dismissals_without_replies"
     assert feedback_policy["type_scores"]["interest"]["score"] <= -1
     assert feedback_policy["type_scores"]["interest"]["outcome"] == "suppressed"
+    assert feedback_policy["type_scores"]["interest"]["action"] == "suppress_preview"
+    assert feedback_policy["type_scores"]["interest"]["recovery_hint"]
     assert feedback_policy["type_scores"]["care"]["replied"] == 1
 
     for _ in range(2):
@@ -892,6 +894,8 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
         and "recent_dismissals_without_replies" in item["arbitration"]["reasons"]
         and item["feedback_score"] <= -1
         and item["feedback_outcome"] == "suppressed"
+        and item["feedback_action"] == "suppress_preview"
+        and item["feedback_recovery_hint"]
         and item["adjusted_priority"] <= item["priority"]
         for item in suppressed_preview["blocked_candidates"]
     )

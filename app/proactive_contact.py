@@ -271,10 +271,11 @@ def proactive_contact_event_summary(user_id: int, *, days: int = 30) -> dict[str
     start_ts = now_ts() - window_days * 24 * 60 * 60
     by_event = {event_type: 0 for event_type in sorted(PROACTIVE_CONTACT_EVENT_TYPES)}
     by_type: dict[str, dict[str, int]] = {}
+    by_type_last_event_at: dict[str, int] = {}
     with get_db() as db:
         rows = db.execute(
             """
-            SELECT event_type, candidate_type, COUNT(*) AS count
+            SELECT event_type, candidate_type, COUNT(*) AS count, MAX(created_at) AS last_event_at
             FROM proactive_contact_events
             WHERE user_id = ?
               AND created_at >= ?
@@ -288,6 +289,10 @@ def proactive_contact_event_summary(user_id: int, *, days: int = 30) -> dict[str
         count = int(row["count"] or 0)
         by_event[event_type] = by_event.get(event_type, 0) + count
         by_type.setdefault(candidate_type, {})[event_type] = count
+        by_type_last_event_at[candidate_type] = max(
+            by_type_last_event_at.get(candidate_type, 0),
+            int(row["last_event_at"] or 0),
+        )
     opened = by_event.get("candidate_opened", 0)
     replied = by_event.get("candidate_replied", 0)
     dismissed = by_event.get("candidate_dismissed", 0)
@@ -295,6 +300,7 @@ def proactive_contact_event_summary(user_id: int, *, days: int = 30) -> dict[str
         "window_days": window_days,
         "by_event": by_event,
         "by_type": by_type,
+        "by_type_last_event_at": by_type_last_event_at,
         "opened": opened,
         "replied": replied,
         "dismissed": dismissed,
@@ -319,11 +325,13 @@ def proactive_contact_feedback_policy(user_id: int, *, days: int = 30) -> dict[s
             "opened": opened,
             "replied": replied,
             "dismissed": dismissed,
+            "last_event_at": int((summary.get("by_type_last_event_at") or {}).get(candidate_type) or 0),
         }
         if dismissed >= 2 and replied == 0 and dismissed >= opened:
             suppressed_types.append(str(candidate_type))
             reasons[str(candidate_type)] = "recent_dismissals_without_replies"
             type_scores[str(candidate_type)]["outcome"] = "suppressed"
+        type_scores[str(candidate_type)].update(_proactive_contact_feedback_action(type_scores[str(candidate_type)]))
     return {
         "window_days": int(summary.get("window_days") or days),
         "suppressed_types": sorted(suppressed_types),
@@ -350,6 +358,39 @@ def _proactive_contact_score_outcome(score: float, counts: dict[str, int]) -> st
     if score <= -1:
         return "cool_down"
     return "neutral"
+
+
+def _proactive_contact_feedback_action(metrics: dict[str, Any]) -> dict[str, str]:
+    outcome = str(metrics.get("outcome") or "unknown")
+    if outcome == "suppressed":
+        return {
+            "action": "suppress_preview",
+            "explanation": "recent dismissals without replies; blocked until the feedback window improves",
+            "recovery_hint": "a later reply or the rolling window expiring can restore this type",
+        }
+    if outcome == "cool_down":
+        return {
+            "action": "cool_down",
+            "explanation": "recent feedback is negative; keep allowed candidates lower priority",
+            "recovery_hint": "opens or replies will raise the score",
+        }
+    if outcome == "encouraging":
+        return {
+            "action": "slightly_prioritize",
+            "explanation": "recent opens or replies are positive; allow a small priority lift",
+            "recovery_hint": "dismissals will reduce the lift",
+        }
+    if outcome == "neutral":
+        return {
+            "action": "observe",
+            "explanation": "feedback is mixed or weak; keep the base priority",
+            "recovery_hint": "more reactions are needed",
+        }
+    return {
+        "action": "observe",
+        "explanation": "no recent feedback for this type",
+        "recovery_hint": "more reactions are needed",
+    }
 
 
 def _candidate_rows(user_id: int, ts: int, *, limit: int) -> list[dict[str, Any]]:
@@ -659,6 +700,9 @@ def _with_arbitration(
     feedback_score = float(feedback_metrics.get("score") or 0)
     reviewed["feedback_score"] = round(feedback_score, 3)
     reviewed["feedback_outcome"] = str(feedback_metrics.get("outcome") or "unknown")
+    reviewed["feedback_action"] = str(feedback_metrics.get("action") or "observe")
+    reviewed["feedback_explanation"] = str(feedback_metrics.get("explanation") or "")
+    reviewed["feedback_recovery_hint"] = str(feedback_metrics.get("recovery_hint") or "")
     reviewed["feedback_counts"] = {
         "opened": int(feedback_metrics.get("opened") or 0),
         "replied": int(feedback_metrics.get("replied") or 0),
