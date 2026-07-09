@@ -1776,6 +1776,7 @@ function renderProactiveContactReview() {
   const summary = state.proactiveContactSummary || {};
   const feedbackPolicy = data.feedback_policy || {};
   const suppressedTypes = Array.isArray(feedbackPolicy.suppressed_types) ? feedbackPolicy.suppressed_types : [];
+  const typeScoreItems = Object.entries(feedbackPolicy.type_scores || {});
   const allowedTypes = Array.isArray(settings.allowed_types) ? settings.allowed_types : [];
   const status = data.allowed_now
     ? "\u53ef\u5728\u5f53\u524d\u65f6\u6bb5\u5019\u9009"
@@ -1804,6 +1805,11 @@ function renderProactiveContactReview() {
       h("span", { text: `watch ${Number(arbitrationSummary.watch || 0)}` }),
       h("span", { text: `blocked ${Number(arbitrationSummary.blocked || 0)}` }),
     ]),
+    typeScoreItems.length
+      ? h("div", { class: "expression-usage-summary" }, typeScoreItems.map(([type, score]) => h("span", {
+        text: `${type}: ${Number(score.score || 0).toFixed(2)} / ${proactiveFeedbackOutcomeLabel(score.outcome)}`,
+      })))
+      : null,
     candidates.length
       ? h("div", { class: "proactive-review-list" }, candidates.map((item) => h("article", { class: `proactive-review-item risk-${item.risk_level || "low"}` }, [
         h("div", { class: "memory-title" }, [
