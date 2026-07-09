@@ -1074,6 +1074,7 @@ def _expression_resource_feedback(
                 break
     for entry in resources.values():
         entry.update(_expression_resource_runtime_action(entry))
+        entry.update(_expression_resource_weight_signal(entry))
     return sorted(
         resources.values(),
         key=lambda item: (
@@ -1106,6 +1107,48 @@ def _expression_resource_runtime_action(item: dict[str, Any]) -> dict[str, str]:
     return {
         "runtime_action": "observe",
         "runtime_reason": "balanced_feedback",
+    }
+
+
+def _expression_resource_weight_signal(item: dict[str, Any]) -> dict[str, Any]:
+    positive = int(item.get("positive") or 0)
+    negative = int(item.get("negative") or 0)
+    evidence = positive + negative
+    net = positive - negative
+    confidence = "early" if evidence < 2 else "emerging" if evidence < 4 else "stable"
+    if evidence < 2 or net == 0:
+        return {
+            "weight_action": "hold",
+            "weight_delta": 0.0,
+            "weight_confidence": confidence,
+            "weight_reason": "not_enough_directional_feedback" if evidence < 2 else "balanced_feedback",
+        }
+    if net <= -2:
+        return {
+            "weight_action": "decrease",
+            "weight_delta": round(max(-0.5, -0.12 * abs(net) - 0.03 * negative), 3),
+            "weight_confidence": confidence,
+            "weight_reason": "repeated_negative_feedback",
+        }
+    if net >= 2:
+        return {
+            "weight_action": "increase",
+            "weight_delta": round(min(0.35, 0.1 * net + 0.02 * positive), 3),
+            "weight_confidence": confidence,
+            "weight_reason": "repeated_positive_feedback",
+        }
+    if negative > positive:
+        return {
+            "weight_action": "slight_decrease",
+            "weight_delta": -0.08,
+            "weight_confidence": confidence,
+            "weight_reason": "negative_feedback_leads",
+        }
+    return {
+        "weight_action": "slight_increase",
+        "weight_delta": 0.06,
+        "weight_confidence": confidence,
+        "weight_reason": "positive_feedback_leads",
     }
 
 

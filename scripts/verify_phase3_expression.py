@@ -854,6 +854,9 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     assert light_laugh_feedback["negative"] >= 2
     assert light_laugh_feedback["runtime_action"] == "avoid_non_support"
     assert light_laugh_feedback["runtime_reason"] == "negative_feedback_twice"
+    assert light_laugh_feedback["weight_action"] == "decrease"
+    assert light_laugh_feedback["weight_delta"] < 0
+    assert light_laugh_feedback["weight_confidence"] in {"emerging", "stable"}
     resource_policy = {
         "expression_scene": "playful",
         "expression_allowed_groups": ["warmth", "acknowledgement"],

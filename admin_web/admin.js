@@ -403,6 +403,7 @@ function renderExpressionResourceFeedback(items) {
       h("strong", { text: item.display_text || item.label || item.tag || "" }),
       h("span", { text: `正 ${item.positive || 0} / 负 ${item.negative || 0} / 净 ${item.net || 0}` }),
       h("span", { text: `运行时：${expressionResourceRuntimeActionLabel(item.runtime_action)}` }),
+      h("span", { text: `长期权重：${expressionResourceWeightActionLabel(item.weight_action)} ${formatSignedNumber(item.weight_delta || 0)} · ${expressionResourceWeightConfidenceLabel(item.weight_confidence)}` }),
       h("span", { text: `${expressionGroupLabel(item.group)} · ${expressionRiskLabel(item.risk_level)} · 冷却 ${item.cooldown_turns || 0}` }),
     ])),
   ]);
@@ -1162,6 +1163,30 @@ function expressionResourceRuntimeActionLabel(action) {
     prefer_observe: "正反馈占优，继续观察",
     observe: "继续观察",
   }[action] || "继续观察";
+}
+
+function expressionResourceWeightActionLabel(action) {
+  return {
+    decrease: "建议调低",
+    slight_decrease: "轻微调低",
+    hold: "保持",
+    slight_increase: "轻微调高",
+    increase: "建议调高",
+  }[action] || "保持";
+}
+
+function expressionResourceWeightConfidenceLabel(confidence) {
+  return {
+    early: "早期信号",
+    emerging: "形成趋势",
+    stable: "较稳定",
+  }[confidence] || "早期信号";
+}
+
+function formatSignedNumber(value) {
+  const numeric = Number(value || 0);
+  if (!numeric) return "0";
+  return `${numeric > 0 ? "+" : ""}${numeric}`;
 }
 
 function expressionSceneCountLabel(counts = {}) {
