@@ -1135,7 +1135,7 @@ function renderSidebarGroupItem(entry) {
       h("span", {}, [
         h("span", { class: "conversation-title-row" }, [
           h("strong", {}, [
-            entry.pinned ? h("span", { class: "pin-mark", text: "缃《" }) : null,
+            entry.pinned ? h("span", { class: "pin-mark", text: "置顶" }) : null,
             groupConversationTitle(group),
           ]),
           h("small", { text: formatListTime(entry.updatedAt) }),
@@ -1438,7 +1438,7 @@ function renderHomeGroupCard(entry) {
     h("span", { class: "home-card-copy" }, [
       h("span", { class: "home-card-title" }, [
         h("strong", {}, [
-          entry.pinned ? h("span", { class: "pin-mark", text: "缃《" }) : null,
+          entry.pinned ? h("span", { class: "pin-mark", text: "置顶" }) : null,
           groupConversationTitle(group),
         ]),
         h("small", { text: formatListTime(entry.updatedAt) }),
@@ -3684,7 +3684,7 @@ function renderGroupMessage(message) {
         h("button", {
           type: "button",
           class: "copy-message",
-          text: "澶嶅埗",
+          text: "复制",
           onclick: () => copyMessageText(message),
         }),
       ]),
