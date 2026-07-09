@@ -1004,6 +1004,7 @@ def _maybe_update_expression_preference_from_chat(
 def _recent_expression_policy(user_id: int, persona_id: int, conversation_id: int) -> dict:
     preference_feedback = expression_preference_churn(user_id, persona_id)
     feedback_scene_adjustment = _expression_preference_scene_adjustment(user_id, persona_id)
+    feedback_resource_adjustment = _expression_preference_resource_adjustment(user_id, persona_id)
     with get_db() as db:
         preference_row = db.execute(
             """
@@ -1039,6 +1040,7 @@ def _recent_expression_policy(user_id: int, persona_id: int, conversation_id: in
                 "suppress_all": True,
                 "recent_labels": [],
                 **feedback_scene_adjustment,
+                **feedback_resource_adjustment,
             }
         message_rows = db.execute(
             """
@@ -1095,6 +1097,7 @@ def _recent_expression_policy(user_id: int, persona_id: int, conversation_id: in
         "recent_labels": recent_labels,
         "recent_label_distances": recent_label_distances,
         **feedback_scene_adjustment,
+        **feedback_resource_adjustment,
         **scene_feedback,
     }
 
@@ -1159,6 +1162,117 @@ def _expression_preference_scene_adjustment(user_id: int, persona_id: int) -> di
         if int(counts[scene]["negative"]) > int(counts[scene]["positive"])
     ]
     return adjustment
+
+
+def _empty_expression_preference_resource_adjustment() -> dict:
+    return {
+        "expression_feedback_resource_items": [],
+        "expression_feedback_watch_labels": [],
+        "expression_feedback_avoid_labels": [],
+    }
+
+
+def _expression_preference_resource_adjustment(user_id: int, persona_id: int) -> dict:
+    events = expression_preference_events(user_id, persona_id, limit=8)
+    if not events:
+        return _empty_expression_preference_resource_adjustment()
+    with get_db() as db:
+        single_rows = db.execute(
+            """
+            SELECT id, message_id, 0 AS group_message_id, expression_type, label, source_text, created_at
+            FROM message_expressions
+            WHERE user_id = ? AND persona_id = ?
+            ORDER BY id DESC
+            LIMIT 80
+            """,
+            (user_id, persona_id),
+        ).fetchall()
+        group_rows = db.execute(
+            """
+            SELECT id, 0 AS message_id, group_message_id, expression_type, label, source_text, created_at
+            FROM group_message_expressions
+            WHERE user_id = ? AND persona_id = ?
+            ORDER BY id DESC
+            LIMIT 80
+            """,
+            (user_id, persona_id),
+        ).fetchall()
+    rows = [dict_from_row(row) for row in [*single_rows, *group_rows]]
+    rows.sort(
+        key=lambda item: (
+            int(item.get("created_at") or 0),
+            int(item.get("message_id") or item.get("group_message_id") or item.get("id") or 0),
+        ),
+        reverse=True,
+    )
+    resources: dict[str, dict] = {}
+    for event in events:
+        mode = str(event.get("mode") or "")
+        if mode not in {"off", "subtle", "normal"}:
+            continue
+        signal = "positive" if mode == "normal" else "negative"
+        seen_tags: set[str] = set()
+        for row in rows:
+            if not _expression_usage_before_preference_event(row, event):
+                continue
+            label = str(row.get("label") or "").strip()
+            if not label:
+                continue
+            expression_type = str(row.get("expression_type") or "gesture").strip() or "gesture"
+            tag = f"{expression_type}:{label}"
+            if tag in seen_tags:
+                continue
+            seen_tags.add(tag)
+            entry = resources.setdefault(
+                tag,
+                {
+                    "tag": tag,
+                    "expression_type": expression_type,
+                    "label": label,
+                    "positive": 0,
+                    "negative": 0,
+                    "net": 0,
+                    "evidence_count": 0,
+                    "last_feedback_mode": mode,
+                    "last_seen_at": int(row.get("created_at") or 0),
+                    "scene_counts": {"support_needed": 0, "playful": 0, "ordinary": 0, "unknown": 0},
+                },
+            )
+            entry[signal] += 1
+            entry["net"] = int(entry["positive"]) - int(entry["negative"])
+            entry["evidence_count"] += 1
+            entry["last_feedback_mode"] = mode
+            entry["last_seen_at"] = max(int(entry.get("last_seen_at") or 0), int(row.get("created_at") or 0))
+            scene = _expression_scene_from_source(row.get("source_text"))
+            if scene not in entry["scene_counts"]:
+                scene = "unknown"
+            entry["scene_counts"][scene] += 1
+            if len(seen_tags) >= 3:
+                break
+    items = sorted(
+        resources.values(),
+        key=lambda item: (
+            -int(item.get("negative") or 0),
+            int(item.get("net") or 0),
+            -int(item.get("evidence_count") or 0),
+            str(item.get("tag") or ""),
+        ),
+    )[:6]
+    watch_labels = [
+        str(item.get("label") or "")
+        for item in items
+        if int(item.get("negative") or 0) > int(item.get("positive") or 0)
+    ]
+    avoid_labels = [
+        str(item.get("label") or "")
+        for item in items
+        if int(item.get("negative") or 0) >= 2 and int(item.get("negative") or 0) > int(item.get("positive") or 0)
+    ]
+    return {
+        "expression_feedback_resource_items": items,
+        "expression_feedback_watch_labels": list(dict.fromkeys(label for label in watch_labels if label)),
+        "expression_feedback_avoid_labels": list(dict.fromkeys(label for label in avoid_labels if label)),
+    }
 
 
 def _expression_usage_before_preference_event(row: dict, event: dict) -> bool:
@@ -1416,6 +1530,8 @@ def _apply_expression_policy(expressions: list[dict], policy: dict) -> list[dict
         return []
     allowed_groups = {str(group) for group in policy.get("expression_allowed_groups") or [] if group}
     avoid_labels = {str(label) for label in policy.get("expression_persona_avoid_labels") or [] if label}
+    feedback_avoid_labels = {str(label) for label in policy.get("expression_feedback_avoid_labels") or [] if label}
+    feedback_watch_labels = {str(label) for label in policy.get("expression_feedback_watch_labels") or [] if label}
     recent_labels = {str(label) for label in policy.get("recent_labels") or [] if label}
     recent_label_distances = {
         str(label): int(distance)
@@ -1426,6 +1542,11 @@ def _apply_expression_policy(expressions: list[dict], policy: dict) -> list[dict
     for item in expressions:
         label = str(item.get("label") or "")
         if label in avoid_labels:
+            continue
+        source_text = str(item.get("source_text") or "")
+        if scene != "support_needed" and label in feedback_avoid_labels:
+            continue
+        if scene != "support_needed" and source_text.startswith("selection_agent:") and label in feedback_watch_labels:
             continue
         asset = expression_asset(str(item.get("type") or ""), label)
         if not asset or asset.get("enabled") is False:
@@ -1467,6 +1588,8 @@ def _expression_selection_agent(user_text: str, reply_text: str, policy: dict) -
         return []
     allowed_groups = {str(group) for group in policy.get("expression_allowed_groups") or [] if group}
     avoid_labels = {str(label) for label in policy.get("expression_persona_avoid_labels") or [] if label}
+    feedback_avoid_labels = {str(label) for label in policy.get("expression_feedback_avoid_labels") or [] if label}
+    feedback_watch_labels = {str(label) for label in policy.get("expression_feedback_watch_labels") or [] if label}
     recent_label_distances = {
         str(label): int(distance)
         for label, distance in (policy.get("recent_label_distances") or {}).items()
@@ -1476,6 +1599,8 @@ def _expression_selection_agent(user_text: str, reply_text: str, policy: dict) -
         if label not in active_expression_labels().get(expression_type, set()):
             continue
         if label in avoid_labels:
+            continue
+        if scene != "support_needed" and label in feedback_avoid_labels.union(feedback_watch_labels):
             continue
         asset = expression_asset(expression_type, label)
         if not asset or asset.get("enabled") is False:

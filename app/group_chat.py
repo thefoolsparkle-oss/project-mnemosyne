@@ -11,6 +11,7 @@ from .db_chat import (
     _expression_scene_feedback,
     _expression_scene_context,
     _expression_selection_agent,
+    _expression_preference_resource_adjustment,
     _expression_preference_scene_adjustment,
     _extract_reply_presentation,
     _persona_expression_style_context,
@@ -1416,6 +1417,7 @@ def _with_group_members(group: dict) -> dict:
 def _recent_group_expression_policy(user_id: int, persona_id: int, group_conversation_id: int) -> dict:
     preference_feedback = expression_preference_churn(user_id, persona_id)
     feedback_scene_adjustment = _expression_preference_scene_adjustment(user_id, persona_id)
+    feedback_resource_adjustment = _expression_preference_resource_adjustment(user_id, persona_id)
     with get_db() as db:
         preference_row = db.execute(
             """
@@ -1447,6 +1449,7 @@ def _recent_group_expression_policy(user_id: int, persona_id: int, group_convers
                 "suppress_all": True,
                 "recent_labels": [],
                 **feedback_scene_adjustment,
+                **feedback_resource_adjustment,
             }
         message_rows = db.execute(
             """
@@ -1504,6 +1507,7 @@ def _recent_group_expression_policy(user_id: int, persona_id: int, group_convers
         "recent_labels": recent_labels,
         "recent_label_distances": recent_label_distances,
         **feedback_scene_adjustment,
+        **feedback_resource_adjustment,
         **scene_feedback,
     }
 

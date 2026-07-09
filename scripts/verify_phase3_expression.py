@@ -800,6 +800,75 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     assert any(item["negative"] >= 1 for item in resource_feedback)
     assert resource_feedback[0]["evidence_count"] >= 1
     assert "scene_counts" in resource_feedback[0]
+    feedback_ts = database.now_ts()
+    with database.get_db() as db:
+        for index, mode in enumerate(("subtle", "off")):
+            assistant_message_id = int(
+                db.execute(
+                    """
+                    INSERT INTO messages (conversation_id, user_id, persona_id, role, content, created_at)
+                    VALUES (?, ?, ?, 'assistant', ?, ?)
+                    """,
+                    (conversation_id, user_id, persona_id, f"资源反馈样本 {index}", feedback_ts + index * 2),
+                ).lastrowid
+            )
+            db.execute(
+                """
+                INSERT INTO message_expressions (
+                    message_id, user_id, persona_id, conversation_id,
+                    expression_type, label, source_text, created_at
+                )
+                VALUES (?, ?, ?, ?, 'mood', '轻笑', 'selection_agent:playful', ?)
+                """,
+                (assistant_message_id, user_id, persona_id, conversation_id, feedback_ts + index * 2),
+            )
+            user_message_id = int(
+                db.execute(
+                    """
+                    INSERT INTO messages (conversation_id, user_id, persona_id, role, content, created_at)
+                    VALUES (?, ?, ?, 'user', ?, ?)
+                    """,
+                    (conversation_id, user_id, persona_id, f"资源反馈调低 {index}", feedback_ts + index * 2 + 1),
+                ).lastrowid
+            )
+            db.execute(
+                """
+                INSERT INTO expression_preference_events (
+                    user_id, persona_id, mode, source, source_message_id, created_at
+                )
+                VALUES (?, ?, ?, 'chat_intent', ?, ?)
+                """,
+                (user_id, persona_id, mode, user_message_id, feedback_ts + index * 2 + 1),
+            )
+    resource_adjustment = chat._expression_preference_resource_adjustment(user_id, persona_id)
+    assert "轻笑" in resource_adjustment["expression_feedback_watch_labels"]
+    assert "轻笑" in resource_adjustment["expression_feedback_avoid_labels"]
+    resource_policy = {
+        "expression_scene": "playful",
+        "expression_allowed_groups": ["warmth", "acknowledgement"],
+        "expression_persona_avoid_labels": [],
+        "recent_label_distances": {},
+        "recent_labels": [],
+        **resource_adjustment,
+    }
+    assert (
+        chat._apply_expression_policy(
+            [{"type": "mood", "label": "轻笑", "source_text": "[[expression:mood:轻笑]]"}],
+            resource_policy,
+        )
+        == []
+    )
+    selector_candidate = chat._expression_selection_agent("哈哈", "确实有点好笑。", resource_policy)
+    assert not selector_candidate or selector_candidate[0]["label"] != "轻笑"
+    support_policy = {
+        **resource_policy,
+        "expression_scene": "support_needed",
+        "expression_allowed_groups": ["support", "care", "warmth", "acknowledgement"],
+    }
+    assert chat._apply_expression_policy(
+        [{"type": "mood", "label": "轻笑", "source_text": "[[expression:mood:轻笑]]"}],
+        support_policy,
+    )[0]["label"] == "轻笑"
     assert any(item["kind"] == "preference_changes" for item in restored_pref_usage["insights"])
     assert any(item["kind"] == "expression_negative_feedback" for item in restored_pref_usage["insights"])
     assert any("运行时已收紧" in item["text"] for item in restored_pref_usage["insights"])
