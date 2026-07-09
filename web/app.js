@@ -3610,6 +3610,8 @@ function renderGroupMessageList(messages) {
       nodes.push(renderFailedGroupReplyNotice(message));
     } else if (isStalledGroupReply(message)) {
       nodes.push(renderStalledGroupReplyNotice(message));
+    } else if (isPendingGroupReply(message)) {
+      nodes.push(renderPendingGroupReplyNotice(message));
     }
   }
   return nodes;
@@ -3688,6 +3690,26 @@ function isStalledGroupReply(message) {
     && Boolean(message.client_message_id)
     && nowSeconds() - Number(message.created_at || 0) >= 120
   );
+}
+
+function isPendingGroupReply(message) {
+  return (
+    message.speaker_type === "user"
+    && message.reply_status === "generating"
+    && Boolean(message.client_message_id)
+    && nowSeconds() - Number(message.created_at || 0) < 120
+  );
+}
+
+function renderPendingGroupReplyNotice(userMessage) {
+  return renderGroupMessage({
+    speaker_type: "system",
+    role: "notice",
+    content: "这句话已经送出，群聊还在判断谁自然接话。",
+    status: "pending",
+    local_id: `group-pending-${userMessage.id}`,
+    created_at: userMessage.created_at,
+  });
 }
 
 function renderStalledGroupReplyNotice(userMessage) {
