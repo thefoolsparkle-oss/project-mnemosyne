@@ -1006,8 +1006,11 @@ small {
 
 .group-settings-modal {
   width: min(430px, calc(100vw - 36px));
+  max-height: min(76vh, 640px);
   gap: 10px;
   padding: 12px;
+  align-content: start;
+  overflow-y: auto;
 }
 
 .group-settings-card summary {
@@ -1075,11 +1078,15 @@ small {
   margin-top: 2px;
 }
 
+.group-settings-members strong {
+  font-size: 13px;
+}
+
 .group-member-strip {
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
-  max-height: 76px;
+  max-height: 62px;
   overflow-y: auto;
   padding-right: 2px;
 }
@@ -1117,7 +1124,7 @@ small {
 .group-relation-list {
   display: grid;
   gap: 5px;
-  max-height: 96px;
+  max-height: 82px;
   overflow-y: auto;
   padding-right: 2px;
 }
@@ -1194,6 +1201,11 @@ small {
   align-items: center;
   gap: 8px;
   margin-top: 0;
+}
+
+.group-settings-modal .save-status {
+  min-height: 16px;
+  font-size: 12px;
 }
 
 .group-auto-toggle {
@@ -2753,17 +2765,42 @@ small {
   }
 
   .group-settings-modal {
-    max-height: min(72dvh, calc(100dvh - 48px));
+    max-height: min(70dvh, calc(100dvh - 42px));
+    gap: 8px;
+    padding: 12px;
   }
 
-  .group-settings-row,
-  .group-member-add {
-    grid-template-columns: 1fr;
+  .group-settings-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
   }
 
-  .group-settings-row button,
-  .group-member-add button {
+  .group-settings-row label {
+    grid-column: 1 / -1;
+  }
+
+  .group-settings-row button {
     width: 100%;
+    min-width: 0;
+    padding: 0 8px;
+  }
+
+  .group-member-strip {
+    max-height: 54px;
+  }
+
+  .group-relation-list {
+    max-height: 72px;
+  }
+
+  .group-member-add {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 6px;
+  }
+
+  .group-member-add button {
+    min-width: 82px;
+    padding: 0 8px;
   }
 
   .birthday-selects,
