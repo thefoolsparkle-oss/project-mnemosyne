@@ -117,7 +117,23 @@ def proactive_contact_candidates(
             blocked_candidates.append(reviewed)
         else:
             reviewed_candidates.append(reviewed)
-    candidates = reviewed_candidates
+    candidates = sorted(
+        reviewed_candidates,
+        key=lambda item: (
+            -float(item.get("adjusted_priority") or item.get("priority") or 0),
+            -int(item.get("last_message_at") or 0),
+            int(item.get("conversation_id") or 0),
+            str(item.get("type") or ""),
+        ),
+    )
+    blocked_candidates = sorted(
+        blocked_candidates,
+        key=lambda item: (
+            str(item.get("type") or ""),
+            -float(item.get("feedback_score") or 0),
+            -int(item.get("last_message_at") or 0),
+        ),
+    )
     if blocked_reason == "daily_limit":
         candidates = []
         blocked_candidates = []
@@ -291,18 +307,49 @@ def proactive_contact_feedback_policy(user_id: int, *, days: int = 30) -> dict[s
     summary = proactive_contact_event_summary(user_id, days=days)
     suppressed_types = []
     reasons: dict[str, str] = {}
+    type_scores: dict[str, dict[str, Any]] = {}
     for candidate_type, counts in (summary.get("by_type") or {}).items():
         dismissed = int(counts.get("candidate_dismissed") or 0)
         replied = int(counts.get("candidate_replied") or 0)
         opened = int(counts.get("candidate_opened") or 0) + int(counts.get("candidate_seen") or 0)
+        score = _proactive_contact_type_score(counts)
+        type_scores[str(candidate_type)] = {
+            "score": score,
+            "outcome": _proactive_contact_score_outcome(score, counts),
+            "opened": opened,
+            "replied": replied,
+            "dismissed": dismissed,
+        }
         if dismissed >= 2 and replied == 0 and dismissed >= opened:
             suppressed_types.append(str(candidate_type))
             reasons[str(candidate_type)] = "recent_dismissals_without_replies"
+            type_scores[str(candidate_type)]["outcome"] = "suppressed"
     return {
         "window_days": int(summary.get("window_days") or days),
         "suppressed_types": sorted(suppressed_types),
         "reasons": reasons,
+        "type_scores": type_scores,
     }
+
+
+def _proactive_contact_type_score(counts: dict[str, int]) -> float:
+    opened = int(counts.get("candidate_opened") or 0)
+    seen = int(counts.get("candidate_seen") or 0)
+    replied = int(counts.get("candidate_replied") or 0)
+    dismissed = int(counts.get("candidate_dismissed") or 0)
+    score = replied * 1.0 + opened * 0.25 + seen * 0.1 - dismissed * 0.75
+    return round(max(-3.0, min(3.0, score)), 3)
+
+
+def _proactive_contact_score_outcome(score: float, counts: dict[str, int]) -> str:
+    total = sum(int(value or 0) for value in counts.values())
+    if total <= 0:
+        return "unknown"
+    if score >= 1:
+        return "encouraging"
+    if score <= -1:
+        return "cool_down"
+    return "neutral"
 
 
 def _candidate_rows(user_id: int, ts: int, *, limit: int) -> list[dict[str, Any]]:
@@ -608,6 +655,19 @@ def _with_arbitration(
 ) -> dict[str, Any]:
     reviewed = dict(item)
     candidate_type = str(reviewed.get("type") or "")
+    feedback_metrics = (feedback_policy.get("type_scores") or {}).get(candidate_type) or {}
+    feedback_score = float(feedback_metrics.get("score") or 0)
+    reviewed["feedback_score"] = round(feedback_score, 3)
+    reviewed["feedback_outcome"] = str(feedback_metrics.get("outcome") or "unknown")
+    reviewed["feedback_counts"] = {
+        "opened": int(feedback_metrics.get("opened") or 0),
+        "replied": int(feedback_metrics.get("replied") or 0),
+        "dismissed": int(feedback_metrics.get("dismissed") or 0),
+    }
+    reviewed["adjusted_priority"] = round(
+        max(0.0, float(reviewed.get("priority") or 0) + max(-0.2, min(0.2, feedback_score * 0.05))),
+        3,
+    )
     risk_notes = list(reviewed.get("risk_notes") or [])
     reasons = []
     decision = "allow"

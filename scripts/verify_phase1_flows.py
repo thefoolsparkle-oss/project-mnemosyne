@@ -859,6 +859,9 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
     feedback_policy = proactive_contact.proactive_contact_feedback_policy(user_id)
     assert "interest" in feedback_policy["suppressed_types"]
     assert feedback_policy["reasons"]["interest"] == "recent_dismissals_without_replies"
+    assert feedback_policy["type_scores"]["interest"]["score"] <= -1
+    assert feedback_policy["type_scores"]["interest"]["outcome"] == "suppressed"
+    assert feedback_policy["type_scores"]["care"]["replied"] == 1
 
     for _ in range(2):
         server.record_proactive_contact_event_endpoint(
@@ -887,6 +890,9 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
     assert any(
         int(item["conversation_id"]) == suppressed_conversation_id
         and "recent_dismissals_without_replies" in item["arbitration"]["reasons"]
+        and item["feedback_score"] <= -1
+        and item["feedback_outcome"] == "suppressed"
+        and item["adjusted_priority"] <= item["priority"]
         for item in suppressed_preview["blocked_candidates"]
     )
 

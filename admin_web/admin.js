@@ -1812,6 +1812,7 @@ function renderProactiveContactReview() {
         ]),
         h("p", { text: item.draft_text || "" }),
         h("small", { text: `conversation #${item.conversation_id} / idle ${Math.round(Number(item.idle_seconds || 0) / 3600)}h / last ${item.last_message_at ? formatTs(item.last_message_at) : "-"}` }),
+        renderProactiveFeedbackScore(item),
         renderProactiveArbitration(item),
         renderProactiveMemoryBasis(item.memory_basis || {}, item.risk_notes || []),
         item.last_excerpt ? h("pre", { text: item.last_excerpt }) : null,
@@ -1827,6 +1828,7 @@ function renderProactiveContactReview() {
           ]),
           h("p", { text: item.draft_text || "" }),
           h("small", { text: `conversation #${item.conversation_id} / idle ${Math.round(Number(item.idle_seconds || 0) / 3600)}h / last ${item.last_message_at ? formatTs(item.last_message_at) : "-"}` }),
+          renderProactiveFeedbackScore(item),
           renderProactiveArbitration(item),
           renderProactiveMemoryBasis(item.memory_basis || {}, item.risk_notes || []),
           item.last_excerpt ? h("pre", { text: item.last_excerpt }) : null,
@@ -1844,6 +1846,23 @@ function renderProactiveContactReview() {
       ]))
       : [h("p", { class: "muted", text: "\u6682\u65e0\u53cd\u5e94\u8bb0\u5f55" })]),
   ]);
+}
+
+function renderProactiveFeedbackScore(item) {
+  const counts = item.feedback_counts || {};
+  return h("small", {
+    text: `feedback ${Number(item.feedback_score || 0).toFixed(2)} / ${proactiveFeedbackOutcomeLabel(item.feedback_outcome)} / priority ${Number(item.priority || 0).toFixed(2)} -> ${Number(item.adjusted_priority || item.priority || 0).toFixed(2)} / opened ${Number(counts.opened || 0)} replied ${Number(counts.replied || 0)} dismissed ${Number(counts.dismissed || 0)}`,
+  });
+}
+
+function proactiveFeedbackOutcomeLabel(outcome) {
+  return {
+    encouraging: "encouraging",
+    neutral: "neutral",
+    cool_down: "cool down",
+    suppressed: "suppressed",
+    unknown: "unknown",
+  }[outcome] || "unknown";
 }
 
 function renderProactiveArbitration(item) {
