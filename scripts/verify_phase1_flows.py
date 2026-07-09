@@ -548,6 +548,72 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
     assert care_preview["candidates"][0]["risk_level"] == "watch"
     assert care_preview["candidates"][0]["arbitration"]["decision"] == "watch"
 
+    import app.layered_memory as layered_memory
+
+    with database.get_db() as db:
+        reminder_conversation_id = int(
+            db.execute(
+                "INSERT INTO conversations (user_id, persona_id, title, created_at, updated_at) VALUES (?, ?, 'reminder', ?, ?)",
+                (user_id, persona_id, old_ts + 2, old_ts + 2),
+            ).lastrowid
+        )
+        db.execute(
+            """
+            INSERT INTO messages (conversation_id, user_id, persona_id, role, content, created_at)
+            VALUES (?, ?, ?, 'user', '明天提醒我带资料。', ?)
+            """,
+            (reminder_conversation_id, user_id, persona_id, old_ts + 2),
+        )
+        db.execute(
+            """
+            INSERT INTO memory_facts (
+                uid, user_id, persona_id, conversation_id, type, text, importance, confidence,
+                valid_from, created_at, updated_at
+            )
+            VALUES ('FACT-PROACTIVE-REMINDER', ?, ?, ?, 'plan', '用户明天提醒自己带资料，别忘了。', 0.82, 0.8, ?, ?, ?)
+            """,
+            (user_id, persona_id, reminder_conversation_id, old_ts + 2, old_ts + 2, old_ts + 2),
+        )
+    layered_memory.refresh_memory_state(user_id, persona_id)
+    server.update_profile(
+        server.ProfileUpdateRequest(
+            nickname="\u6708",
+            preferences={
+                "proactive_contact": {
+                    "enabled": True,
+                    "max_per_day": 3,
+                    "quiet_start": "00:00",
+                    "quiet_end": "00:00",
+                    "allowed_types": ["reminder"],
+                },
+            },
+        ),
+        user,
+    )
+    reminder_preview = proactive_contact.proactive_contact_candidates(user_id, at_ts=after_event_ts, limit=5)
+    assert reminder_preview["allowed_now"] is True
+    assert reminder_preview["candidates"][0]["type"] == "reminder"
+    assert reminder_preview["candidates"][0]["reason"] == "active_reminder"
+    assert reminder_preview["candidates"][0]["conversation_id"] == reminder_conversation_id
+    assert reminder_preview["candidates"][0]["source_uid"] == "FACT-PROACTIVE-REMINDER"
+    assert reminder_preview["candidates"][0]["risk_level"] == "low"
+    assert any(item["kind"] == "dynamic_state" for item in reminder_preview["candidates"][0]["memory_basis"]["evidence"])
+    server.update_profile(
+        server.ProfileUpdateRequest(
+            nickname="\u6708",
+            preferences={
+                "proactive_contact": {
+                    "enabled": True,
+                    "max_per_day": 3,
+                    "quiet_start": "00:00",
+                    "quiet_end": "00:00",
+                    "allowed_types": ["followup", "care"],
+                },
+            },
+        ),
+        user,
+    )
+
     with database.get_db() as db:
         no_basis_conversation_id = int(
             db.execute(
@@ -663,7 +729,10 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
     dismissed_preview = proactive_contact.proactive_contact_candidates(user_id, at_ts=database.now_ts(), limit=5)
     assert dismissed_preview["allowed_now"] is True
     assert dismissed_preview["usage_today"] == 1
-    assert dismissed_preview["candidates"] == []
+    assert not any(
+        int(item["conversation_id"]) == care_conversation_id and item["type"] == "care"
+        for item in dismissed_preview["candidates"]
+    )
     reply_event = server.record_proactive_contact_event_endpoint(
         server.ProactiveContactEventRequest(
             event_type="candidate_replied",

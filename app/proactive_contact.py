@@ -305,6 +305,23 @@ def proactive_contact_feedback_policy(user_id: int, *, days: int = 30) -> dict[s
 
 
 def _candidate_rows(user_id: int, ts: int, *, limit: int) -> list[dict[str, Any]]:
+    candidates = [
+        *_reminder_candidate_rows(user_id, ts, limit=limit),
+        *_conversation_candidate_rows(user_id, ts, limit=limit),
+    ]
+    candidates = sorted(
+        candidates,
+        key=lambda item: (
+            -float(item.get("priority") or 0),
+            -int(item.get("last_message_at") or 0),
+            int(item.get("conversation_id") or 0),
+            str(item.get("type") or ""),
+        ),
+    )
+    return candidates[:limit]
+
+
+def _conversation_candidate_rows(user_id: int, ts: int, *, limit: int) -> list[dict[str, Any]]:
     with get_db() as db:
         rows = db.execute(
             """
@@ -374,10 +391,103 @@ def _candidate_rows(user_id: int, ts: int, *, limit: int) -> list[dict[str, Any]
             "memory_basis": memory_basis,
             "risk_notes": _candidate_risk_notes(memory_basis, candidate_type),
             "draft_text": _draft_text(candidate_type),
+            "priority": 0.7 if candidate_type == "followup" else 0.45,
         })
         if len(candidates) >= limit:
             break
     return candidates
+
+
+def _reminder_candidate_rows(user_id: int, ts: int, *, limit: int) -> list[dict[str, Any]]:
+    with get_db() as db:
+        rows = db.execute(
+            """
+            SELECT memory_state.persona_id,
+                   memory_state.key,
+                   memory_state.value_json,
+                   memory_state.source_uids_json,
+                   memory_state.updated_at,
+                   personas.name AS persona_name,
+                   personas.avatar_url AS persona_avatar_url
+            FROM memory_state
+            JOIN personas ON personas.id = memory_state.persona_id
+            WHERE memory_state.user_id = ?
+              AND memory_state.key = 'dynamic.reminders.active'
+              AND personas.status = 'active'
+            ORDER BY memory_state.updated_at DESC
+            LIMIT ?
+            """,
+            (user_id, max(1, min(limit * 2, 20))),
+        ).fetchall()
+    candidates: list[dict[str, Any]] = []
+    for row in rows:
+        state_row = dict_from_row(row) or {}
+        state_items = _json_list(state_row.get("value_json"))
+        row_source_uids = _json_list(state_row.get("source_uids_json"))
+        for item in state_items:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("lifecycle") or "") in {"expired", "resolved"}:
+                continue
+            if str(item.get("injection_policy") or "") == "recall_only":
+                continue
+            source_uid = str(item.get("source_uid") or (row_source_uids[0] if row_source_uids else "")).strip()
+            source = _source_memory_for_uid(user_id, source_uid)
+            if not source or not source.get("conversation_id"):
+                continue
+            source_ts = int(source.get("updated_at") or item.get("updated_at") or state_row.get("updated_at") or 0)
+            if not source_ts or ts - source_ts < PROACTIVE_CONTACT_MIN_IDLE_SECONDS:
+                continue
+            reminder_text = str(item.get("text") or item.get("value") or source.get("text") or "").strip()
+            if not reminder_text:
+                continue
+            memory_basis = {
+                "strength": "direct",
+                "has_summary": False,
+                "evidence": [
+                    {"kind": "dynamic_state", "text": reminder_text[:120]},
+                    {"kind": "source_memory", "text": str(source.get("text") or "")[:120]},
+                ],
+            }
+            candidates.append({
+                "type": "reminder",
+                "conversation_id": int(source["conversation_id"]),
+                "persona_id": int(state_row["persona_id"]),
+                "persona_name": str(state_row.get("persona_name") or ""),
+                "persona_avatar_url": str(state_row.get("persona_avatar_url") or ""),
+                "reason": "active_reminder",
+                "last_message_at": source_ts,
+                "idle_seconds": max(0, ts - source_ts),
+                "last_excerpt": str(source.get("text") or reminder_text)[:80],
+                "memory_basis": memory_basis,
+                "risk_notes": _candidate_risk_notes(memory_basis, "reminder"),
+                "draft_text": _draft_text("reminder"),
+                "priority": 1.0 + float(item.get("urgency") or 0) * 0.2,
+                "source_uid": source_uid,
+            })
+            if len(candidates) >= limit:
+                return candidates
+    return candidates
+
+
+def _source_memory_for_uid(user_id: int, uid: str) -> dict[str, Any] | None:
+    if not uid:
+        return None
+    with get_db() as db:
+        row = db.execute(
+            """
+            SELECT uid, user_id, persona_id, conversation_id, text, updated_at
+            FROM memory_facts
+            WHERE user_id = ? AND uid = ? AND archived = 0
+            UNION ALL
+            SELECT uid, user_id, persona_id, conversation_id, text, updated_at
+            FROM memory_relations
+            WHERE user_id = ? AND uid = ? AND archived = 0
+            LIMIT 1
+            """,
+            (user_id, uid, user_id, uid),
+        ).fetchone()
+    return dict_from_row(row) if row else None
 
 
 def _candidate_memory_basis(item: dict[str, Any], candidate_type: str) -> dict[str, Any]:
@@ -583,6 +693,14 @@ def _json_dict(raw: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _json_list(raw: Any) -> list[Any]:
+    try:
+        value = json.loads(str(raw or "[]"))
+    except Exception:
+        value = []
+    return value if isinstance(value, list) else []
+
+
 def _decode_key_points(raw: Any) -> list[str]:
     try:
         value = json.loads(str(raw or "[]"))
@@ -605,6 +723,8 @@ def _event_from_row(row: Any) -> dict[str, Any]:
 
 
 def _draft_text(candidate_type: str) -> str:
+    if candidate_type == "reminder":
+        return "我记得你之前让我提醒这件事，轻轻提一下。"
     if candidate_type == "followup":
         return "我想起你前面说的事，想问问现在怎么样了。"
     return "我过来轻轻问一声：你现在还好吗？"
