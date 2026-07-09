@@ -1766,6 +1766,7 @@ function renderProactiveContactReview() {
   const summary = state.proactiveContactSummary || {};
   const feedbackPolicy = data.feedback_policy || {};
   const suppressedTypes = Array.isArray(feedbackPolicy.suppressed_types) ? feedbackPolicy.suppressed_types : [];
+  const allowedTypes = Array.isArray(settings.allowed_types) ? settings.allowed_types : [];
   const status = data.allowed_now
     ? "\u53ef\u5728\u5f53\u524d\u65f6\u6bb5\u5019\u9009"
     : (
@@ -1780,6 +1781,7 @@ function renderProactiveContactReview() {
       h("span", { text: `used ${Number(data.usage_today || 0)}` }),
       h("span", { text: `left ${Number(data.remaining_today || 0)}` }),
       h("span", { text: `${settings.quiet_start || "22:00"}-${settings.quiet_end || "09:00"}` }),
+      h("span", { text: `types ${allowedTypes.length ? allowedTypes.join(", ") : "-"}` }),
       h("span", { text: status }),
       h("span", { text: `window ${Number(summary.window_days || 30)}d` }),
       h("span", { text: `opened ${Number(summary.opened || 0)}` }),
