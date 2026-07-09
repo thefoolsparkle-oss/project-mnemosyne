@@ -1811,6 +1811,11 @@ small {
   resize: none;
 }
 
+.composer textarea:disabled {
+  background: rgba(23, 28, 37, 0.035);
+  color: rgba(23, 28, 37, 0.52);
+}
+
 .composer-status {
   grid-column: 1 / -1;
   min-height: 16px;

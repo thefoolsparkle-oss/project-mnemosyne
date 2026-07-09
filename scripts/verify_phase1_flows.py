@@ -933,6 +933,8 @@ def verify_frontend_home_navigation_state() -> None:
     assert "state.activePersona = null;" in source
     assert "state.activeGroupConversationId = null;" in source
     assert 'if (state.view !== "chat" || !state.activePersona) return;' in source
+    assert 'disabled: state.sending ? "disabled" : null' in source
+    assert "完成后可继续输入" in source
 
 
 def main() -> None:

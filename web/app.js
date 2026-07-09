@@ -3009,7 +3009,12 @@ function forgeGroups() {
 }
 
 function renderComposer() {
-  const input = h("textarea", { rows: "1", maxlength: "8000", placeholder: text.messagePlaceholder });
+  const input = h("textarea", {
+    rows: "1",
+    maxlength: "8000",
+    placeholder: state.sending ? "上一条发送中，完成后再继续" : text.messagePlaceholder,
+    disabled: state.sending ? "disabled" : null,
+  });
   const button = h("button", { type: "submit", text: state.sending ? "等待" : text.send, disabled: state.sending ? "disabled" : null });
   const status = state.sending
     ? h("small", { class: composerStatusClass(), "aria-live": "polite", text: composerStatusText() })
@@ -3185,9 +3190,9 @@ function composerStatusText() {
   if (!state.sending) return "";
   const elapsed = state.sendingStartedAt ? Math.floor((Date.now() - state.sendingStartedAt) / 1000) : 0;
   if (elapsed >= 45) return "等待时间较长。这句话已经送出，不会丢；如果失败会在原地给你重试。";
-  if (elapsed >= 25) return state.view === "group" ? "群聊模型响应偏慢，仍在等他们接上。" : "模型响应偏慢，仍在等回复。";
-  if (elapsed >= 8) return state.view === "group" ? "已发送，正在判断谁自然接话。" : "已发送，正在等 TA 回复。";
-  return state.view === "group" ? "群聊正在接话..." : "正在等回复...";
+  if (elapsed >= 25) return state.view === "group" ? "群聊模型响应偏慢，输入框会在这轮结束后恢复。" : "模型响应偏慢，输入框会在这轮结束后恢复。";
+  if (elapsed >= 8) return state.view === "group" ? "已发送，正在判断谁自然接话；先等这轮结束。" : "已发送，正在等 TA 回复；先等这轮结束。";
+  return state.view === "group" ? "群聊正在接话，完成后可继续输入。" : "正在等回复，完成后可继续输入。";
 }
 
 function composerStatusClass() {
