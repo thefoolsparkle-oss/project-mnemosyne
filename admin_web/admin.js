@@ -1777,6 +1777,7 @@ function renderProactiveContactReview() {
   const feedbackPolicy = data.feedback_policy || {};
   const suppressedTypes = Array.isArray(feedbackPolicy.suppressed_types) ? feedbackPolicy.suppressed_types : [];
   const typeScoreItems = Object.entries(feedbackPolicy.type_scores || {});
+  const typeSummaryItems = Object.entries(summary.by_type_summary || {});
   const allowedTypes = Array.isArray(settings.allowed_types) ? settings.allowed_types : [];
   const status = data.allowed_now
     ? "\u53ef\u5728\u5f53\u524d\u65f6\u6bb5\u5019\u9009"
@@ -1808,6 +1809,11 @@ function renderProactiveContactReview() {
     typeScoreItems.length
       ? h("div", { class: "expression-usage-summary" }, typeScoreItems.map(([type, score]) => h("span", {
         text: `${type}: ${Number(score.score || 0).toFixed(2)} / ${proactiveFeedbackOutcomeLabel(score.outcome)} / ${proactiveFeedbackActionLabel(score.action)}`,
+      })))
+      : null,
+    typeSummaryItems.length
+      ? h("div", { class: "expression-usage-summary" }, typeSummaryItems.map(([type, counts]) => h("span", {
+        text: `${type}: opened ${Number(counts.opened || 0)} / reply ${Math.round(Number(counts.reply_rate || 0) * 100)}% / dismiss ${Math.round(Number(counts.dismiss_rate || 0) * 100)}%`,
       })))
       : null,
     candidates.length

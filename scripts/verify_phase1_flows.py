@@ -845,6 +845,9 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
     assert admin_event_report["summary"]["replied"] == 1
     assert admin_event_report["summary"]["reply_rate"] == 1
     assert admin_event_report["summary"]["dismiss_rate"] == 1
+    assert admin_event_report["summary"]["by_type_summary"]["care"]["replied"] == 1
+    assert admin_event_report["summary"]["by_type_summary"]["care"]["dismissed"] == 1
+    assert admin_event_report["summary"]["by_type_summary"]["care"]["reply_rate"] == 0.5
     for _ in range(2):
         server.record_proactive_contact_event_endpoint(
             server.ProactiveContactEventRequest(
@@ -864,6 +867,9 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
     assert feedback_policy["type_scores"]["interest"]["action"] == "suppress_preview"
     assert feedback_policy["type_scores"]["interest"]["recovery_hint"]
     assert feedback_policy["type_scores"]["care"]["replied"] == 1
+    feedback_summary = proactive_contact.proactive_contact_event_summary(user_id)
+    assert feedback_summary["by_type_summary"]["interest"]["dismissed"] == 2
+    assert feedback_summary["by_type_summary"]["interest"]["dismiss_rate"] == 1
 
     for _ in range(2):
         server.record_proactive_contact_event_endpoint(

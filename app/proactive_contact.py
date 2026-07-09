@@ -296,16 +296,37 @@ def proactive_contact_event_summary(user_id: int, *, days: int = 30) -> dict[str
     opened = by_event.get("candidate_opened", 0)
     replied = by_event.get("candidate_replied", 0)
     dismissed = by_event.get("candidate_dismissed", 0)
+    by_type_summary = {
+        candidate_type: _proactive_contact_type_summary(counts, by_type_last_event_at.get(candidate_type, 0))
+        for candidate_type, counts in by_type.items()
+    }
     return {
         "window_days": window_days,
         "by_event": by_event,
         "by_type": by_type,
+        "by_type_summary": by_type_summary,
         "by_type_last_event_at": by_type_last_event_at,
         "opened": opened,
         "replied": replied,
         "dismissed": dismissed,
         "reply_rate": round(replied / opened, 3) if opened else 0,
         "dismiss_rate": round(dismissed / opened, 3) if opened else 0,
+    }
+
+
+def _proactive_contact_type_summary(counts: dict[str, int], last_event_at: int) -> dict[str, Any]:
+    opened = int(counts.get("candidate_opened") or 0) + int(counts.get("candidate_seen") or 0)
+    replied = int(counts.get("candidate_replied") or 0)
+    dismissed = int(counts.get("candidate_dismissed") or 0)
+    interaction_count = opened + replied + dismissed
+    return {
+        "opened": opened,
+        "replied": replied,
+        "dismissed": dismissed,
+        "interaction_count": interaction_count,
+        "reply_rate": round(replied / interaction_count, 3) if interaction_count else 0,
+        "dismiss_rate": round(dismissed / interaction_count, 3) if interaction_count else 0,
+        "last_event_at": int(last_event_at or 0),
     }
 
 
