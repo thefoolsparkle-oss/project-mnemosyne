@@ -119,7 +119,7 @@ Windows 用户变量需要配置：
 
 配置后重新打开 PowerShell / VS Code 终端，让新环境变量生效。
 
-可用下面的本地诊断命令确认当前配置是否读到了环境变量；它只显示变量是否存在，不会打印 API Key：
+可用下面的本地诊断命令确认当前配置是否读到了环境变量；它只显示变量是否存在，不会打印 API Key，并会基于本地日志输出最近模型健康、粗略 token 估算和路由关注提示：
 
 ```powershell
 py scripts\diagnose_llm_env.py

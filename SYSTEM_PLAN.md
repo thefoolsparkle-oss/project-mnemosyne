@@ -203,7 +203,7 @@ LLM 路由：
 - 支持 DeepSeek、OpenAI、Ollama、OpenAI-compatible provider。
 - `llm_call_logs` 记录任务、provider、model、成功失败、耗时、prompt/response 长度和错误摘要。
 - 管理台模型健康概览第一版已接入：按最近调用聚合任务失败率、慢调用、最近错误、prompt/response 字符量、粗略 token 估算、上下文压力和路由关注提示，只读日志与路由配置，不额外触发模型请求；若最新失败来自已不匹配当前配置的旧 provider/model，会标为旧配置失败而不是当前故障。
-- `scripts/diagnose_llm_env.py` 已复用运行时同一套环境变量检测，并会输出最近本地模型调用健康摘要，便于不开管理台时排查路由、Key 和超时问题；脚本同样区分当前失败、历史失败和旧配置失败。
+- `scripts/diagnose_llm_env.py` 已复用运行时同一套环境变量检测，并会输出最近本地模型调用健康摘要、粗略 token 估算、上下文压力和路由关注提示，便于不开管理台时排查路由、Key、成本压力和超时问题；脚本同样区分当前失败、历史失败和旧配置失败。
 - Kimi/Moonshot 客户端缺省 base_url 已统一为 `https://api.moonshot.cn/v1`，即使未来路由漏写 base_url，也不会误落到非国内端点；`verify_llm_config.py` 会用无网络 fake request 固定该行为。
 
 表达层：

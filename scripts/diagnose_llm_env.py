@@ -47,7 +47,8 @@ def _recent_llm_health(routes: dict[str, dict[str, Any]], limit: int = 80) -> li
         with get_db() as db:
             rows = db.execute(
                 """
-                SELECT task, provider, model, status, duration_ms, error_text, created_at
+                SELECT task, provider, model, status, prompt_chars, response_chars,
+                       duration_ms, error_text, created_at
                 FROM llm_call_logs
                 ORDER BY id DESC
                 LIMIT ?
@@ -66,6 +67,8 @@ def _recent_llm_health(routes: dict[str, dict[str, Any]], limit: int = 80) -> li
                 "total": 0,
                 "failed": 0,
                 "slow": 0,
+                "prompt_chars_total": 0,
+                "response_chars_total": 0,
                 "last_status": "",
                 "last_error": "",
                 "last_created_at": 0,
@@ -76,6 +79,8 @@ def _recent_llm_health(routes: dict[str, dict[str, Any]], limit: int = 80) -> li
         item["total"] += 1
         status = str(row["status"] or "")
         created_at = int(row["created_at"] or 0)
+        item["prompt_chars_total"] += int(row["prompt_chars"] or 0)
+        item["response_chars_total"] += int(row["response_chars"] or 0)
         if status == "failed":
             item["failed"] += 1
             if not item["last_error"]:
@@ -102,6 +107,13 @@ def _recent_llm_health(routes: dict[str, dict[str, Any]], limit: int = 80) -> li
         )
         item["current_failed"] = item.get("last_status") == "failed" and not item["stale_config_failure"]
         item["historical_failed"] = int(item.get("failed") or 0) > 0 and not item["current_failed"]
+        total = max(1, int(item.get("total") or 0))
+        item["avg_prompt_chars"] = round(int(item["prompt_chars_total"] or 0) / total)
+        item["estimated_prompt_tokens"] = _estimate_tokens_from_chars(int(item["prompt_chars_total"] or 0))
+        item["estimated_response_tokens"] = _estimate_tokens_from_chars(int(item["response_chars_total"] or 0))
+        item["estimated_total_tokens"] = int(item["estimated_prompt_tokens"] or 0) + int(item["estimated_response_tokens"] or 0)
+        item["cost_pressure"] = _llm_cost_pressure(item)
+        item["route_hint"] = _llm_route_hint(item)
     return sorted(
         stats.values(),
         key=lambda item: (
@@ -111,6 +123,30 @@ def _recent_llm_health(routes: dict[str, dict[str, Any]], limit: int = 80) -> li
             str(item["task"]),
         ),
     )
+
+
+def _estimate_tokens_from_chars(value: int) -> int:
+    return max(0, round(max(0, int(value or 0)) / 4))
+
+
+def _llm_cost_pressure(item: dict[str, Any]) -> str:
+    if int(item.get("avg_prompt_chars") or 0) >= 8000 or int(item.get("estimated_total_tokens") or 0) >= 5000:
+        return "high_context"
+    if int(item.get("avg_prompt_chars") or 0) >= 3000 or int(item.get("estimated_total_tokens") or 0) >= 2000:
+        return "watch"
+    return "normal"
+
+
+def _llm_route_hint(item: dict[str, Any]) -> str:
+    if item.get("current_failed"):
+        return "current_route_failing"
+    if item.get("stale_config_failure"):
+        return "old_route_failure"
+    if item.get("cost_pressure") == "high_context":
+        return "review_context_size"
+    if int(item.get("slow") or 0) > 0:
+        return "review_latency"
+    return "ok"
 
 
 def main() -> None:
@@ -131,7 +167,11 @@ def main() -> None:
     if health:
         print("\nRecent local LLM health:")
         for item in health:
-            line = "  {task}: total={total} failed={failed} slow={slow} last_status={last_status} last_at={last_created_at}".format(**item)
+            line = (
+                "  {task}: total={total} failed={failed} slow={slow} last_status={last_status} "
+                "last_at={last_created_at} est_tokens={estimated_total_tokens} "
+                "pressure={cost_pressure} hint={route_hint}"
+            ).format(**item)
             if item.get("current_failed") and item.get("last_error"):
                 line += f" current_error={item['last_error']}"
             elif item.get("stale_config_failure"):
