@@ -2082,15 +2082,27 @@ function renderDeletedPersonasModal() {
     state.deletedPanelOpen = false;
     renderShell();
   };
+  const exportAll = () => {
+    window.open("/api/personas/deleted/export", "_blank", "noopener");
+  };
   return h("div", { class: "profile-modal-backdrop", onclick: (event) => {
     if (event.target.classList.contains("profile-modal-backdrop")) close();
   } }, [
     h("section", { class: "profile-modal deleted-personas-modal" }, [
       h("div", { class: "profile-modal-head" }, [
         h("strong", { text: "已删除的人格" }),
-        h("button", { type: "button", class: "ghost compact", text: "关闭", onclick: close }),
+        h("div", { class: "deleted-personas-actions" }, [
+          h("button", {
+            type: "button",
+            class: "ghost compact",
+            text: "导出全部",
+            disabled: state.deletedPersonas.length ? null : "disabled",
+            onclick: exportAll,
+          }),
+          h("button", { type: "button", class: "ghost compact", text: "关闭", onclick: close }),
+        ]),
       ]),
-      h("p", { class: "muted deleted-personas-note", text: "恢复后，TA 和保留的聊天记录会重新回到主界面。" }),
+      h("p", { class: "muted deleted-personas-note", text: "恢复后，TA 和保留的聊天记录会重新回到主界面；彻底清除前建议先导出备份。" }),
       h("div", { class: "deleted-personas-list" }, state.deletedPersonas.length
         ? state.deletedPersonas.map((persona) => renderDeletedPersonaItem(persona))
         : [h("p", { class: "empty", text: "没有已删除的人格。" })]),
@@ -2106,7 +2118,7 @@ function renderDeletedPersonaItem(persona) {
   const purgePersona = async () => {
     status.textContent = "";
     const name = persona.name || "";
-    const confirmName = window.prompt(`\u5f7b\u5e95\u6e05\u9664\u540e\u65e0\u6cd5\u6062\u590d\u3002\u8bf7\u8f93\u5165\u300c${name}\u300d\u786e\u8ba4\u3002`);
+    const confirmName = window.prompt(`彻底清除后无法恢复。建议先导出备份；若确认清除，请输入「${name}」。`);
     if (confirmName === null) return;
     try {
       await api(`/api/personas/${persona.id}/purge`, {

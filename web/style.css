@@ -1871,6 +1871,13 @@ small {
   margin: 0;
 }
 
+.deleted-personas-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .deleted-personas-list {
   display: grid;
   gap: 8px;

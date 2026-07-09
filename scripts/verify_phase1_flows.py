@@ -148,6 +148,11 @@ def verify_naming_and_restore(server, user_id: int) -> None:
         server.delete_persona(persona_id, server.PersonaDeleteRequest(confirm_name="\u77e5\u9065"), user)
         assert any(int(item["id"]) == persona_id for item in server.deleted_personas(user)["personas"])
         assert not any(int(item["id"]) == conversation_id for item in server.conversations(user)["conversations"])
+        deleted_export = json.loads(server.export_deleted_personas(user).body.decode("utf-8"))
+        assert deleted_export["schema"] == "deleted_personas_export_v1"
+        assert deleted_export["count"] == 1
+        assert deleted_export["personas"][0]["persona"]["id"] == persona_id
+        assert deleted_export["personas"][0]["messages"][0]["content"] == "\u5bfc\u51fa\u6d4b\u8bd5"
         server.restore_persona(persona_id, user)
         assert not any(int(item["id"]) == persona_id for item in server.deleted_personas(user)["personas"])
         assert any(int(item["id"]) == conversation_id for item in server.conversations(user)["conversations"])
