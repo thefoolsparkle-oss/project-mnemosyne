@@ -598,6 +598,100 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
     assert reminder_preview["candidates"][0]["source_uid"] == "FACT-PROACTIVE-REMINDER"
     assert reminder_preview["candidates"][0]["risk_level"] == "low"
     assert any(item["kind"] == "dynamic_state" for item in reminder_preview["candidates"][0]["memory_basis"]["evidence"])
+
+    with database.get_db() as db:
+        interest_conversation_id = int(
+            db.execute(
+                "INSERT INTO conversations (user_id, persona_id, title, created_at, updated_at) VALUES (?, ?, 'interest', ?, ?)",
+                (user_id, persona_id, old_ts + 3, old_ts + 3),
+            ).lastrowid
+        )
+        db.execute(
+            """
+            INSERT INTO messages (conversation_id, user_id, persona_id, role, content, created_at)
+            VALUES (?, ?, ?, 'user', '我喜欢青柠苏打。', ?)
+            """,
+            (interest_conversation_id, user_id, persona_id, old_ts + 3),
+        )
+        db.execute(
+            """
+            INSERT INTO memory_relations (
+                uid, user_id, persona_id, conversation_id, type, subject, predicate, object, text,
+                importance, confidence, valid_from, created_at, updated_at
+            )
+            VALUES ('REL-PROACTIVE-INTEREST', ?, ?, ?, 'preference', 'user', 'preference', '青柠苏打',
+                    '用户喜欢青柠苏打', 0.78, 0.82, ?, ?, ?)
+            """,
+            (user_id, persona_id, interest_conversation_id, old_ts + 3, old_ts + 3, old_ts + 3),
+        )
+        blocked_interest_conversation_id = int(
+            db.execute(
+                "INSERT INTO conversations (user_id, persona_id, title, created_at, updated_at) VALUES (?, ?, 'blocked interest', ?, ?)",
+                (user_id, persona_id, old_ts + 4, old_ts + 4),
+            ).lastrowid
+        )
+        db.execute(
+            """
+            INSERT INTO messages (conversation_id, user_id, persona_id, role, content, created_at)
+            VALUES (?, ?, ?, 'user', '我喜欢原神，但别主动提原神。', ?)
+            """,
+            (blocked_interest_conversation_id, user_id, persona_id, old_ts + 4),
+        )
+        db.execute(
+            """
+            INSERT INTO memory_relations (
+                uid, user_id, persona_id, conversation_id, type, subject, predicate, object, text,
+                importance, confidence, valid_from, created_at, updated_at
+            )
+            VALUES ('REL-PROACTIVE-INTEREST-BOUNDARY', ?, ?, ?, 'preference', 'user', 'preference', '原神',
+                    '用户喜欢原神，但别主动提原神', 0.78, 0.82, ?, ?, ?)
+            """,
+            (user_id, persona_id, blocked_interest_conversation_id, old_ts + 4, old_ts + 4, old_ts + 4),
+        )
+        db.execute(
+            """
+            INSERT INTO user_insights (
+                user_id, profile_summary, interaction_style, emotional_patterns_json,
+                inferred_profile_json, topic_model_json, guidance_json,
+                discovery_dimensions_json, curiosity_feedback_json, updated_at
+            )
+            VALUES (?, '', '', '[]', '{}', ?, ?, '{}', '{}', ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                topic_model_json = excluded.topic_model_json,
+                guidance_json = excluded.guidance_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                user_id,
+                json.dumps({"avoid_topics": ["原神"]}, ensure_ascii=False),
+                json.dumps({"do_not": ["Do not proactively bring up 原神."]}, ensure_ascii=False),
+                after_event_ts,
+            ),
+        )
+    server.update_profile(
+        server.ProfileUpdateRequest(
+            nickname="\u6708",
+            preferences={
+                "proactive_contact": {
+                    "enabled": True,
+                    "max_per_day": 3,
+                    "quiet_start": "00:00",
+                    "quiet_end": "00:00",
+                    "allowed_types": ["interest"],
+                },
+            },
+        ),
+        user,
+    )
+    interest_preview = proactive_contact.proactive_contact_candidates(user_id, at_ts=after_event_ts, limit=5, include_blocked=True)
+    assert interest_preview["candidates"][0]["type"] == "interest"
+    assert interest_preview["candidates"][0]["topic"] == "青柠苏打"
+    assert interest_preview["candidates"][0]["conversation_id"] == interest_conversation_id
+    assert interest_preview["candidates"][0]["source_uid"] == "REL-PROACTIVE-INTEREST"
+    assert interest_preview["candidates"][0]["risk_level"] == "low"
+    assert not any(item.get("topic") == "原神" for item in interest_preview["candidates"])
+    assert not any(item.get("topic") == "原神" for item in interest_preview["blocked_candidates"])
+
     server.update_profile(
         server.ProfileUpdateRequest(
             nickname="\u6708",

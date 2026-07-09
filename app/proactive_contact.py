@@ -86,7 +86,8 @@ def proactive_contact_candidates(
     if allowed_now and _is_quiet_time(settings, ts):
         allowed_now = False
         blocked_reason = "quiet_hours"
-    candidates = _candidate_rows(user_id, ts, limit=max(1, min(int(limit or 5), 20)))
+    requested_limit = max(1, min(int(limit or 5), 20))
+    candidates = _candidate_rows(user_id, ts, limit=max(requested_limit * 4, requested_limit))
     max_per_day = int(settings.get("max_per_day") or 1)
     usage_today = proactive_contact_daily_usage(user_id, at_ts=ts)
     remaining_today = max(0, max_per_day - usage_today)
@@ -123,7 +124,7 @@ def proactive_contact_candidates(
     else:
         candidate_limit = remaining_today if allowed_now else max_per_day
         candidates = candidates[:max(0, candidate_limit)]
-        blocked_candidates = blocked_candidates[:max(0, int(limit or 5))]
+        blocked_candidates = blocked_candidates[:max(0, requested_limit)]
     return {
         "settings": settings,
         "allowed_now": allowed_now,
@@ -307,6 +308,7 @@ def proactive_contact_feedback_policy(user_id: int, *, days: int = 30) -> dict[s
 def _candidate_rows(user_id: int, ts: int, *, limit: int) -> list[dict[str, Any]]:
     candidates = [
         *_reminder_candidate_rows(user_id, ts, limit=limit),
+        *_interest_candidate_rows(user_id, ts, limit=limit),
         *_conversation_candidate_rows(user_id, ts, limit=limit),
     ]
     candidates = sorted(
@@ -393,6 +395,80 @@ def _conversation_candidate_rows(user_id: int, ts: int, *, limit: int) -> list[d
             "draft_text": _draft_text(candidate_type),
             "priority": 0.7 if candidate_type == "followup" else 0.45,
         })
+        if len(candidates) >= limit:
+            break
+    return candidates
+
+
+def _interest_candidate_rows(user_id: int, ts: int, *, limit: int) -> list[dict[str, Any]]:
+    avoided_topics = set(_user_topic_boundaries(user_id))
+    disliked_topics = set(_user_disliked_topics(user_id))
+    with get_db() as db:
+        rows = db.execute(
+            """
+            SELECT memory_relations.uid,
+                   memory_relations.persona_id,
+                   memory_relations.conversation_id,
+                   memory_relations.object,
+                   memory_relations.text,
+                   memory_relations.updated_at,
+                   personas.name AS persona_name,
+                   personas.avatar_url AS persona_avatar_url
+            FROM memory_relations
+            JOIN personas ON personas.id = memory_relations.persona_id
+            WHERE memory_relations.user_id = ?
+              AND memory_relations.archived = 0
+              AND memory_relations.valid_to IS NULL
+              AND memory_relations.predicate = 'preference'
+              AND memory_relations.conversation_id IS NOT NULL
+              AND personas.status = 'active'
+            ORDER BY memory_relations.updated_at DESC
+            LIMIT ?
+            """,
+            (user_id, max(1, min(limit * 3, 30))),
+        ).fetchall()
+    candidates: list[dict[str, Any]] = []
+    seen_topics: set[str] = set()
+    for row in rows:
+        item = dict_from_row(row) or {}
+        topic = str(item.get("object") or _preference_topic(str(item.get("text") or ""))).strip()
+        if not topic or topic in seen_topics:
+            continue
+        if topic in avoided_topics or topic in disliked_topics:
+            continue
+        text = str(item.get("text") or "")
+        if _is_negative_preference(text):
+            continue
+        if not (_is_positive_preference(text) or topic):
+            continue
+        source_ts = int(item.get("updated_at") or 0)
+        if not source_ts or ts - source_ts < PROACTIVE_CONTACT_MIN_IDLE_SECONDS:
+            continue
+        memory_basis = {
+            "strength": "direct",
+            "has_summary": False,
+            "evidence": [
+                {"kind": "preference_memory", "text": text[:120]},
+            ],
+        }
+        candidates.append({
+            "type": "interest",
+            "conversation_id": int(item["conversation_id"]),
+            "persona_id": int(item["persona_id"]),
+            "persona_name": str(item.get("persona_name") or ""),
+            "persona_avatar_url": str(item.get("persona_avatar_url") or ""),
+            "reason": "explicit_interest",
+            "last_message_at": source_ts,
+            "idle_seconds": max(0, ts - source_ts),
+            "last_excerpt": text[:80],
+            "memory_basis": memory_basis,
+            "risk_notes": _candidate_risk_notes(memory_basis, "interest"),
+            "draft_text": _draft_text("interest"),
+            "priority": 0.35,
+            "source_uid": str(item.get("uid") or ""),
+            "topic": topic,
+        })
+        seen_topics.add(topic)
         if len(candidates) >= limit:
             break
     return candidates
@@ -613,6 +689,7 @@ def _candidate_text_blob(item: dict[str, Any]) -> str:
         str(item.get("last_excerpt") or ""),
         str(item.get("reason") or ""),
         str(item.get("draft_text") or ""),
+        str(item.get("topic") or ""),
     ]
     basis = item.get("memory_basis") or {}
     for evidence in basis.get("evidence") or []:
@@ -670,6 +747,49 @@ def _user_topic_boundaries(user_id: int) -> list[str]:
     return [item for item in dict.fromkeys(topic.strip(" 。.!?") for topic in topics) if item]
 
 
+def _user_disliked_topics(user_id: int) -> list[str]:
+    topics = []
+    with get_db() as db:
+        rows = db.execute(
+            """
+            SELECT object, text
+            FROM memory_relations
+            WHERE user_id = ?
+              AND archived = 0
+              AND valid_to IS NULL
+              AND predicate = 'preference'
+            ORDER BY updated_at DESC
+            LIMIT 80
+            """,
+            (user_id,),
+        ).fetchall()
+    for row in rows:
+        text = str(row["text"] or "")
+        if _is_negative_preference(text):
+            topics.append(str(row["object"] or _preference_topic(text)))
+    return [item for item in dict.fromkeys(topic.strip(" 。.!?") for topic in topics) if item]
+
+
+def _is_positive_preference(text: str) -> bool:
+    return "喜欢" in text and not _is_negative_preference(text)
+
+
+def _is_negative_preference(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in text for marker in ("不喜欢", "讨厌", "不想聊", "别主动提", "不要主动提")) or any(
+        marker in lowered
+        for marker in ("dislike", "do not proactively bring up", "don't proactively bring up")
+    )
+
+
+def _preference_topic(text: str) -> str:
+    for pattern in (r"用户(?:很|最)?喜欢(.+)", r"用户(?:不喜欢|讨厌)(.+)"):
+        match = re.search(pattern, text)
+        if match:
+            return str(match.group(1) or "").strip(" 。.!?")
+    return ""
+
+
 def _topics_from_boundary_text(text: str) -> list[str]:
     patterns = [
         r"Do not proactively bring up\s+(.+?)(?:[.。]|$)",
@@ -725,6 +845,8 @@ def _event_from_row(row: Any) -> dict[str, Any]:
 def _draft_text(candidate_type: str) -> str:
     if candidate_type == "reminder":
         return "我记得你之前让我提醒这件事，轻轻提一下。"
+    if candidate_type == "interest":
+        return "我想起你之前喜欢的东西，想轻轻接一句。"
     if candidate_type == "followup":
         return "我想起你前面说的事，想问问现在怎么样了。"
     return "我过来轻轻问一声：你现在还好吗？"
