@@ -402,6 +402,7 @@ function renderExpressionResourceFeedback(items) {
     }, [
       h("strong", { text: item.display_text || item.label || item.tag || "" }),
       h("span", { text: `正 ${item.positive || 0} / 负 ${item.negative || 0} / 净 ${item.net || 0}` }),
+      h("span", { text: `运行时：${expressionResourceRuntimeActionLabel(item.runtime_action)}` }),
       h("span", { text: `${expressionGroupLabel(item.group)} · ${expressionRiskLabel(item.risk_level)} · 冷却 ${item.cooldown_turns || 0}` }),
     ])),
   ]);
@@ -1152,6 +1153,15 @@ function expressionSceneLabel(scene) {
     ordinary: "普通",
     unknown: "未知",
   }[scene] || "未知";
+}
+
+function expressionResourceRuntimeActionLabel(action) {
+  return {
+    avoid_non_support: "非安慰场景避让",
+    watch_auto: "watch 自动补标签",
+    prefer_observe: "正反馈占优，继续观察",
+    observe: "继续观察",
+  }[action] || "继续观察";
 }
 
 function expressionSceneCountLabel(counts = {}) {

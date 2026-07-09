@@ -1072,6 +1072,8 @@ def _expression_resource_feedback(
             entry["source_counts"][source] += 1
             if len(seen_tags) >= 3:
                 break
+    for entry in resources.values():
+        entry.update(_expression_resource_runtime_action(entry))
     return sorted(
         resources.values(),
         key=lambda item: (
@@ -1081,6 +1083,30 @@ def _expression_resource_feedback(
             str(item.get("tag") or ""),
         ),
     )[:6]
+
+
+def _expression_resource_runtime_action(item: dict[str, Any]) -> dict[str, str]:
+    positive = int(item.get("positive") or 0)
+    negative = int(item.get("negative") or 0)
+    if negative >= 2 and negative > positive:
+        return {
+            "runtime_action": "avoid_non_support",
+            "runtime_reason": "negative_feedback_twice",
+        }
+    if negative > positive:
+        return {
+            "runtime_action": "watch_auto",
+            "runtime_reason": "negative_feedback_leads",
+        }
+    if positive > negative:
+        return {
+            "runtime_action": "prefer_observe",
+            "runtime_reason": "positive_feedback_leads",
+        }
+    return {
+        "runtime_action": "observe",
+        "runtime_reason": "balanced_feedback",
+    }
 
 
 def _expression_usage_before_preference(row: dict[str, Any], event: dict[str, Any]) -> bool:

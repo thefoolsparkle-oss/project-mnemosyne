@@ -843,6 +843,17 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     resource_adjustment = chat._expression_preference_resource_adjustment(user_id, persona_id)
     assert "轻笑" in resource_adjustment["expression_feedback_watch_labels"]
     assert "轻笑" in resource_adjustment["expression_feedback_avoid_labels"]
+    adjusted_usage = server.admin_expression_usage(
+        {"id": user_id, "role": "admin"},
+        target_user_id=user_id,
+        persona_id=persona_id,
+        limit=4,
+        usage_limit=40,
+    )
+    adjusted_resource_feedback = adjusted_usage["feedback_signal"]["resource_feedback"]
+    light_laugh_feedback = next(item for item in adjusted_resource_feedback if item["label"] == "轻笑")
+    assert light_laugh_feedback["runtime_action"] == "avoid_non_support"
+    assert light_laugh_feedback["runtime_reason"] == "negative_feedback_twice"
     resource_policy = {
         "expression_scene": "playful",
         "expression_allowed_groups": ["warmth", "acknowledgement"],
