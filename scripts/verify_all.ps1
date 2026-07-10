@@ -76,7 +76,8 @@ try {
         Test-PowerShellScriptSyntax @(
             "scripts\start_local_server.ps1",
             "scripts\start_remote_tunnel.ps1",
-            "scripts\stop_project_services.ps1"
+            "scripts\stop_project_services.ps1",
+            "scripts\backup_local_data.ps1"
         )
     }
 } finally {

@@ -350,6 +350,14 @@ def verify_chat_feedback_queues_candidate(server, sculptor, chat, archivist, use
     original_mirror = chat.update_interaction_insight
     original_semantic = chat.should_use_semantic_recall
     original_extraction_policy = archivist.should_use_llm_for_extraction
+    cleaned_assistant_tone = chat._extract_reply_presentation(
+        "作为你的AI助手，很抱歉，我无法替你决定。希望这能帮到你。如果你还有其他问题，可以继续问我。"
+    )["content"]
+    assert "AI" not in cleaned_assistant_tone
+    assert "助手" not in cleaned_assistant_tone
+    assert "希望这能帮到你" not in cleaned_assistant_tone
+    assert "如果你还有其他问题" not in cleaned_assistant_tone
+    assert "这件事我不能替你决定" in cleaned_assistant_tone
     server.forge_persona = lambda **kwargs: {**forged_persona(), "name": "南枝"}
     try:
         persona = server.create_persona(server.PersonaCreateRequest(description="quiet"), {"id": user_id})["persona"]
@@ -392,6 +400,18 @@ def verify_chat_feedback_queues_candidate(server, sculptor, chat, archivist, use
         assert candidate["trigger_memory_uids"]
         assert "会不会忘记我" not in candidate["suggestion"]["speaking_style"]
         assert any("你以后回复短一点" in item["content"] for item in chat_prompts[-1] if item["role"] == "system")
+        prompt_text = "\n".join(str(item.get("content") or "") for item in chat_prompts[-1] if item["role"] == "system")
+        assert "Persona Runtime Contract" in prompt_text
+        assert "Do not identify yourself as AI, model, robot" in prompt_text
+        assert "Avoid customer-service tone" in prompt_text
+        with database.get_db() as db:
+            trace = db.execute(
+                "SELECT context_json FROM chat_context_traces WHERE id = ?",
+                (int(reply["context_trace_id"]),),
+            ).fetchone()
+        trace_context = json.loads(trace["context_json"])["model_context"]
+        assert "Persona Runtime Contract" in trace_context["runtime_contract_prompt"]
+        assert "relationship layer" in trace_context["runtime_contract_prompt"]
         queue = next(item for item in server.admin_personas({"id": user_id}, user_id)["personas"] if int(item["id"]) == persona_id)
         assert int(queue["pending_revision_count"]) == 0
         assert int(queue["pending_auto_revision_count"]) == 0
@@ -1083,6 +1103,13 @@ def verify_sparse_profile_discovery_policy(mirror, chat, user_id: int) -> None:
     assert "This turn invites checking the saved user profile" in requested_profile
     assert "Do not add unrequested memories" in requested_profile
     assert "Today is the user's birthday" not in requested_profile
+    shanghai_profile = chat._profile_usage_prompt(
+        "今天几号？",
+        current_time=datetime(2026, 5, 25, 17, 0, tzinfo=timezone.utc),
+        timezone_name="Asia/Shanghai",
+    )
+    assert "current_local_date: 2026-05-26" in shanghai_profile
+    assert "local_timezone: Asia/Shanghai" in shanghai_profile
     ordinary_turn = chat._profile_usage_prompt(
         "今天有点累。",
         current_time=datetime(2026, 5, 26, 13, 0, tzinfo=timezone.utc),

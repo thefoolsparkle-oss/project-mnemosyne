@@ -409,6 +409,52 @@ def verify_group_chat_flow() -> None:
     assert len(deduped["replies"]) == 1
     assert deduped["replies"][0]["speaker_persona_id"] == persona_ids[0]
 
+    def duplicate_agree_llm(messages, task="chat"):
+        assert task == "group_chat"
+        return json.dumps(
+            {
+                "messages": [
+                    {"persona_id": persona_ids[0], "content": "确实。", "reason": "agree"},
+                    {"persona_id": persona_ids[1], "content": "我也觉得。", "reason": "duplicate agree"},
+                ]
+            },
+            ensure_ascii=False,
+        )
+
+    group_chat.call_llm_api = duplicate_agree_llm
+    agree_deduped = server.group_chat_endpoint(
+        server.GroupChatRequest(
+            group_conversation_id=group["id"],
+            message="这样可以吗？",
+            client_message_id="group-chat-duplicate-agree",
+        ),
+        {"id": user_id},
+    )
+    assert agree_deduped["degraded"] is False
+    assert len(agree_deduped["replies"]) == 1
+    assert agree_deduped["replies"][0]["content"] == "确实。"
+
+    def expression_only_llm(messages, task="chat"):
+        assert task == "group_chat"
+        return json.dumps(
+            {"messages": [{"persona_id": persona_ids[0], "content": "[[expression:mood:微笑]]", "reason": "empty"}]},
+            ensure_ascii=False,
+        )
+
+    group_chat.call_llm_api = expression_only_llm
+    expression_only = server.group_chat_endpoint(
+        server.GroupChatRequest(
+            group_conversation_id=group["id"],
+            message="你们觉得呢？",
+            client_message_id="group-chat-expression-only",
+        ),
+        {"id": user_id},
+    )
+    assert expression_only["degraded"] is True
+    assert expression_only["degraded_reason"] == "empty_expected_reply"
+    assert expression_only["replies"] == []
+    assert all(message.get("content") != "我在。" for message in expression_only["messages"])
+
     fallback_calls: list[str] = []
 
     def flaky_llm(messages, task="chat"):
@@ -438,6 +484,8 @@ def verify_group_chat_flow() -> None:
     assert fallback["replies"] == []
     assert fallback["error_code"] == "provider_unavailable"
     assert fallback["error_message"]
+    assert fallback["status_detail"]["reason"] == "degraded"
+    assert fallback["status_detail"]["degraded_reason"] == "turn_unavailable"
     assert "模型服务" in fallback["error_message"]
     assert len(fallback["messages"]) == 1
     assert fallback["messages"][0]["speaker_type"] == "user"
@@ -553,6 +601,9 @@ def verify_group_chat_flow() -> None:
     assert quiet_calls == ["turn", "turn"]
     assert skipped_after_error["skipped"] is True
     assert skipped_after_error["reason"] == "last_user_turn_unresolved"
+    assert skipped_after_error["status_detail"]["reason"] == "last_user_turn_unresolved"
+    assert skipped_after_error["status_detail"]["latest_message_reply_status"] == "error"
+    assert skipped_after_error["status_detail"]["latest_message_age_seconds"] >= 0
 
     def pre_autonomous_llm(messages, task="chat"):
         return json.dumps(
@@ -608,6 +659,8 @@ def verify_group_chat_flow() -> None:
     )
     assert autonomous_calls == ["turn"]
     assert repeated_auto["reason"] == "reused"
+    assert repeated_auto["status_detail"]["reason"] == "reused"
+    assert repeated_auto["status_detail"]["message_count"] == 1
     assert repeated_auto["messages"][0]["id"] == autonomous["messages"][0]["id"]
     no_id_auto = group_chat.autonomous_group_turn(
         user_id=user_id,

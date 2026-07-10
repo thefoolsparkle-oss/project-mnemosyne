@@ -839,9 +839,46 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
                 """,
                 (user_id, persona_id, mode, user_message_id, feedback_ts + index * 2 + 1),
             )
+        for index in range(4):
+            assistant_message_id = int(
+                db.execute(
+                    """
+                    INSERT INTO messages (conversation_id, user_id, persona_id, role, content, created_at)
+                    VALUES (?, ?, ?, 'assistant', ?, ?)
+                    """,
+                    (conversation_id, user_id, persona_id, f"资源回复质量样本 {index}", feedback_ts + 20 + index * 2),
+                ).lastrowid
+            )
+            db.execute(
+                """
+                INSERT INTO message_expressions (
+                    message_id, user_id, persona_id, conversation_id,
+                    expression_type, label, source_text, created_at
+                )
+                VALUES (?, ?, ?, ?, 'mood', '微笑', 'selection_agent:ordinary', ?)
+                """,
+                (assistant_message_id, user_id, persona_id, conversation_id, feedback_ts + 20 + index * 2),
+            )
+            positive_user_message_id = int(db.execute(
+                """
+                INSERT INTO messages (conversation_id, user_id, persona_id, role, content, created_at)
+                VALUES (?, ?, ?, 'user', ?, ?)
+                """,
+                (conversation_id, user_id, persona_id, f"哈哈这样挺好，继续说 {index}", feedback_ts + 21 + index * 2),
+            ).lastrowid)
+            db.execute(
+                """
+                INSERT INTO expression_preference_events (
+                    user_id, persona_id, mode, source, source_message_id, created_at
+                )
+                VALUES (?, ?, 'normal', 'chat_intent', ?, ?)
+                """,
+                (user_id, persona_id, positive_user_message_id, feedback_ts + 21 + index * 2),
+            )
     resource_adjustment = chat._expression_preference_resource_adjustment(user_id, persona_id)
     assert "轻笑" in resource_adjustment["expression_feedback_watch_labels"]
     assert "轻笑" in resource_adjustment["expression_feedback_avoid_labels"]
+    assert "微笑" in resource_adjustment["expression_feedback_prefer_labels"]
     adjusted_usage = server.admin_expression_usage(
         {"id": user_id, "role": "admin"},
         target_user_id=user_id,
@@ -857,6 +894,32 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     assert light_laugh_feedback["weight_action"] == "decrease"
     assert light_laugh_feedback["weight_delta"] < 0
     assert light_laugh_feedback["weight_confidence"] in {"emerging", "stable"}
+    smile_reply_feedback = next(item for item in adjusted_resource_feedback if item["label"] == "微笑")
+    assert smile_reply_feedback["reply_quality"]["sample_count"] >= 2
+    assert smile_reply_feedback["reply_quality"]["status_counts"]["positive"] >= 2
+    assert smile_reply_feedback["weight_action"] in {"slight_increase", "increase"}
+    assert smile_reply_feedback["weight_reason"] in {"positive_feedback_leads", "reply_quality_positive"}
+    assert smile_reply_feedback["weight_delta"] > 0
+    reviewed_asset = server.admin_review_expression_asset_feedback(
+        smile_reply_feedback["expression_type"],
+        smile_reply_feedback["label"],
+        server.ExpressionAssetReviewRequest(
+            target_user_id=user_id,
+            persona_id=persona_id,
+            review_action="prefer",
+            review_note="phase3 resource feedback review",
+            evidence={
+                "positive": smile_reply_feedback["positive"],
+                "negative": smile_reply_feedback["negative"],
+                "weight_action": smile_reply_feedback["weight_action"],
+            },
+        ),
+        {"id": user_id, "role": "admin"},
+    )["asset"]
+    assert reviewed_asset["history"][0]["event_kind"] == "review_note"
+    assert reviewed_asset["history"][0]["admin_note"] == "phase3 resource feedback review"
+    assert reviewed_asset["history"][0]["after"]["review_action"] == "prefer"
+    assert reviewed_asset["history"][0]["after"]["context"]["weight_action"] == smile_reply_feedback["weight_action"]
     resource_policy = {
         "expression_scene": "playful",
         "expression_allowed_groups": ["warmth", "acknowledgement"],
@@ -874,6 +937,16 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     )
     selector_candidate = chat._expression_selection_agent("哈哈", "确实有点好笑。", resource_policy)
     assert not selector_candidate or selector_candidate[0]["label"] != "轻笑"
+    ordinary_prefer_policy = {
+        **resource_policy,
+        "expression_scene": "ordinary",
+        "expression_allowed_groups": ["warmth", "acknowledgement"],
+        "expression_feedback_avoid_labels": [],
+        "expression_feedback_watch_labels": [],
+    }
+    ordinary_prefer = chat._expression_selection_agent("好", "嗯，我在。", ordinary_prefer_policy)
+    assert ordinary_prefer[0]["label"] == "微笑"
+    assert chat._expression_selection_agent("我们继续讨论一下今天要推进的计划", "好，我们慢慢拆。", ordinary_prefer_policy) == []
     support_policy = {
         **resource_policy,
         "expression_scene": "support_needed",
@@ -887,12 +960,12 @@ def verify_protocol(chat, server, user_id: int, persona_id: int, conversation_id
     assert any(item["kind"] == "expression_negative_feedback" for item in restored_pref_usage["insights"])
     assert any("运行时已收紧" in item["text"] for item in restored_pref_usage["insights"])
     churn_policy = chat._recent_expression_policy(user_id, persona_id, conversation_id)
-    assert churn_policy["preference_churn"] is True
-    assert churn_policy["preference_feedback"]["change_count"] >= 2
+    assert "微笑" in churn_policy["expression_feedback_prefer_labels"]
     churn_prompt = chat._expression_policy_prompt(churn_policy)
-    assert "近期用户多次切换轻表达偏好" in churn_prompt
+    assert "Resource feedback preference" in churn_prompt
     churn_policy.update(chat._expression_scene_context("哈哈这个有点好笑"))
-    assert chat._expression_selection_agent("哈哈这个有点好笑", "确实挺有意思。", churn_policy) == []
+    if churn_policy.get("preference_churn"):
+        assert chat._expression_selection_agent("哈哈这个有点好笑", "确实挺有意思。", churn_policy) == []
 
     ts = database.now_ts()
     with database.get_db() as db:

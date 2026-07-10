@@ -3,11 +3,12 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import shutil
 import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Response, UploadFile
+from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -33,7 +34,7 @@ from .archivist import recall_memories
 from .config import load_config
 from .database import dict_from_row, get_db, init_db, now_ts
 from .db_chat import db_chat, normalize_existing_assistant_messages
-from .expression_assets import active_expression_labels, expression_asset, expression_assets_public, update_expression_asset_setting
+from .expression_assets import active_expression_labels, expression_asset, expression_assets_public, record_expression_asset_review, update_expression_asset_setting
 from .expression_preferences import expression_preference_churn, expression_preference_events, record_expression_preference_event
 from .expression_style import (
     persona_expression_style_events,
@@ -61,6 +62,7 @@ from .layered_memory import (
     store_layered_memories,
 )
 from .llm_client import LLMProviderError, api_key_env_present
+from .llm_health import annotate_llm_health_item, estimate_tokens_from_chars
 from .memory_review import context_traces, get_memory_item, memory_review, update_memory_item
 from .memory_judge import update_judgement_status
 from .memory_conflicts import update_conflict_status
@@ -87,6 +89,7 @@ from .proactive_contact import (
     proactive_contact_events,
     record_proactive_contact_event,
 )
+from .rate_limit import auth_rate_key, check_auth_rate_limit, record_auth_failure, reset_auth_failures
 from .growth_demo import clear_growth_demo_data, seed_growth_demo_data
 from .growth_guidance import deactivate_guidance, supersede_conflicting_guidance
 from .sculptor import (
@@ -112,14 +115,31 @@ IMAGE_UPLOAD_TYPES = {
 }
 IMAGE_UPLOAD_MAX_BYTES = 5 * 1024 * 1024
 
+
+def _record_server_error_event(event_kind: str, source: str, error_text: str) -> None:
+    try:
+        with get_db() as db:
+            db.execute(
+                """
+                INSERT INTO server_error_events (event_kind, source, error_text, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (str(event_kind or "")[:80], str(source or "")[:120], str(error_text or "")[:2000], now_ts()),
+            )
+    except Exception:
+        pass
+
+
 init_db()
 try:
     cleanup_expired_guest_users()
 except Exception as exc:
+    _record_server_error_event("startup", "guest_cleanup", str(exc))
     print("[GuestCleanup] expired guest cleanup skipped:", exc)
 try:
     normalize_existing_assistant_messages()
 except Exception as exc:
+    _record_server_error_event("startup", "message_presentation_normalization", str(exc))
     print("[MessagePresentation] legacy normalization skipped:", exc)
 try:
     with get_db() as db:
@@ -138,6 +158,7 @@ try:
     for pending_revision in pending_chat_revisions:
         maybe_auto_review_revision(int(pending_revision["user_id"]), int(pending_revision["id"]))
 except Exception as exc:
+    _record_server_error_event("startup", "adaptive_runtime_reconciliation", str(exc))
     print("[AdaptiveRuntime] pending chat preference reconciliation skipped:", exc)
 
 app = FastAPI(title="忆界树 / Project Mnemosyne")
@@ -187,6 +208,10 @@ class GuestConvertRequest(BaseModel):
     password: str = Field(..., min_length=8, max_length=200)
     nickname: str | None = Field(default=None, max_length=60)
     tab_session: bool = False
+
+
+class AccountDeleteRequest(BaseModel):
+    confirm_username: str = Field(..., min_length=1, max_length=40)
 
 
 class ProfileUpdateRequest(BaseModel):
@@ -241,6 +266,14 @@ class ExpressionAssetUpdateRequest(BaseModel):
     media_review_status: str | None = Field(default=None, max_length=20)
     media_review_note: str | None = Field(default=None, max_length=500)
     admin_note: str | None = Field(default="", max_length=500)
+
+
+class ExpressionAssetReviewRequest(BaseModel):
+    target_user_id: int | None = None
+    persona_id: int | None = None
+    review_action: str = Field(default="observe", max_length=40)
+    review_note: str | None = Field(default="", max_length=500)
+    evidence: dict[str, Any] = Field(default_factory=dict)
 
 
 class ExpressionAssetMediaImportItem(BaseModel):
@@ -422,10 +455,14 @@ def register(req: RegisterRequest, response: Response):
 
 
 @app.post("/api/auth/login")
-def login(req: LoginRequest, response: Response):
+def login(req: LoginRequest, response: Response, request: Request = None):
+    rate_key = auth_rate_key(req.username, request)
+    check_auth_rate_limit(rate_key)
     user = authenticate_user(req.username, req.password)
     if not user:
+        record_auth_failure(rate_key)
         raise HTTPException(status_code=401, detail="invalid username or password")
+    reset_auth_failures(rate_key)
 
     return _start_authenticated_session(response, user, tab_session=req.tab_session)
 
@@ -460,6 +497,20 @@ def logout(
 @app.get("/api/me")
 def me(user: dict = Depends(current_user)):
     return {"user": public_user(user), "profile": _get_profile(int(user["id"]))}
+
+
+@app.delete("/api/me")
+def delete_account(req: AccountDeleteRequest, response: Response, user: dict = Depends(current_user)):
+    user_id = int(user["id"])
+    username = str(user.get("username") or "").strip()
+    if req.confirm_username.strip() != username:
+        raise HTTPException(status_code=400, detail="请输入当前用户名以确认删除账号")
+    with get_db() as db:
+        db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    shutil.rmtree(UPLOAD_DIR / str(user_id), ignore_errors=True)
+    response.delete_cookie(SESSION_COOKIE)
+    return {"ok": True, "user_id": user_id, "status": "deleted"}
 
 
 @app.get("/api/profile")
@@ -531,7 +582,7 @@ def admin_proactive_contact_candidates(
     limit: int = 5,
 ):
     owner_id = _admin_target_user_id(admin, target_user_id)
-    return proactive_contact_candidates(owner_id, limit=limit, include_blocked=True)
+    return proactive_contact_candidates(owner_id, limit=limit, include_blocked=True, include_delayed=True)
 
 
 @app.get("/api/admin/proactive-contact/events")
@@ -585,6 +636,37 @@ def admin_update_expression_asset(
             media_review_status=req.media_review_status,
             media_review_note=req.media_review_note,
             admin_note=req.admin_note or "",
+            updated_by_user_id=int(admin["id"]),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "asset": asset,
+        "assets": expression_assets_public(include_disabled=True, include_admin_metadata=True),
+    }
+
+
+@app.post("/api/admin/expression-assets/{expression_type}/{label}/review")
+def admin_review_expression_asset_feedback(
+    expression_type: str,
+    label: str,
+    req: ExpressionAssetReviewRequest,
+    admin: dict = Depends(current_admin),
+):
+    owner_id = _admin_target_user_id(admin, req.target_user_id)
+    if req.persona_id:
+        _assert_persona_owner(owner_id, int(req.persona_id))
+    evidence = dict(req.evidence or {})
+    evidence["target_user_id"] = owner_id
+    if req.persona_id:
+        evidence["persona_id"] = int(req.persona_id)
+    try:
+        asset = record_expression_asset_review(
+            expression_type,
+            label,
+            review_action=req.review_action,
+            review_note=req.review_note or "",
+            context=evidence,
             updated_by_user_id=int(admin["id"]),
         )
     except ValueError as exc:
@@ -844,6 +926,7 @@ def admin_expression_usage(
         for asset in expression_assets_public(include_disabled=True, include_admin_metadata=True)
     }
     usage_rows = [_with_expression_asset_metadata(dict_from_row(row), asset_map) for row in [*single_rows, *group_rows]]
+    usage_rows = _with_expression_reply_quality(owner_id, usage_rows)
     usage_rows.sort(key=lambda item: (int(item.get("created_at") or 0), int(item.get("id") or 0)), reverse=True)
     recent = usage_rows[:limit]
     counts: dict[str, dict[str, Any]] = {}
@@ -929,7 +1012,7 @@ def admin_expression_usage(
     review_items = _expression_review_items(sorted_counts, summary)
     style_setting = persona_expression_style_setting(owner_id, persona_filter) if persona_filter else None
     style_suggestions = _expression_style_suggestions(sorted_counts, summary, style_setting) if persona_filter else []
-    preference_history = expression_preference_events(owner_id, persona_filter, limit=5) if persona_filter else []
+    preference_history = expression_preference_events(owner_id, persona_filter, limit=20) if persona_filter else []
     preference_feedback = expression_preference_churn(owner_id, persona_filter) if persona_filter else {"recent_modes": [], "change_count": 0, "churn": False}
     preference = {"enabled": True, "mode": "normal", "explicit": False}
     if preference_row:
@@ -1016,12 +1099,95 @@ def _expression_feedback_signal(
     }
 
 
+def _with_expression_reply_quality(user_id: int, usage_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    annotated: list[dict[str, Any]] = []
+    with get_db() as db:
+        for item in usage_rows:
+            row = dict(item)
+            row["reply_quality"] = {"status": "none", "score": 0.0, "text_excerpt": ""}
+            if row.get("scope") != "single":
+                annotated.append(row)
+                continue
+            message_id = int(row.get("message_id") or 0)
+            conversation_id = int(row.get("conversation_id") or 0)
+            if not message_id or not conversation_id:
+                annotated.append(row)
+                continue
+            reply = db.execute(
+                """
+                SELECT id, content, created_at
+                FROM messages
+                WHERE user_id = ?
+                  AND conversation_id = ?
+                  AND role = 'user'
+                  AND id > ?
+                ORDER BY id ASC
+                LIMIT 1
+                """,
+                (user_id, conversation_id, message_id),
+            ).fetchone()
+            if reply:
+                quality = _expression_reply_quality(str(reply["content"] or ""))
+                quality["message_id"] = int(reply["id"])
+                quality["created_at"] = int(reply["created_at"] or 0)
+                row["reply_quality"] = quality
+            annotated.append(row)
+    return annotated
+
+
+def _expression_reply_quality(text: str) -> dict[str, Any]:
+    raw = str(text or "").strip()
+    lowered = raw.lower()
+    if not raw:
+        return {"status": "none", "score": 0.0, "text_excerpt": ""}
+    negative_markers = (
+        "别发表情",
+        "不要发表情",
+        "别用表情",
+        "不喜欢这个",
+        "不喜欢这种",
+        "有点尴尬",
+        "太尬",
+        "别这样",
+        "别这么",
+        "少一点",
+        "不用这个",
+        "stop that",
+        "don't do that",
+    )
+    positive_markers = (
+        "哈哈",
+        "谢谢",
+        "喜欢这个",
+        "这样挺好",
+        "挺可爱",
+        "可以继续",
+        "继续说",
+        "嗯嗯",
+        "好呀",
+        "舒服多了",
+        "有被安慰到",
+        "nice",
+        "cute",
+        "thanks",
+    )
+    if any(marker in lowered for marker in negative_markers):
+        return {"status": "negative", "score": -1.0, "text_excerpt": raw[:80]}
+    if any(marker in lowered for marker in positive_markers):
+        return {"status": "positive", "score": 1.0, "text_excerpt": raw[:80]}
+    if raw in {"嗯", "哦", "好", "行", "ok", "OK", "好吧"}:
+        return {"status": "brief", "score": 0.0, "text_excerpt": raw[:80]}
+    if len(raw) >= 12:
+        return {"status": "continued", "score": 0.35, "text_excerpt": raw[:80]}
+    return {"status": "unknown", "score": 0.0, "text_excerpt": raw[:80]}
+
+
 def _expression_resource_feedback(
     preference_history: list[dict[str, Any]],
     usage_rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     resources: dict[str, dict[str, Any]] = {}
-    if not preference_history or not usage_rows:
+    if not usage_rows:
         return []
     rows = sorted(usage_rows, key=lambda item: (int(item.get("created_at") or 0), int(item.get("id") or 0)), reverse=True)
     for event in preference_history:
@@ -1029,6 +1195,7 @@ def _expression_resource_feedback(
         if mode not in {"off", "subtle", "normal"}:
             continue
         signal = "positive" if mode == "normal" else "negative"
+        attribution_limit = 1 if signal == "positive" else 3
         seen_tags: set[str] = set()
         for row in rows:
             if not _expression_usage_before_preference(row, event):
@@ -1037,26 +1204,7 @@ def _expression_resource_feedback(
             if not row.get("label") or tag in seen_tags:
                 continue
             seen_tags.add(tag)
-            entry = resources.setdefault(
-                tag,
-                {
-                    "tag": tag,
-                    "label": row.get("label") or "",
-                    "display_text": row.get("display_text") or row.get("label") or tag,
-                    "expression_type": row.get("expression_type") or "gesture",
-                    "group": row.get("group") or "unknown",
-                    "risk_level": row.get("risk_level") or "unknown",
-                    "cooldown_turns": int(row.get("cooldown_turns") or 0),
-                    "positive": 0,
-                    "negative": 0,
-                    "net": 0,
-                    "evidence_count": 0,
-                    "last_feedback_mode": mode,
-                    "last_seen_at": int(row.get("created_at") or 0),
-                    "scene_counts": {"support_needed": 0, "playful": 0, "ordinary": 0, "unknown": 0},
-                    "source_counts": {"model": 0, "selection_agent": 0, "compat": 0, "unknown": 0},
-                },
-            )
+            entry = _expression_resource_feedback_entry(resources, tag, row, last_feedback_mode=mode)
             entry[signal] += 1
             entry["net"] = int(entry["positive"]) - int(entry["negative"])
             entry["evidence_count"] += 1
@@ -1070,8 +1218,39 @@ def _expression_resource_feedback(
             if source not in entry["source_counts"]:
                 source = "unknown"
             entry["source_counts"][source] += 1
-            if len(seen_tags) >= 3:
+            if len(seen_tags) >= attribution_limit:
                 break
+    for row in rows:
+        reply_quality = row.get("reply_quality") or {}
+        score = float(reply_quality.get("score") or 0)
+        if abs(score) < 0.01 or not row.get("label"):
+            continue
+        tag = f"{row.get('expression_type') or 'gesture'}:{row.get('label') or ''}"
+        entry = _expression_resource_feedback_entry(resources, tag, row)
+        quality = entry["reply_quality"]
+        status = str(reply_quality.get("status") or "unknown")
+        if status not in quality["status_counts"]:
+            status = "unknown"
+        quality["status_counts"][status] += 1
+        quality["sample_count"] += 1
+        quality["score"] = round(float(quality.get("score") or 0) + score, 3)
+        quality["last_status"] = status
+        quality["last_excerpt"] = str(reply_quality.get("text_excerpt") or "")[:80]
+        if score > 0:
+            entry["positive"] += 1
+        elif score < 0:
+            entry["negative"] += 1
+        entry["net"] = int(entry["positive"]) - int(entry["negative"])
+        entry["evidence_count"] += 1
+        entry["last_seen_at"] = max(int(entry.get("last_seen_at") or 0), int(row.get("created_at") or 0))
+        scene = str(row.get("scene_kind") or "unknown")
+        if scene not in entry["scene_counts"]:
+            scene = "unknown"
+        entry["scene_counts"][scene] += 1
+        source = str(row.get("source_kind") or "unknown")
+        if source not in entry["source_counts"]:
+            source = "unknown"
+        entry["source_counts"][source] += 1
     for entry in resources.values():
         entry.update(_expression_resource_runtime_action(entry))
         entry.update(_expression_resource_weight_signal(entry))
@@ -1084,6 +1263,48 @@ def _expression_resource_feedback(
             str(item.get("tag") or ""),
         ),
     )[:6]
+
+
+def _expression_resource_feedback_entry(
+    resources: dict[str, dict[str, Any]],
+    tag: str,
+    row: dict[str, Any],
+    *,
+    last_feedback_mode: str = "",
+) -> dict[str, Any]:
+    return resources.setdefault(
+        tag,
+        {
+            "tag": tag,
+            "label": row.get("label") or "",
+            "display_text": row.get("display_text") or row.get("label") or tag,
+            "expression_type": row.get("expression_type") or "gesture",
+            "group": row.get("group") or "unknown",
+            "risk_level": row.get("risk_level") or "unknown",
+            "cooldown_turns": int(row.get("cooldown_turns") or 0),
+            "positive": 0,
+            "negative": 0,
+            "net": 0,
+            "evidence_count": 0,
+            "last_feedback_mode": last_feedback_mode,
+            "last_seen_at": int(row.get("created_at") or 0),
+            "scene_counts": {"support_needed": 0, "playful": 0, "ordinary": 0, "unknown": 0},
+            "source_counts": {"model": 0, "selection_agent": 0, "compat": 0, "unknown": 0},
+            "reply_quality": {
+                "sample_count": 0,
+                "score": 0.0,
+                "last_status": "",
+                "last_excerpt": "",
+                "status_counts": {
+                    "positive": 0,
+                    "continued": 0,
+                    "brief": 0,
+                    "negative": 0,
+                    "unknown": 0,
+                },
+            },
+        },
+    )
 
 
 def _expression_resource_runtime_action(item: dict[str, Any]) -> dict[str, str]:
@@ -1113,6 +1334,8 @@ def _expression_resource_runtime_action(item: dict[str, Any]) -> dict[str, str]:
 def _expression_resource_weight_signal(item: dict[str, Any]) -> dict[str, Any]:
     positive = int(item.get("positive") or 0)
     negative = int(item.get("negative") or 0)
+    reply_quality = item.get("reply_quality") or {}
+    reply_quality_score = float(reply_quality.get("score") or 0)
     evidence = positive + negative
     net = positive - negative
     confidence = "early" if evidence < 2 else "emerging" if evidence < 4 else "stable"
@@ -1121,21 +1344,25 @@ def _expression_resource_weight_signal(item: dict[str, Any]) -> dict[str, Any]:
             "weight_action": "hold",
             "weight_delta": 0.0,
             "weight_confidence": confidence,
-            "weight_reason": "not_enough_directional_feedback" if evidence < 2 else "balanced_feedback",
+            "weight_reason": (
+                "reply_quality_observed"
+                if evidence >= 1 and abs(reply_quality_score) >= 0.3
+                else "not_enough_directional_feedback" if evidence < 2 else "balanced_feedback"
+            ),
         }
     if net <= -2:
         return {
             "weight_action": "decrease",
-            "weight_delta": round(max(-0.5, -0.12 * abs(net) - 0.03 * negative), 3),
+            "weight_delta": round(max(-0.5, -0.12 * abs(net) - 0.03 * negative + min(0.0, reply_quality_score) * 0.05), 3),
             "weight_confidence": confidence,
-            "weight_reason": "repeated_negative_feedback",
+            "weight_reason": "reply_quality_negative" if reply_quality_score < -0.5 else "repeated_negative_feedback",
         }
     if net >= 2:
         return {
             "weight_action": "increase",
-            "weight_delta": round(min(0.35, 0.1 * net + 0.02 * positive), 3),
+            "weight_delta": round(min(0.35, 0.1 * net + 0.02 * positive + max(0.0, reply_quality_score) * 0.03), 3),
             "weight_confidence": confidence,
-            "weight_reason": "repeated_positive_feedback",
+            "weight_reason": "reply_quality_positive" if reply_quality_score > 0.5 else "repeated_positive_feedback",
         }
     if negative > positive:
         return {
@@ -1627,16 +1854,15 @@ def admin_llm_health(admin: dict = Depends(current_admin), limit: int = 120):
         item["avg_duration_ms"] = round(int(item["duration_total_ms"] or 0) / total)
         item["avg_prompt_chars"] = round(int(item["prompt_chars_total"] or 0) / total)
         item["avg_response_chars"] = round(int(item["response_chars_total"] or 0) / total)
-        item["estimated_prompt_tokens"] = _estimate_tokens_from_chars(int(item["prompt_chars_total"] or 0))
-        item["estimated_response_tokens"] = _estimate_tokens_from_chars(int(item["response_chars_total"] or 0))
+        item["estimated_prompt_tokens"] = estimate_tokens_from_chars(int(item["prompt_chars_total"] or 0))
+        item["estimated_response_tokens"] = estimate_tokens_from_chars(int(item["response_chars_total"] or 0))
         item["estimated_total_tokens"] = int(item["estimated_prompt_tokens"] or 0) + int(item["estimated_response_tokens"] or 0)
         item["current_provider"] = current_provider
         item["current_model"] = current_model
         item["stale_config_failure"] = stale_config_failure
         item["current_failed"] = item.get("last_status") == "failed" and not stale_config_failure
         item["historical_failed"] = int(item.get("failed") or 0) > 0 and not item["current_failed"]
-        item["cost_pressure"] = _llm_cost_pressure(item)
-        item["route_hint"] = _llm_route_hint(item)
+        annotate_llm_health_item(item)
         item.pop("duration_total_ms", None)
         tasks.append(item)
     tasks.sort(key=lambda item: (
@@ -1653,28 +1879,32 @@ def admin_llm_health(admin: dict = Depends(current_admin), limit: int = 120):
     }
 
 
+@app.get("/api/admin/server-errors")
+def admin_server_errors(admin: dict = Depends(current_admin), limit: int = 20):
+    limit = max(1, min(int(limit or 20), 100))
+    with get_db() as db:
+        rows = db.execute(
+            """
+            SELECT id, event_kind, source, error_text, created_at
+            FROM server_error_events
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return {"errors": [dict_from_row(row) for row in rows]}
+
+
 def _estimate_tokens_from_chars(value: int) -> int:
-    return max(0, round(max(0, int(value or 0)) / 4))
+    return estimate_tokens_from_chars(value)
 
 
 def _llm_cost_pressure(item: dict[str, Any]) -> str:
-    if int(item.get("avg_prompt_chars") or 0) >= 8000 or int(item.get("estimated_total_tokens") or 0) >= 5000:
-        return "high_context"
-    if int(item.get("avg_prompt_chars") or 0) >= 3000 or int(item.get("estimated_total_tokens") or 0) >= 2000:
-        return "watch"
-    return "normal"
+    return annotate_llm_health_item(dict(item))["cost_pressure"]
 
 
 def _llm_route_hint(item: dict[str, Any]) -> str:
-    if item.get("current_failed"):
-        return "current_route_failing"
-    if item.get("stale_config_failure"):
-        return "old_route_failure"
-    if item.get("cost_pressure") == "high_context":
-        return "review_context_size"
-    if int(item.get("slow") or 0) > 0:
-        return "review_latency"
-    return "ok"
+    return annotate_llm_health_item(dict(item))["route_hint"]
 
 
 def _safe_llm_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -1806,6 +2036,72 @@ def admin_users(admin: dict = Depends(current_admin)):
             """
         ).fetchall()
     return {"users": [dict_from_row(row) for row in rows]}
+
+
+@app.get("/api/admin/guests")
+def admin_guest_summary(admin: dict = Depends(current_admin)):
+    ts = now_ts()
+    with get_db() as db:
+        active_count = int(db.execute(
+            """
+            SELECT COUNT(*)
+            FROM users
+            WHERE is_guest = 1
+              AND (guest_expires_at = 0 OR guest_expires_at > ?)
+            """,
+            (ts,),
+        ).fetchone()[0])
+        expired_count = int(db.execute(
+            """
+            SELECT COUNT(*)
+            FROM users
+            WHERE is_guest = 1
+              AND guest_expires_at > 0
+              AND guest_expires_at <= ?
+            """,
+            (ts,),
+        ).fetchone()[0])
+        nearest_row = db.execute(
+            """
+            SELECT MIN(guest_expires_at) AS nearest
+            FROM users
+            WHERE is_guest = 1
+              AND guest_expires_at > ?
+            """,
+            (ts,),
+        ).fetchone()
+        guest_rows = db.execute(
+            """
+            SELECT id, username, created_at, guest_expires_at
+            FROM users
+            WHERE is_guest = 1
+            ORDER BY guest_expires_at ASC, id ASC
+            LIMIT 8
+            """
+        ).fetchall()
+        cleanup_rows = db.execute(
+            """
+            SELECT id, deleted_count, user_ids_json, created_at
+            FROM guest_cleanup_events
+            ORDER BY id DESC
+            LIMIT 8
+            """
+        ).fetchall()
+    cleanup_events = []
+    for row in cleanup_rows:
+        item = dict_from_row(row) or {}
+        try:
+            item["user_ids"] = json.loads(str(item.pop("user_ids_json", "[]") or "[]"))
+        except Exception:
+            item["user_ids"] = []
+        cleanup_events.append(item)
+    return {
+        "active_count": active_count,
+        "expired_count": expired_count,
+        "nearest_expiry_at": int((dict_from_row(nearest_row) or {}).get("nearest") or 0),
+        "guests": [dict_from_row(row) for row in guest_rows],
+        "cleanup_events": cleanup_events,
+    }
 
 
 @app.get("/api/admin/personas")
@@ -3503,6 +3799,101 @@ def _persona_export_payload(db, user_id: int, persona_id: int) -> dict[str, Any]
     }
 
 
+def _account_export_payload(user_id: int) -> dict[str, Any]:
+    with get_db() as db:
+        user_row = dict_from_row(db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
+        if not user_row:
+            raise HTTPException(status_code=404, detail="user not found")
+        persona_rows = db.execute(
+            """
+            SELECT id
+            FROM personas
+            WHERE user_id = ?
+            ORDER BY status ASC, id ASC
+            """,
+            (user_id,),
+        ).fetchall()
+        persona_exports = [
+            payload
+            for row in persona_rows
+            if (payload := _persona_export_payload(db, user_id, int(row["id"]))) is not None
+        ]
+        group_conversations = [
+            dict_from_row(row)
+            for row in db.execute(
+                "SELECT * FROM group_conversations WHERE user_id = ? ORDER BY id ASC",
+                (user_id,),
+            ).fetchall()
+        ]
+        group_members = [
+            dict_from_row(row)
+            for row in db.execute(
+                "SELECT * FROM group_members WHERE user_id = ? ORDER BY group_conversation_id ASC, id ASC",
+                (user_id,),
+            ).fetchall()
+        ]
+        group_messages_export = [
+            dict_from_row(row)
+            for row in db.execute(
+                "SELECT * FROM group_messages WHERE user_id = ? ORDER BY group_conversation_id ASC, id ASC",
+                (user_id,),
+            ).fetchall()
+        ]
+        group_expressions = [
+            dict_from_row(row)
+            for row in db.execute(
+                "SELECT * FROM group_message_expressions WHERE user_id = ? ORDER BY group_conversation_id ASC, id ASC",
+                (user_id,),
+            ).fetchall()
+        ]
+        insight = dict_from_row(db.execute("SELECT * FROM user_insights WHERE user_id = ?", (user_id,)).fetchone())
+        growth_feedback = [
+            dict_from_row(row)
+            for row in db.execute(
+                "SELECT * FROM persona_growth_feedback WHERE user_id = ? ORDER BY persona_id ASC, created_at ASC",
+                (user_id,),
+            ).fetchall()
+        ]
+        growth_requests = [
+            dict_from_row(row)
+            for row in db.execute(
+                "SELECT * FROM persona_growth_requests WHERE user_id = ? ORDER BY persona_id ASC, created_at ASC",
+                (user_id,),
+            ).fetchall()
+        ]
+    safe_user = public_user(user_row)
+    return {
+        "exported_at": now_ts(),
+        "schema": "account_export_v1",
+        "user": safe_user,
+        "profile": _get_profile(user_id),
+        "personas": persona_exports,
+        "groups": {
+            "conversations": group_conversations,
+            "members": group_members,
+            "messages": group_messages_export,
+            "message_expressions": group_expressions,
+        },
+        "insight": insight,
+        "growth": {
+            "feedback": growth_feedback,
+            "requests": growth_requests,
+        },
+    }
+
+
+@app.get("/api/me/export")
+def export_account_data(user: dict = Depends(current_user)):
+    user_id = int(user["id"])
+    payload = _account_export_payload(user_id)
+    filename = f"mnemosyne-account-{user_id}-export.json"
+    return Response(
+        content=json.dumps(payload, ensure_ascii=False, indent=2),
+        media_type="application/json; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.get("/api/personas/deleted/export")
 def export_deleted_personas(user: dict = Depends(current_user)):
     user_id = int(user["id"])
@@ -4041,6 +4432,11 @@ def admin_script():
 @app.get("/admin/admin.css")
 def admin_style():
     return FileResponse(ADMIN_WEB_DIR / "admin.css")
+
+
+@app.get("/privacy")
+def privacy_page():
+    return FileResponse(WEB_DIR / "privacy.html", headers={"Cache-Control": "no-store"})
 
 
 def _get_profile(user_id: int) -> dict:

@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from app.config import CONFIG_FILE, load_config
 from app.database import get_db
 from app.llm_client import api_key_env_present
+from app.llm_health import annotate_llm_health_item, estimate_tokens_from_chars
 
 
 def _merged_routes(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -109,11 +110,10 @@ def _recent_llm_health(routes: dict[str, dict[str, Any]], limit: int = 80) -> li
         item["historical_failed"] = int(item.get("failed") or 0) > 0 and not item["current_failed"]
         total = max(1, int(item.get("total") or 0))
         item["avg_prompt_chars"] = round(int(item["prompt_chars_total"] or 0) / total)
-        item["estimated_prompt_tokens"] = _estimate_tokens_from_chars(int(item["prompt_chars_total"] or 0))
-        item["estimated_response_tokens"] = _estimate_tokens_from_chars(int(item["response_chars_total"] or 0))
+        item["estimated_prompt_tokens"] = estimate_tokens_from_chars(int(item["prompt_chars_total"] or 0))
+        item["estimated_response_tokens"] = estimate_tokens_from_chars(int(item["response_chars_total"] or 0))
         item["estimated_total_tokens"] = int(item["estimated_prompt_tokens"] or 0) + int(item["estimated_response_tokens"] or 0)
-        item["cost_pressure"] = _llm_cost_pressure(item)
-        item["route_hint"] = _llm_route_hint(item)
+        annotate_llm_health_item(item)
     return sorted(
         stats.values(),
         key=lambda item: (
@@ -123,30 +123,6 @@ def _recent_llm_health(routes: dict[str, dict[str, Any]], limit: int = 80) -> li
             str(item["task"]),
         ),
     )
-
-
-def _estimate_tokens_from_chars(value: int) -> int:
-    return max(0, round(max(0, int(value or 0)) / 4))
-
-
-def _llm_cost_pressure(item: dict[str, Any]) -> str:
-    if int(item.get("avg_prompt_chars") or 0) >= 8000 or int(item.get("estimated_total_tokens") or 0) >= 5000:
-        return "high_context"
-    if int(item.get("avg_prompt_chars") or 0) >= 3000 or int(item.get("estimated_total_tokens") or 0) >= 2000:
-        return "watch"
-    return "normal"
-
-
-def _llm_route_hint(item: dict[str, Any]) -> str:
-    if item.get("current_failed"):
-        return "current_route_failing"
-    if item.get("stale_config_failure"):
-        return "old_route_failure"
-    if item.get("cost_pressure") == "high_context":
-        return "review_context_size"
-    if int(item.get("slow") or 0) > 0:
-        return "review_latency"
-    return "ok"
 
 
 def main() -> None:
@@ -170,7 +146,7 @@ def main() -> None:
             line = (
                 "  {task}: total={total} failed={failed} slow={slow} last_status={last_status} "
                 "last_at={last_created_at} est_tokens={estimated_total_tokens} "
-                "pressure={cost_pressure} hint={route_hint}"
+                "pressure={cost_pressure} hint={route_hint} action={budget_action} severity={budget_severity}"
             ).format(**item)
             if item.get("current_failed") and item.get("last_error"):
                 line += f" current_error={item['last_error']}"

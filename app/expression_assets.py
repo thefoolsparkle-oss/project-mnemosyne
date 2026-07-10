@@ -338,6 +338,54 @@ def update_expression_asset_setting(
     )
 
 
+def record_expression_asset_review(
+    expression_type: str,
+    label: str,
+    *,
+    review_action: str,
+    review_note: str = "",
+    context: dict[str, Any] | None = None,
+    updated_by_user_id: int | None = None,
+) -> dict[str, Any]:
+    expression_type = str(expression_type or "").strip()
+    label = str(label or "").strip()
+    if (expression_type, label) not in _known_asset_keys():
+        raise ValueError("expression asset not found")
+    action = _normalize_review_action(review_action)
+    note = str(review_note or "").strip()[:500]
+    from .database import get_db, now_ts
+
+    ts = now_ts()
+    after_state = {
+        "review_action": action,
+        "review_note": note,
+        "context": context if isinstance(context, dict) else {},
+    }
+    with get_db() as db:
+        db.execute(
+            """
+            INSERT INTO expression_asset_events (
+                expression_type, label, event_kind, before_json, after_json,
+                admin_note, updated_by_user_id, created_at
+            )
+            VALUES (?, ?, 'review_note', '{}', ?, ?, ?, ?)
+            """,
+            (
+                expression_type,
+                label,
+                json.dumps(after_state, ensure_ascii=False, sort_keys=True),
+                note or f"资源反馈审查：{action}",
+                updated_by_user_id,
+                ts,
+            ),
+        )
+    return next(
+        asset
+        for asset in expression_assets_public(include_disabled=True, include_admin_metadata=True)
+        if str(asset["expression_type"]) == expression_type and str(asset["label"]) == label
+    )
+
+
 def expression_asset_events(expression_type: str, label: str, limit: int = 5) -> list[dict[str, Any]]:
     key = (str(expression_type or "").strip(), str(label or "").strip())
     return _expression_asset_events_by_key(limit=max(1, min(int(limit or 5), 20)), keys={key}).get(key, [])
@@ -462,6 +510,13 @@ def _asset_event_kind(before: dict[str, Any], after: dict[str, Any]) -> str:
     if before.get("cooldown_turns") != after.get("cooldown_turns"):
         return "cooldown"
     return "settings"
+
+
+def _normalize_review_action(value: Any) -> str:
+    action = str(value or "observe").strip().lower()
+    if action not in {"observe", "keep", "prefer", "avoid", "cooldown", "revise"}:
+        return "observe"
+    return action
 
 
 def _json_object(value: Any) -> dict[str, Any]:

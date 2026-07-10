@@ -22,6 +22,8 @@ let state = {
   proactiveContact: null,
   proactiveContactEvents: [],
   proactiveContactSummary: null,
+  guestSummary: null,
+  serverErrors: [],
   growthDemo: null,
   expressionAssetFilter: "all",
   runningEval: false,
@@ -131,9 +133,11 @@ async function loadReview() {
     state.proactiveContact = null;
     state.proactiveContactEvents = [];
     state.proactiveContactSummary = null;
+    state.guestSummary = null;
+    state.serverErrors = [];
     return;
   }
-  const [data, traceData, expressionData, assetData, revisionData, growthData, versionData, evalData, llmData, routeData, healthData, proactiveData, proactiveEventData] = await Promise.all([
+  const [data, traceData, expressionData, assetData, revisionData, growthData, versionData, evalData, llmData, routeData, healthData, proactiveData, proactiveEventData, guestData, serverErrorData] = await Promise.all([
     api(`/api/admin/memory/review?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}&include_history=true`),
     api(`/api/admin/chat-context-traces?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}&limit=6`),
     api(`/api/admin/expression-usage?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}&limit=12&usage_limit=80`),
@@ -147,6 +151,8 @@ async function loadReview() {
     api("/api/admin/llm-health?limit=120"),
     api(`/api/admin/proactive-contact/candidates?target_user_id=${state.selectedUserId}&limit=8`),
     api(`/api/admin/proactive-contact/events?target_user_id=${state.selectedUserId}&limit=8`),
+    api("/api/admin/guests"),
+    api("/api/admin/server-errors?limit=8"),
   ]);
   state.review = data.review;
   state.traces = traceData.traces;
@@ -162,6 +168,8 @@ async function loadReview() {
   state.proactiveContact = proactiveData;
   state.proactiveContactEvents = proactiveEventData.events || [];
   state.proactiveContactSummary = proactiveEventData.summary || null;
+  state.guestSummary = guestData;
+  state.serverErrors = serverErrorData.errors || [];
 }
 
 function render() {
@@ -237,6 +245,7 @@ function renderMain() {
     ]),
     state.error ? h("p", { class: "error", text: state.error }) : null,
     state.growthDemo ? renderGrowthDemoNotice(state.growthDemo) : null,
+    renderGuestSummary(state.guestSummary),
     state.review ? renderReview() : renderEmpty(),
   ]);
 }
@@ -247,6 +256,23 @@ function renderGrowthDemoNotice(demo) {
     h("p", { text: "当前选中的是可随时清除的演示账号。历史中已有一条由自动审核代理落实的聊天要求；点击“代理审核低风险聊天要求”会关闭一条当前已满足的旧积压。资料页写下的相处偏好已改为即时指导，不再进入人工队列。" }),
     h("p", { text: "也可以在普通端登录体验“相处痕迹”和主动偏好请求的公开状态。" }),
     h("p", { class: "demo-credentials", text: `普通端账号：${demo.username} / 密码：${demo.password}` }),
+  ]);
+}
+
+function renderGuestSummary(summary) {
+  if (!summary) return null;
+  const guests = Array.isArray(summary.guests) ? summary.guests : [];
+  const cleanupEvents = Array.isArray(summary.cleanup_events) ? summary.cleanup_events : [];
+  const nearest = Number(summary.nearest_expiry_at || 0);
+  return h("section", { class: "growth-demo-notice guest-admin-summary" }, [
+    h("strong", { text: "游客模式概览" }),
+    h("p", { text: `当前游客 ${Number(summary.active_count || 0)} 个 / 已过期待清理 ${Number(summary.expired_count || 0)} 个${nearest ? ` / 最近到期 ${formatTs(nearest)}` : ""}` }),
+    guests.length
+      ? h("p", { text: `最近游客：${guests.slice(0, 4).map((item) => `${item.username || item.id} 到期 ${formatTs(item.guest_expires_at)}`).join("；")}` })
+      : h("p", { class: "muted", text: "当前没有游客账号。" }),
+    cleanupEvents.length
+      ? h("p", { text: `最近清理：${cleanupEvents.slice(0, 3).map((item) => `${formatTs(item.created_at)} 删除 ${Number(item.deleted_count || 0)} 个`).join("；")}` })
+      : h("p", { class: "muted", text: "还没有游客清理日志。" }),
   ]);
 }
 
@@ -316,6 +342,7 @@ function renderReview() {
     card("会话滚动摘要", renderConversationSummaries(review.conversation_summaries || []), "wide"),
     card("人格调整建议", renderRevisionPanel(), "wide"),
     card("轻表达使用", renderExpressionUsage(state.expressionUsage), "wide"),
+    card("服务错误监控", renderServerErrors(state.serverErrors), "wide"),
     card("最近注入上下文", renderTraceList(state.traces || []), "wide"),
     card("当前事实", renderMemoryList(review.facts || []), "wide"),
     card("当前关系", renderMemoryList(review.relations || []), "wide"),
@@ -394,6 +421,18 @@ function renderExpressionUsage(data) {
   ]);
 }
 
+function renderServerErrors(items = []) {
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) return h("p", { class: "muted", text: "暂无服务错误事件。" });
+  return h("div", { class: "llm-calls" }, list.map((item) => h("article", { class: "llm-call failed" }, [
+    h("div", { class: "memory-title" }, [
+      h("strong", { text: `${item.event_kind || "error"} / ${item.source || "unknown"}` }),
+      h("small", { text: item.created_at ? formatTs(item.created_at) : "-" }),
+    ]),
+    item.error_text ? h("pre", { text: item.error_text }) : null,
+  ])));
+}
+
 function renderExpressionResourceFeedback(items) {
   return h("div", { class: "expression-resource-feedback" }, [
     h("small", { text: "资源反馈线索" }),
@@ -404,7 +443,17 @@ function renderExpressionResourceFeedback(items) {
       h("span", { text: `正 ${item.positive || 0} / 负 ${item.negative || 0} / 净 ${item.net || 0}` }),
       h("span", { text: `运行时：${expressionResourceRuntimeActionLabel(item.runtime_action)}` }),
       h("span", { text: `长期权重：${expressionResourceWeightActionLabel(item.weight_action)} ${formatSignedNumber(item.weight_delta || 0)} · ${expressionResourceWeightConfidenceLabel(item.weight_confidence)}` }),
+      h("span", { text: `权重原因：${expressionResourceWeightReasonLabel(item.weight_reason)}` }),
+      h("span", { text: `后续回复：${expressionReplyQualitySummary(item.reply_quality || {})}` }),
       h("span", { text: `${expressionGroupLabel(item.group)} · ${expressionRiskLabel(item.risk_level)} · 冷却 ${item.cooldown_turns || 0}` }),
+      state.selectedUserId && state.selectedPersonaId
+        ? h("button", {
+          type: "button",
+          class: "ghost compact",
+          text: "记录审查",
+          onclick: () => reviewExpressionResourceFeedback(item),
+        })
+        : null,
     ])),
   ]);
 }
@@ -1085,6 +1134,58 @@ async function applyExpressionReviewCooldowns() {
   render();
 }
 
+async function reviewExpressionResourceFeedback(item) {
+  const action = window.prompt("审查动作：observe / keep / prefer / avoid / cooldown / revise", expressionResourceSuggestedReviewAction(item));
+  if (action === null) return;
+  const note = window.prompt("审查批注", expressionResourceDefaultReviewNote(item));
+  if (note === null) return;
+  state.error = "";
+  try {
+    const data = await api(`/api/admin/expression-assets/${encodeURIComponent(item.expression_type || "mood")}/${encodeURIComponent(item.label || "")}/review`, {
+      method: "POST",
+      body: JSON.stringify({
+        target_user_id: state.selectedUserId,
+        persona_id: state.selectedPersonaId,
+        review_action: action.trim(),
+        review_note: note.trim(),
+        evidence: {
+          positive: Number(item.positive || 0),
+          negative: Number(item.negative || 0),
+          net: Number(item.net || 0),
+          runtime_action: item.runtime_action || "",
+          weight_action: item.weight_action || "",
+          weight_delta: Number(item.weight_delta || 0),
+          weight_confidence: item.weight_confidence || "",
+          weight_reason: item.weight_reason || "",
+          reply_quality: item.reply_quality || {},
+        },
+      }),
+    });
+    state.expressionAssets = data.assets || state.expressionAssets;
+    await loadReview();
+  } catch (err) {
+    state.error = err.message;
+  }
+  render();
+}
+
+function expressionResourceSuggestedReviewAction(item) {
+  if (item.runtime_action === "avoid_non_support" || item.weight_action === "decrease") return "avoid";
+  if (["increase", "slight_increase"].includes(item.weight_action)) return "prefer";
+  if (item.runtime_action === "watch_auto" || item.weight_action === "slight_decrease") return "cooldown";
+  if (item.weight_action === "hold") return "keep";
+  return "observe";
+}
+
+function expressionResourceDefaultReviewNote(item) {
+  return [
+    `${item.display_text || item.label || "资源"}：正 ${item.positive || 0} / 负 ${item.negative || 0} / 净 ${item.net || 0}`,
+    `运行时 ${expressionResourceRuntimeActionLabel(item.runtime_action)}`,
+    `长期权重 ${expressionResourceWeightActionLabel(item.weight_action)} ${formatSignedNumber(item.weight_delta || 0)}`,
+    `后续回复 ${expressionReplyQualitySummary(item.reply_quality || {})}`,
+  ].join("；");
+}
+
 function renderExpressionUsageItem(item) {
   const scope = item.scope === "group" ? "群聊" : "单聊";
   const enabled = item.asset_enabled !== false;
@@ -1181,6 +1282,34 @@ function expressionResourceWeightConfidenceLabel(confidence) {
     emerging: "形成趋势",
     stable: "较稳定",
   }[confidence] || "早期信号";
+}
+
+function expressionResourceWeightReasonLabel(reason) {
+  return {
+    not_enough_directional_feedback: "方向性证据不足",
+    balanced_feedback: "正负反馈接近平衡",
+    repeated_negative_feedback: "多次负反馈",
+    repeated_positive_feedback: "多次正反馈",
+    negative_feedback_leads: "负反馈略占优",
+    positive_feedback_leads: "正反馈略占优",
+    reply_quality_observed: "已有后续回复质量信号",
+    reply_quality_negative: "后续回复明显负向",
+    reply_quality_positive: "后续回复明显正向",
+  }[reason] || "方向性证据不足";
+}
+
+function expressionReplyQualitySummary(quality = {}) {
+  const counts = quality.status_counts || {};
+  const parts = [
+    ["正向", counts.positive],
+    ["继续聊", counts.continued],
+    ["短确认", counts.brief],
+    ["负向", counts.negative],
+  ].filter(([, count]) => Number(count || 0) > 0);
+  const score = Number(quality.score || 0);
+  const scoreText = `分 ${formatSignedNumber(score)}`;
+  if (!parts.length) return `暂无明确后续信号 · ${scoreText}`;
+  return `${parts.map(([label, count]) => `${label} ${Number(count || 0)}`).join(" / ")} · ${scoreText}`;
 }
 
 function formatSignedNumber(value) {
@@ -1787,10 +1916,33 @@ function renderLlmHealth() {
       h("small", { text: `total ${item.total || 0} / failed ${item.failed || 0} (${Math.round(Number(item.failure_rate || 0) * 100)}%) / avg ${item.avg_duration_ms || 0}ms / max ${item.max_duration_ms || 0}ms / slow ${item.slow || 0} / last ${item.last_created_at ? formatTs(item.last_created_at) : "-"}` }),
       h("small", { text: `est tokens ${Number(item.estimated_total_tokens || 0)} (prompt ${Number(item.estimated_prompt_tokens || 0)} / response ${Number(item.estimated_response_tokens || 0)}) / avg chars ${Number(item.avg_prompt_chars || 0)} -> ${Number(item.avg_response_chars || 0)}` }),
       h("small", { text: `pressure ${item.cost_pressure || "normal"} / hint ${item.route_hint || "ok"}` }),
+      h("small", { text: `预算建议 ${llmBudgetActionText(item.budget_action)} / 等级 ${llmBudgetSeverityText(item.budget_severity)}` }),
+      item.budget_explanation ? h("small", { text: item.budget_explanation }) : null,
       item.last_error ? h("pre", { text: item.last_error }) : null,
     ]);
     })),
   ]);
+}
+
+function llmBudgetActionText(action) {
+  return {
+    check_current_config: "检查当前配置",
+    ignore_stale_failure: "旧配置失败，可忽略",
+    review_context_size: "压缩上下文",
+    consider_cheaper_route: "考虑更便宜路由",
+    review_latency: "检查延迟",
+    monitor_recovered_route: "继续观察恢复情况",
+    keep_current: "保持当前路由",
+  }[action] || action || "保持当前路由";
+}
+
+function llmBudgetSeverityText(severity) {
+  return {
+    blocked: "阻断",
+    watch: "观察",
+    info: "信息",
+    ok: "正常",
+  }[severity] || severity || "正常";
 }
 
 function renderProactiveContactReview() {
@@ -1799,6 +1951,7 @@ function renderProactiveContactReview() {
   const candidates = Array.isArray(data.candidates) ? data.candidates : [];
   const blockedCandidates = Array.isArray(data.blocked_candidates) ? data.blocked_candidates : [];
   const arbitrationSummary = data.arbitration_summary || {};
+  const deliverySummary = data.delivery_summary || {};
   const events = Array.isArray(state.proactiveContactEvents) ? state.proactiveContactEvents : [];
   const summary = state.proactiveContactSummary || {};
   const feedbackPolicy = data.feedback_policy || {};
@@ -1826,12 +1979,16 @@ function renderProactiveContactReview() {
       h("span", { text: `opened ${Number(summary.opened || 0)}` }),
       h("span", { text: `replied ${Number(summary.replied || 0)}` }),
       h("span", { text: `dismissed ${Number(summary.dismissed || 0)}` }),
+      h("span", { text: `positive ${Number(summary.positive || 0)}` }),
+      h("span", { text: `negative ${Number(summary.negative || 0)}` }),
       h("span", { text: `reply ${Math.round(Number(summary.reply_rate || 0) * 100)}%` }),
       h("span", { text: `dismiss ${Math.round(Number(summary.dismiss_rate || 0) * 100)}%` }),
       h("span", { text: `suppressed ${suppressedTypes.length ? suppressedTypes.join(", ") : "-"}` }),
       h("span", { text: `risk low ${Number(arbitrationSummary.low || 0)}` }),
       h("span", { text: `watch ${Number(arbitrationSummary.watch || 0)}` }),
       h("span", { text: `blocked ${Number(arbitrationSummary.blocked || 0)}` }),
+      h("span", { text: `delivery ${proactiveDeliveryModeLabel(data.delivery_mode || deliverySummary.mode)}` }),
+      h("span", { text: proactiveDeliverySummaryText(deliverySummary) }),
     ]),
     typeScoreItems.length
       ? h("div", { class: "expression-usage-summary" }, typeScoreItems.map(([type, score]) => h("span", {
@@ -1840,7 +1997,7 @@ function renderProactiveContactReview() {
       : null,
     typeSummaryItems.length
       ? h("div", { class: "expression-usage-summary" }, typeSummaryItems.map(([type, counts]) => h("span", {
-        text: `${type}: opened ${Number(counts.opened || 0)} / reply ${Math.round(Number(counts.reply_rate || 0) * 100)}% / dismiss ${Math.round(Number(counts.dismiss_rate || 0) * 100)}%`,
+        text: `${type}: opened ${Number(counts.opened || 0)} / reply ${Math.round(Number(counts.reply_rate || 0) * 100)}% / dismiss ${Math.round(Number(counts.dismiss_rate || 0) * 100)}% / explicit ${Number(counts.positive || 0)}+ ${Number(counts.negative || 0)}-`,
       })))
       : null,
     candidates.length
@@ -1852,6 +2009,7 @@ function renderProactiveContactReview() {
         h("p", { text: item.draft_text || "" }),
         h("small", { text: `conversation #${item.conversation_id} / idle ${Math.round(Number(item.idle_seconds || 0) / 3600)}h / last ${item.last_message_at ? formatTs(item.last_message_at) : "-"}` }),
         renderProactiveFeedbackScore(item),
+        renderProactiveDeliveryPlan(item.delivery_plan || {}),
         renderProactiveArbitration(item),
         renderProactiveMemoryBasis(item.memory_basis || {}, item.risk_notes || []),
         item.last_excerpt ? h("pre", { text: item.last_excerpt }) : null,
@@ -1868,6 +2026,7 @@ function renderProactiveContactReview() {
           h("p", { text: item.draft_text || "" }),
           h("small", { text: `conversation #${item.conversation_id} / idle ${Math.round(Number(item.idle_seconds || 0) / 3600)}h / last ${item.last_message_at ? formatTs(item.last_message_at) : "-"}` }),
           renderProactiveFeedbackScore(item),
+          renderProactiveDeliveryPlan(item.delivery_plan || {}),
           renderProactiveArbitration(item),
           renderProactiveMemoryBasis(item.memory_basis || {}, item.risk_notes || []),
           item.last_excerpt ? h("pre", { text: item.last_excerpt }) : null,
@@ -1887,35 +2046,96 @@ function renderProactiveContactReview() {
   ]);
 }
 
+function proactiveDeliverySummaryText(summary) {
+  const counts = summary.by_status || {};
+  const parts = ["ready", "watch", "delayed", "blocked"].map((status) => (
+    `${proactiveDeliveryStatusLabel(status)} ${Number(counts[status] || 0)}`
+  ));
+  return parts.join(" / ");
+}
+
+function renderProactiveDeliveryPlan(plan) {
+  const reasons = Array.isArray(plan.reasons) ? plan.reasons : [];
+  return h("div", { class: `proactive-delivery-plan ${plan.status || "ready"}` }, [
+    h("small", { text: `发送计划：${proactiveDeliveryStatusLabel(plan.status)} / ${proactiveDeliveryModeLabel(plan.mode)} / 自动发送 ${plan.can_auto_send ? "允许" : "关闭"}` }),
+    plan.explanation ? h("small", { text: plan.explanation }) : null,
+    reasons.length ? h("small", { text: `原因：${reasons.map(proactiveDeliveryReasonLabel).join("、")}` }) : null,
+  ]);
+}
+
+function proactiveDeliveryModeLabel(mode) {
+  return {
+    preview_only: "仅预览",
+  }[mode] || "仅预览";
+}
+
+function proactiveDeliveryStatusLabel(status) {
+  return {
+    ready: "可预览",
+    watch: "观察",
+    delayed: "延后",
+    blocked: "阻断",
+    unknown: "未知",
+  }[status] || "未知";
+}
+
+function proactiveDeliveryReasonLabel(reason) {
+  return {
+    manual_send_not_enabled: "未开启自动发送",
+    quiet_hours: "安静时段",
+    daily_limit: "今日额度已满",
+    disabled_by_user: "用户未许可",
+    not_allowed_now: "当前不可触达",
+  }[reason] || reason;
+}
+
 function renderProactiveFeedbackScore(item) {
   const counts = item.feedback_counts || {};
   return h("div", { class: "proactive-feedback-score" }, [
     h("small", {
-      text: `feedback ${Number(item.feedback_score || 0).toFixed(2)} / ${proactiveFeedbackOutcomeLabel(item.feedback_outcome)} / ${proactiveFeedbackActionLabel(item.feedback_action)} / priority ${Number(item.priority || 0).toFixed(2)} -> ${Number(item.adjusted_priority || item.priority || 0).toFixed(2)}`,
+      text: `反馈分 ${Number(item.feedback_score || 0).toFixed(2)} / ${proactiveFeedbackOutcomeLabel(item.feedback_outcome)} / ${proactiveFeedbackActionLabel(item.feedback_action)} / 优先级 ${Number(item.priority || 0).toFixed(2)} -> ${Number(item.adjusted_priority || item.priority || 0).toFixed(2)}`,
     }),
-    h("small", { text: `opened ${Number(counts.opened || 0)} replied ${Number(counts.replied || 0)} dismissed ${Number(counts.dismissed || 0)}` }),
-    item.feedback_explanation ? h("small", { text: item.feedback_explanation }) : null,
-    item.feedback_recovery_hint ? h("small", { text: item.feedback_recovery_hint }) : null,
+    h("small", { text: `打开 ${Number(counts.opened || 0)} / 回复 ${Number(counts.replied || 0)} / 忽略 ${Number(counts.dismissed || 0)} / 有帮助 ${Number(counts.positive || 0)} / 不喜欢 ${Number(counts.negative || 0)}` }),
+    item.feedback_explanation ? h("small", { text: proactiveFeedbackExplanationLabel(item.feedback_explanation) }) : null,
+    item.feedback_recovery_hint ? h("small", { text: proactiveFeedbackRecoveryLabel(item.feedback_recovery_hint) }) : null,
   ]);
 }
 
 function proactiveFeedbackOutcomeLabel(outcome) {
   return {
-    encouraging: "encouraging",
-    neutral: "neutral",
-    cool_down: "cool down",
-    suppressed: "suppressed",
-    unknown: "unknown",
-  }[outcome] || "unknown";
+    encouraging: "正向",
+    neutral: "中性",
+    cool_down: "降温",
+    suppressed: "压制",
+    unknown: "未知",
+  }[outcome] || "未知";
 }
 
 function proactiveFeedbackActionLabel(action) {
   return {
-    suppress_preview: "suppress preview",
-    cool_down: "cool down",
-    slightly_prioritize: "slightly prioritize",
-    observe: "observe",
-  }[action] || "observe";
+    suppress_preview: "阻断预览",
+    cool_down: "降低优先级",
+    slightly_prioritize: "轻微提高优先级",
+    observe: "观察",
+  }[action] || "观察";
+}
+
+function proactiveFeedbackExplanationLabel(text) {
+  const labels = {
+    "recent dismissals without replies; blocked until the feedback window improves": "近期多次忽略且没有回复，先阻断这种类型，等反馈窗口改善再恢复。",
+    "recent feedback is negative; keep allowed candidates lower priority": "近期反馈偏负面，允许的候选也先降低优先级。",
+    "recent opens or replies are positive; allow a small priority lift": "近期打开或回复偏正向，可以小幅提高优先级。",
+    "not enough signal yet; keep observing": "信号还不够，继续观察。",
+  };
+  return labels[text] || text;
+}
+
+function proactiveFeedbackRecoveryLabel(text) {
+  const labels = {
+    "a later reply or the rolling window expiring can restore this type": "之后出现回复，或滚动窗口过期后，这类候选可以恢复。",
+    "opens or replies will raise the score": "后续打开、回复或有帮助反馈会抬高分数。",
+  };
+  return labels[text] || text;
 }
 
 function renderProactiveArbitration(item) {
@@ -1926,28 +2146,48 @@ function renderProactiveArbitration(item) {
   const blocked = Array.isArray(sensitivity.blocked) ? sensitivity.blocked : [];
   const watch = Array.isArray(sensitivity.watch) ? sensitivity.watch : [];
   return h("div", { class: `proactive-arbitration ${item.risk_level || "low"}` }, [
-    h("small", { text: `arbitration ${arbitration.decision || "allow"} / ${arbitration.policy || "local"}` }),
+    h("small", { text: `仲裁 ${proactiveArbitrationDecisionLabel(arbitration.decision)} / ${arbitration.policy || "local"}` }),
     reasons.length
       ? h("ul", {}, reasons.map((reason) => h("li", { text: proactiveArbitrationReasonLabel(reason) })))
       : null,
-    boundaryHits.length ? h("small", { text: `boundary: ${boundaryHits.join(", ")}` }) : null,
-    blocked.length || watch.length ? h("small", { text: `sensitive: ${[...blocked, ...watch].join(", ")}` }) : null,
+    boundaryHits.length ? h("small", { text: `命中边界：${boundaryHits.join(", ")}` }) : null,
+    blocked.length || watch.length ? h("small", { text: `敏感线索：${[...blocked, ...watch].map(proactiveSensitivityLabel).join(", ")}` }) : null,
   ]);
+}
+
+function proactiveArbitrationDecisionLabel(decision) {
+  return {
+    allow: "允许",
+    watch: "观察",
+    block: "阻断",
+  }[decision] || "允许";
 }
 
 function proactiveArbitrationReasonLabel(reason) {
   const labels = {
-    memory_basis_direct: "direct memory basis",
-    memory_basis_contextual: "contextual memory basis",
-    memory_basis_weak: "weak memory basis",
-    long_idle_only: "watch: long idle without richer context",
-    no_memory_basis: "blocked: no auditable memory basis",
-    topic_boundary_match: "blocked: matches explicit topic boundary",
-    sensitive_content_blocked: "blocked: sensitive content",
-    sensitive_content_watch: "watch: potentially sensitive content",
-    recent_dismissals_without_replies: "blocked: recent dismissals without replies",
+    memory_basis_direct: "允许：有直接记忆依据",
+    memory_basis_contextual: "允许：有上下文记忆依据",
+    memory_basis_weak: "依据偏弱：只作为低优先级参考",
+    long_idle_only: "观察：只是长时间未联系，缺少更强上下文",
+    no_memory_basis: "阻断：没有可审计记忆依据",
+    topic_boundary_match: "阻断：命中用户明确话题边界",
+    sensitive_content_blocked: "阻断：命中高风险敏感内容",
+    sensitive_content_watch: "观察：存在潜在敏感线索",
+    recent_dismissals_without_replies: "阻断：近期多次忽略且没有回复",
+    recent_negative_feedback_without_replies: "阻断：近期显式负反馈且没有回复",
   };
   return labels[reason] || reason;
+}
+
+function proactiveSensitivityLabel(key) {
+  return {
+    self_harm: "自伤/危机",
+    violence: "暴力",
+    medical: "医疗",
+    legal: "法律",
+    financial: "财务",
+    conflict: "冲突",
+  }[key] || key;
 }
 
 function renderLlmCalls() {

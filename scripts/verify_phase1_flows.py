@@ -13,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import app.database as database
+import app.rate_limit as rate_limit
 
 
 UNNAMED = "\u672a\u547d\u540d"
@@ -145,6 +146,13 @@ def verify_naming_and_restore(server, user_id: int) -> None:
         assert exported_data["persona"]["id"] == persona_id
         assert exported_data["conversations"][0]["id"] == conversation_id
         assert exported_data["messages"][0]["content"] == "\u5bfc\u51fa\u6d4b\u8bd5"
+        account_export = server.export_account_data(user)
+        account_data = json.loads(account_export.body.decode("utf-8"))
+        assert account_data["schema"] == "account_export_v1"
+        assert account_data["profile"]["nickname"] == "\u6708"
+        assert any(item["persona"]["id"] == persona_id for item in account_data["personas"])
+        assert account_data["groups"]["messages"][0]["content"] == "\u7fa4\u804a\u5bfc\u51fa\u6d4b\u8bd5"
+        assert "password_hash" not in json.dumps(account_data, ensure_ascii=False)
         server.delete_persona(persona_id, server.PersonaDeleteRequest(confirm_name="\u77e5\u9065"), user)
         assert any(int(item["id"]) == persona_id for item in server.deleted_personas(user)["personas"])
         assert not any(int(item["id"]) == conversation_id for item in server.conversations(user)["conversations"])
@@ -310,6 +318,7 @@ def verify_local_avatar_generation(server, user_id: int, persona_id: int) -> Non
 
 
 def verify_tab_scoped_login(server, auth) -> None:
+    rate_limit.reset_all_auth_failures()
     auth.create_user("cookie_user", "password-cookie", "普通页")
     auth.create_user("tab_user", "password-tab", "独立页")
 
@@ -335,6 +344,30 @@ def verify_tab_scoped_login(server, auth) -> None:
     assert isolated_guest["user"]["is_guest"] is True
     assert "set-cookie" not in guest_response.headers
     assert bool(auth.current_user(session_token=cookie_token, authorization=f"Bearer {guest_token}")["is_guest"]) is True
+    guest_summary = server.admin_guest_summary({"id": 1, "role": "admin"})
+    assert guest_summary["active_count"] >= 1
+    assert guest_summary["nearest_expiry_at"] >= database.now_ts()
+    ts = database.now_ts()
+    with database.get_db() as db:
+        expired_guest_id = int(
+            db.execute(
+                """
+                INSERT INTO users (
+                    username, password_hash, role, status,
+                    is_guest, guest_expires_at, created_at, updated_at
+                )
+                VALUES ('expired_guest_for_audit', 'x', 'user', 'active', 1, ?, ?, ?)
+                """,
+                (ts - 1, ts - 10, ts - 10),
+            ).lastrowid
+        )
+    before_cleanup = server.admin_guest_summary({"id": 1, "role": "admin"})
+    assert before_cleanup["expired_count"] >= 1
+    assert auth.cleanup_expired_guest_users(ts) >= 1
+    after_cleanup = server.admin_guest_summary({"id": 1, "role": "admin"})
+    assert after_cleanup["expired_count"] == 0
+    assert after_cleanup["cleanup_events"][0]["deleted_count"] >= 1
+    assert expired_guest_id in after_cleanup["cleanup_events"][0]["user_ids"]
 
     server.logout(Response(), cookie_token, f"Bearer {tab_token}")
     try:
@@ -343,6 +376,41 @@ def verify_tab_scoped_login(server, auth) -> None:
     except HTTPException as exc:
         assert exc.status_code == 401
     assert auth.current_user(session_token=cookie_token, authorization=None)["username"] == "cookie_user"
+
+    auth.create_user("limited_user", "password-limit", "限流测试")
+    for _ in range(rate_limit.AUTH_FAILURE_LIMIT):
+        try:
+            server.login(server.LoginRequest(username="limited_user", password="wrong-pass-1"), Response())
+            raise AssertionError("bad login should fail")
+        except HTTPException as exc:
+            assert exc.status_code == 401
+    try:
+        server.login(server.LoginRequest(username="limited_user", password="wrong-pass-1"), Response())
+        raise AssertionError("repeated bad login should be rate limited")
+    except HTTPException as exc:
+        assert exc.status_code == 429
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        assert detail.get("code") == "auth_rate_limited"
+        assert int(detail.get("retry_after_seconds") or 0) > 0
+    rate_limit.reset_all_auth_failures()
+    recovered = server.login(server.LoginRequest(username="limited_user", password="password-limit"), Response())
+    assert recovered["user"]["username"] == "limited_user"
+
+    delete_user = auth.create_user("delete_user", "password-delete", "删除测试")
+    delete_user_id = int(delete_user["id"])
+    upload_dir = server.UPLOAD_DIR / str(delete_user_id)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    (upload_dir / "note.txt").write_text("temporary upload", encoding="utf-8")
+    try:
+        server.delete_account(server.AccountDeleteRequest(confirm_username="wrong"), Response(), delete_user)
+        raise AssertionError("account deletion should require username confirmation")
+    except HTTPException as exc:
+        assert exc.status_code == 400
+    deleted = server.delete_account(server.AccountDeleteRequest(confirm_username="delete_user"), Response(), delete_user)
+    assert deleted["status"] == "deleted"
+    with database.get_db() as db:
+        assert db.execute("SELECT id FROM users WHERE id = ?", (delete_user_id,)).fetchone() is None
+    assert not upload_dir.exists()
 
 
 def verify_profile_proactive_preferences(server, user_id: int) -> None:
@@ -361,6 +429,7 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
             nickname="\u6708",
             preferences={
                 "theme": "quiet",
+                "timezone": "Asia/Shanghai",
                 "proactive_contact": {
                     "enabled": True,
                     "max_per_day": 99,
@@ -373,12 +442,30 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
         user,
     )["profile"]
     assert updated["preferences"]["theme"] == "quiet"
+    assert updated["preferences"]["timezone"] == "Asia/Shanghai"
     proactive = updated["preferences"]["proactive_contact"]
     assert proactive["enabled"] is True
     assert proactive["max_per_day"] == 3
     assert proactive["quiet_start"] == "22:00"
     assert proactive["quiet_end"] == "08:30"
     assert proactive["allowed_types"] == ["followup", "care"]
+    server.update_profile(
+        server.ProfileUpdateRequest(
+            nickname="\u6708",
+            preferences={
+                "timezone": "Bad/Zone",
+                "proactive_contact": {
+                    "enabled": True,
+                    "max_per_day": 3,
+                    "quiet_start": "00:00",
+                    "quiet_end": "00:00",
+                    "allowed_types": ["followup", "care"],
+                },
+            },
+        ),
+        user,
+    )
+    assert server.profile(user)["profile"]["preferences"].get("timezone") is None
 
     ts = database.now_ts()
     old_ts = ts - 8 * 60 * 60
@@ -433,6 +520,11 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
     assert any(item["kind"] == "key_point" for item in preview["candidates"][0]["memory_basis"]["evidence"])
     assert preview["candidates"][0]["risk_level"] == "low"
     assert preview["candidates"][0]["arbitration"]["decision"] == "allow"
+    assert preview["delivery_mode"] == "preview_only"
+    assert preview["delivery_summary"]["can_auto_send"] is False
+    assert preview["candidates"][0]["delivery_plan"]["status"] == "ready"
+    assert preview["candidates"][0]["delivery_plan"]["can_auto_send"] is False
+    assert "manual_send_not_enabled" in preview["candidates"][0]["delivery_plan"]["reasons"]
     api_preview = server.proactive_contact_candidate_preview(user, limit=5)
     assert api_preview["settings"]["enabled"] is True
     assert api_preview["candidates"][0]["conversation_id"] == conversation_id
@@ -552,6 +644,7 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
     assert "long_idle_only" in care_preview["candidates"][0]["risk_notes"]
     assert care_preview["candidates"][0]["risk_level"] == "watch"
     assert care_preview["candidates"][0]["arbitration"]["decision"] == "watch"
+    assert care_preview["candidates"][0]["delivery_plan"]["status"] == "watch"
 
     import app.layered_memory as layered_memory
 
@@ -733,6 +826,8 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
         int(item["conversation_id"]) == no_basis_conversation_id
         and item["risk_level"] == "blocked"
         and "no_memory_basis" in item["arbitration"]["reasons"]
+        and item["delivery_plan"]["status"] == "blocked"
+        and item["delivery_plan"]["can_show_preview"] is False
         for item in blocked_no_basis["blocked_candidates"]
     )
 
@@ -875,6 +970,34 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
     feedback_summary = proactive_contact.proactive_contact_event_summary(user_id)
     assert feedback_summary["by_type_summary"]["interest"]["dismissed"] == 2
     assert feedback_summary["by_type_summary"]["interest"]["dismiss_rate"] == 1
+    server.record_proactive_contact_event_endpoint(
+        server.ProactiveContactEventRequest(
+            event_type="candidate_positive",
+            conversation_id=care_conversation_id,
+            persona_id=persona_id,
+            candidate_type="care",
+            detail={"reason": "useful"},
+        ),
+        user,
+    )
+    server.record_proactive_contact_event_endpoint(
+        server.ProactiveContactEventRequest(
+            event_type="candidate_negative",
+            conversation_id=care_conversation_id,
+            persona_id=persona_id,
+            candidate_type="care",
+            detail={"reason": "unwanted"},
+        ),
+        user,
+    )
+    explicit_feedback_summary = proactive_contact.proactive_contact_event_summary(user_id)
+    assert explicit_feedback_summary["positive"] == 1
+    assert explicit_feedback_summary["negative"] == 1
+    assert explicit_feedback_summary["by_type_summary"]["care"]["positive"] == 1
+    assert explicit_feedback_summary["by_type_summary"]["care"]["negative"] == 1
+    explicit_feedback_policy = proactive_contact.proactive_contact_feedback_policy(user_id)
+    assert explicit_feedback_policy["type_scores"]["care"]["positive"] == 1
+    assert explicit_feedback_policy["type_scores"]["care"]["negative"] == 1
 
     for _ in range(2):
         server.record_proactive_contact_event_endpoint(
@@ -906,6 +1029,9 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
         and item["feedback_score"] <= -1
         and item["feedback_outcome"] == "suppressed"
         and item["feedback_action"] == "suppress_preview"
+        and item["delivery_plan"]["status"] == "blocked"
+        and item["feedback_counts"]["positive"] == 0
+        and item["feedback_counts"]["negative"] == 0
         and item["feedback_recovery_hint"]
         and item["adjusted_priority"] <= item["priority"]
         for item in suppressed_preview["blocked_candidates"]
@@ -917,10 +1043,10 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
             preferences={
                 "proactive_contact": {
                     "enabled": True,
-                    "max_per_day": 1,
+                    "max_per_day": 3,
                     "quiet_start": "00:00",
                     "quiet_end": "23:59",
-                    "allowed_types": ["followup"],
+                    "allowed_types": ["reminder"],
                 },
             },
         ),
@@ -930,10 +1056,29 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
     assert quiet_preview["allowed_now"] is False
     assert quiet_preview["blocked_reason"] == "quiet_hours"
     assert quiet_preview["candidates"] == []
+    quiet_admin_preview = server.admin_proactive_contact_candidates({"id": user_id, "role": "admin"}, target_user_id=user_id, limit=5)
+    assert quiet_admin_preview["allowed_now"] is False
+    assert quiet_admin_preview["blocked_reason"] == "quiet_hours"
+    assert any(
+        item["type"] == "reminder"
+        and item["delivery_plan"]["status"] == "delayed"
+        and "quiet_hours" in item["delivery_plan"]["reasons"]
+        for item in quiet_admin_preview["candidates"]
+    )
+
+
+def verify_admin_server_error_monitor(server, user_id: int) -> None:
+    server._record_server_error_event("test", "phase1", "synthetic server error")
+    report = server.admin_server_errors({"id": user_id, "role": "admin"}, limit=3)
+    assert report["errors"][0]["event_kind"] == "test"
+    assert report["errors"][0]["source"] == "phase1"
+    assert "synthetic server error" in report["errors"][0]["error_text"]
 
 
 def verify_frontend_home_navigation_state() -> None:
     source = (PROJECT_ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    admin_source = (PROJECT_ROOT / "admin_web" / "admin.js").read_text(encoding="utf-8")
+    privacy_source = (PROJECT_ROOT / "web" / "privacy.html").read_text(encoding="utf-8")
     assert 'if (state.view === "home") {' in source
     assert "state.activePersona = null;" in source
     assert "state.activeGroupConversationId = null;" in source
@@ -943,6 +1088,48 @@ def verify_frontend_home_navigation_state() -> None:
     assert "MAX_ASSISTANT_SEGMENTS" in source
     assert "splitSegments.slice(MAX_ASSISTANT_SEGMENTS - 1).join" in source
     assert "const segments = !isUser && !isNotice ? splitAssistantContent(content) : [content];" in source
+    assert "function isPendingReply(message)" in source
+    assert "这句话已经送出，正在等 TA 回复。" in source
+    assert "function renderStatusBanner()" in source
+    assert "重试刷新" in source
+    assert "async function retryMainDataRefresh()" in source
+    assert "app.replaceChildren(...children.filter(Boolean));" in source
+    assert "|| state.groupSettingsOpen" in source
+    assert "state.groupSettingsOpen = false;" in source
+    assert "group-settings-summary" in source
+    assert "group-member-add-panel" in source
+    assert "group-auto-toggle group-auto-toggle-card" in source
+    assert "function groupAutoDetailText(detail" in source
+    assert "latest_message_reply_status" in source
+    assert "next_check_seconds" in source
+    assert "persona_turns_since_user" in source
+    assert "function syncProfileTimezone()" in source
+    assert "Intl.DateTimeFormat().resolvedOptions().timeZone" in source
+    assert "function renderGuestDataBanner()" in source
+    assert "guest-data-banner" in source
+    assert "保留数据" in source
+    assert "游客数据会按期自动清理" in source
+    assert "function exportAccountData()" in source
+    assert "/api/me/export" in source
+    assert "导出账号数据" in source
+    assert "function deleteAccount()" in source
+    assert "删除账号会移除当前账号" in source
+    assert "/privacy" in source
+    assert "隐私与数据说明" in source
+    assert "账号导出和本地备份脚本不会复制" in privacy_source
+    assert "游客账号默认三天后到期" in privacy_source
+    assert "candidate_positive" in source
+    assert "candidate_negative" in source
+    assert "function hideProactiveCandidate(item)" in source
+    assert "反馈分" in admin_source
+    assert "预算建议" in admin_source
+    assert "考虑更便宜路由" in admin_source
+    assert "阻断：近期显式负反馈且没有回复" in admin_source
+    assert "发送计划" in admin_source
+    assert "未开启自动发送" in admin_source
+    assert "/api/admin/server-errors" in admin_source
+    assert "服务错误监控" in admin_source
+    assert "暂无服务错误事件" in admin_source
     assert "缃" not in source
     assert "澶" not in source
 
@@ -965,6 +1152,7 @@ def main() -> None:
         verify_chat_defers_summary_refresh(chat, server, user_id, persona_id)
         verify_local_avatar_generation(server, user_id, persona_id)
         verify_profile_proactive_preferences(server, user_id)
+        verify_admin_server_error_monitor(server, user_id)
         verify_tab_scoped_login(server, auth)
         verify_frontend_home_navigation_state()
     print("Phase 1 ordinary-user flow verification passed")

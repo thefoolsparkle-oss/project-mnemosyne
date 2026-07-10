@@ -723,6 +723,21 @@ def init_db() -> None:
                 FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE SET NULL
             );
 
+            CREATE TABLE IF NOT EXISTS guest_cleanup_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                deleted_count INTEGER NOT NULL DEFAULT 0,
+                user_ids_json TEXT NOT NULL DEFAULT '[]',
+                created_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS server_error_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_kind TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT '',
+                error_text TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
             CREATE INDEX IF NOT EXISTS idx_personas_user_id ON personas(user_id);
             CREATE INDEX IF NOT EXISTS idx_persona_growth_views_user
@@ -782,6 +797,10 @@ def init_db() -> None:
                 ON llm_call_logs(task, status, created_at);
             CREATE INDEX IF NOT EXISTS idx_proactive_contact_events_scope
                 ON proactive_contact_events(user_id, persona_id, conversation_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_guest_cleanup_events_created
+                ON guest_cleanup_events(created_at);
+            CREATE INDEX IF NOT EXISTS idx_server_error_events_created
+                ON server_error_events(created_at);
             """
         )
         _ensure_column(db, "memory_links", "user_id", "INTEGER")

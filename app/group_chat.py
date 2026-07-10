@@ -358,6 +358,7 @@ def group_chat(
                 "route": _route_from_group_replies(existing_replies),
                 "replies": existing_replies,
                 "messages": existing_messages,
+                "status_detail": {"reason": "reused", "message_count": len(existing_replies)},
                 "degraded": False,
                 "degraded_reason": "",
                 "error_message": "",
@@ -435,6 +436,13 @@ def group_chat(
         "route": route,
         "replies": replies,
         "messages": [*_messages_for_ids(user_id, [user_message_id]), *replies],
+        "status_detail": (
+            {"reason": "degraded", "degraded_reason": str(turn.get("reason") or ""), "message_count": len(replies)}
+            if degraded
+            else {"reason": "generated", "message_count": len(replies)}
+            if replies
+            else {"reason": "quiet", "message_count": 0}
+        ),
         "degraded": degraded,
         "degraded_reason": str(turn.get("reason") or "") if degraded else "",
         "error_code": str(turn.get("error_code") or "") if degraded else "",
@@ -466,6 +474,7 @@ def autonomous_group_turn(
             "messages": existing,
             "skipped": False,
             "reason": "reused",
+            "status_detail": {"reason": "reused", "message_count": len(existing)},
             "degraded": False,
             "degraded_reason": "",
             "error_message": "",
@@ -480,6 +489,7 @@ def autonomous_group_turn(
             "messages": [],
             "skipped": True,
             "reason": eligibility["reason"],
+            "status_detail": eligibility.get("detail") or {"reason": eligibility["reason"]},
             "degraded": False,
             "degraded_reason": "",
             "error_message": "",
@@ -524,6 +534,13 @@ def autonomous_group_turn(
         "messages": replies,
         "skipped": not bool(replies),
         "reason": "quiet" if not replies and not degraded else "",
+        "status_detail": (
+            {"reason": "quiet"}
+            if not replies and not degraded
+            else {"reason": "degraded", "degraded_reason": str(turn.get("reason") or "")}
+            if degraded
+            else {"reason": "generated", "message_count": len(replies)}
+        ),
         "degraded": degraded,
         "degraded_reason": str(turn.get("reason") or "") if degraded else "",
         "error_code": str(turn.get("error_code") or "") if degraded else "",
@@ -600,10 +617,13 @@ def _generate_group_turn(
         if persona_id not in valid_ids or persona_id in used_speakers or not content:
             continue
         presentation = _extract_reply_presentation(content)
+        clean_content = str(presentation.get("content") or "").strip()
+        if not clean_content or (clean_content == "我在。" and _group_presentation_only_content(content)):
+            continue
         planned.append(
             {
                 "persona_id": persona_id,
-                "content": presentation["content"],
+                "content": clean_content,
                 "expressions": presentation.get("expressions") or [],
                 "reason": str(item.get("reason") or "")[:200],
             }
@@ -677,10 +697,13 @@ def _generate_group_autonomous_turn(
         if persona_id not in valid_ids or persona_id in used_speakers or not content:
             continue
         presentation = _extract_reply_presentation(content)
+        clean_content = str(presentation.get("content") or "").strip()
+        if not clean_content or (clean_content == "我在。" and _group_presentation_only_content(content)):
+            continue
         planned.append(
             {
                 "persona_id": persona_id,
-                "content": presentation["content"],
+                "content": clean_content,
                 "expressions": presentation.get("expressions") or [],
                 "reason": str(item.get("reason") or "")[:200],
             }
@@ -790,6 +813,17 @@ def _group_degraded_message(turn: dict) -> str:
     return "群聊暂时没有成功接上，这句话已经留在当前会话里。稍后再试一次。"
 
 
+def _group_presentation_only_content(content: str) -> bool:
+    text = str(content or "").strip()
+    if not text:
+        return True
+    without_structured = re.sub(r"\[\[\s*expression\s*:[^\]\r\n]{1,80}\]\]", "", text, flags=re.IGNORECASE).strip()
+    if not without_structured:
+        return True
+    without_stage = re.sub(r"^[\s，,。！？!?、]*(?:[（(【\[][^）)】\]]{1,24}[）)】\]])[\s，,。！？!?、]*$", "", without_structured).strip()
+    return not without_stage
+
+
 def _pending_group_reply_payload(group_conversation_id: int, user_message_id: int, messages: list[dict]) -> dict:
     return {
         "group_conversation_id": group_conversation_id,
@@ -829,6 +863,8 @@ def _group_reply_similarity_key(content: str) -> str:
         and any(marker in compact for marker in ("我在", "我也在", "也在", "看到你说", "看见你说", "听到你说", "接上"))
     ):
         return "stall_ack"
+    if len(compact) <= 16 and any(marker in compact for marker in ("我也是", "我也觉得", "同意", "没错", "确实", "是啊")):
+        return "low_info_agree"
     if len(compact) <= 18 and any(marker in compact for marker in ("我在", "在呢", "嗯", "好")):
         return f"short_ack:{compact}"
     return f"exact:{compact}"
@@ -1106,6 +1142,13 @@ def _autonomous_group_eligibility(
     min_idle_seconds: int,
 ) -> dict:
     ts = now_ts()
+    def blocked(reason: str, **detail: Any) -> dict:
+        return {
+            "ok": False,
+            "reason": reason,
+            "detail": {"reason": reason, "checked_at": ts, **detail},
+        }
+
     with get_db() as db:
         latest = db.execute(
             """
@@ -1118,12 +1161,25 @@ def _autonomous_group_eligibility(
             (user_id, group_conversation_id),
         ).fetchone()
         if not latest:
-            return {"ok": False, "reason": "empty"}
+            return blocked("empty")
         latest_status = str(latest["reply_status"] or "")
+        latest_age = max(0, ts - int(latest["created_at"] or 0))
         if str(latest["speaker_type"] or "") == "user" and latest_status in {"generating", "error"}:
-            return {"ok": False, "reason": "last_user_turn_unresolved"}
-        if ts - int(latest["created_at"] or 0) < max(0, int(min_idle_seconds)):
-            return {"ok": False, "reason": "too_fresh"}
+            return blocked(
+                "last_user_turn_unresolved",
+                latest_message_id=int(latest["id"]),
+                latest_message_age_seconds=latest_age,
+                latest_message_reply_status=latest_status,
+            )
+        wait_seconds = max(0, int(min_idle_seconds)) - latest_age
+        if wait_seconds > 0:
+            return blocked(
+                "too_fresh",
+                latest_message_id=int(latest["id"]),
+                latest_message_age_seconds=latest_age,
+                next_check_seconds=wait_seconds,
+                min_idle_seconds=max(0, int(min_idle_seconds)),
+            )
         last_user = db.execute(
             """
             SELECT id, created_at
@@ -1137,9 +1193,15 @@ def _autonomous_group_eligibility(
             (user_id, group_conversation_id),
         ).fetchone()
         if not last_user:
-            return {"ok": False, "reason": "no_recent_user"}
-        if ts - int(last_user["created_at"] or 0) > GROUP_AUTONOMOUS_USER_WINDOW_SECONDS:
-            return {"ok": False, "reason": "user_window_expired"}
+            return blocked("no_recent_user", latest_message_id=int(latest["id"]), latest_message_age_seconds=latest_age)
+        last_user_age = max(0, ts - int(last_user["created_at"] or 0))
+        if last_user_age > GROUP_AUTONOMOUS_USER_WINDOW_SECONDS:
+            return blocked(
+                "user_window_expired",
+                latest_user_message_id=int(last_user["id"]),
+                latest_user_age_seconds=last_user_age,
+                user_window_seconds=GROUP_AUTONOMOUS_USER_WINDOW_SECONDS,
+            )
         persona_count = db.execute(
             """
             SELECT COUNT(*) AS count
@@ -1152,8 +1214,13 @@ def _autonomous_group_eligibility(
             (user_id, group_conversation_id, int(last_user["id"])),
         ).fetchone()
     if int(persona_count["count"] or 0) >= MAX_PERSONA_MESSAGES_AFTER_USER:
-        return {"ok": False, "reason": "turn_cap"}
-    return {"ok": True, "reason": ""}
+        return blocked(
+            "turn_cap",
+            latest_user_message_id=int(last_user["id"]),
+            persona_messages_after_user=int(persona_count["count"] or 0),
+            max_persona_messages_after_user=MAX_PERSONA_MESSAGES_AFTER_USER,
+        )
+    return {"ok": True, "reason": "", "detail": {"reason": "eligible", "checked_at": ts}}
 
 
 def _group_turn_messages_for_user_message(user_id: int, group_conversation_id: int, user_message_id: int) -> list[dict]:

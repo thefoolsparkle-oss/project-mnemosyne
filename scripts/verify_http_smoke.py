@@ -292,6 +292,7 @@ def verify_in_process() -> None:
         for path, expected in {
             "/": 200,
             "/admin": 200,
+            "/privacy": 200,
             "/api/persona-options": 200,
             "/api/health": 200,
         }.items():
@@ -311,6 +312,7 @@ def main() -> None:
     checks = {
         "/": 200,
         "/admin": 200,
+        "/privacy": 200,
         "/api/persona-options": 200,
     }
     failures: list[str] = []

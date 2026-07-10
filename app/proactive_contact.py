@@ -4,12 +4,20 @@ import json
 import re
 from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .database import dict_from_row, get_db, now_ts
 
 
 PROACTIVE_CONTACT_TYPES = {"followup", "care", "reminder", "interest"}
-PROACTIVE_CONTACT_EVENT_TYPES = {"candidate_opened", "candidate_seen", "candidate_dismissed", "candidate_replied"}
+PROACTIVE_CONTACT_EVENT_TYPES = {
+    "candidate_opened",
+    "candidate_seen",
+    "candidate_dismissed",
+    "candidate_replied",
+    "candidate_positive",
+    "candidate_negative",
+}
 DEFAULT_PROACTIVE_CONTACT = {
     "enabled": False,
     "max_per_day": 1,
@@ -31,6 +39,11 @@ SENSITIVE_WATCH_PATTERNS = {
 
 def normalize_profile_preferences(preferences: Any) -> dict[str, Any]:
     base = dict(preferences or {}) if isinstance(preferences, dict) else {}
+    timezone = _normalize_timezone(base.get("timezone"))
+    if timezone:
+        base["timezone"] = timezone
+    else:
+        base.pop("timezone", None)
     raw_contact = base.get("proactive_contact")
     contact = dict(raw_contact or {}) if isinstance(raw_contact, dict) else {}
     enabled = bool(contact.get("enabled", DEFAULT_PROACTIVE_CONTACT["enabled"]))
@@ -59,6 +72,19 @@ def normalize_profile_preferences(preferences: Any) -> dict[str, Any]:
     return base
 
 
+def _normalize_timezone(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text or len(text) > 64:
+        return ""
+    if not re.fullmatch(r"[A-Za-z0-9_+\-]+(?:/[A-Za-z0-9_+\-]+){0,3}", text):
+        return ""
+    try:
+        ZoneInfo(text)
+    except ZoneInfoNotFoundError:
+        return ""
+    return text
+
+
 def proactive_contact_settings(user_id: int) -> dict[str, Any]:
     with get_db() as db:
         row = db.execute(
@@ -78,6 +104,7 @@ def proactive_contact_candidates(
     at_ts: int | None = None,
     limit: int = 5,
     include_blocked: bool = False,
+    include_delayed: bool = False,
 ) -> dict[str, Any]:
     ts = int(at_ts or now_ts())
     settings = proactive_contact_settings(user_id)
@@ -113,6 +140,7 @@ def proactive_contact_candidates(
             topic_boundaries=topic_boundaries,
             suppressed_types=suppressed_types,
         )
+        reviewed["delivery_plan"] = _delivery_plan(reviewed, allowed_now=allowed_now, blocked_reason=blocked_reason)
         if reviewed.get("risk_level") == "blocked":
             blocked_candidates.append(reviewed)
         else:
@@ -137,6 +165,9 @@ def proactive_contact_candidates(
     if blocked_reason == "daily_limit":
         candidates = []
         blocked_candidates = []
+    elif not allowed_now and not include_delayed:
+        candidates = []
+        blocked_candidates = []
     else:
         candidate_limit = remaining_today if allowed_now else max_per_day
         candidates = candidates[:max(0, candidate_limit)]
@@ -148,6 +179,8 @@ def proactive_contact_candidates(
         "usage_today": usage_today,
         "remaining_today": remaining_today,
         "feedback_policy": feedback_policy,
+        "delivery_mode": "preview_only",
+        "delivery_summary": _delivery_summary(candidates, blocked_candidates, allowed_now=allowed_now, blocked_reason=blocked_reason),
         "candidates": candidates if settings.get("enabled") else [],
         "blocked_candidates": blocked_candidates if include_blocked and settings.get("enabled") else [],
         "arbitration_summary": {
@@ -155,6 +188,55 @@ def proactive_contact_candidates(
             "watch": sum(1 for item in candidates if item.get("risk_level") == "watch"),
             "blocked": len(blocked_candidates) if include_blocked and settings.get("enabled") else 0,
         },
+    }
+
+
+def _delivery_plan(item: dict[str, Any], *, allowed_now: bool, blocked_reason: str) -> dict[str, Any]:
+    risk_level = str(item.get("risk_level") or "low")
+    decision = str((item.get("arbitration") or {}).get("decision") or "allow")
+    reasons = ["manual_send_not_enabled"]
+    status = "ready"
+    can_show_preview = True
+    explanation = "低风险候选只进入预览，不会自动发送。"
+    if risk_level == "blocked" or decision == "block":
+        status = "blocked"
+        can_show_preview = False
+        explanation = "候选已被风险仲裁阻断，不进入普通端预览。"
+    elif risk_level == "watch" or decision == "watch":
+        status = "watch"
+        explanation = "候选需要继续观察，只能作为低优先级预览。"
+    elif not allowed_now:
+        status = "delayed"
+        reasons.append(blocked_reason or "not_allowed_now")
+        explanation = "当前时间或额度不适合触达，只保留为预览候选。"
+    return {
+        "mode": "preview_only",
+        "status": status,
+        "can_auto_send": False,
+        "can_show_preview": can_show_preview,
+        "reasons": reasons,
+        "explanation": explanation,
+    }
+
+
+def _delivery_summary(
+    candidates: list[dict[str, Any]],
+    blocked_candidates: list[dict[str, Any]],
+    *,
+    allowed_now: bool,
+    blocked_reason: str,
+) -> dict[str, Any]:
+    items = list(candidates) + list(blocked_candidates)
+    by_status: dict[str, int] = {}
+    for item in items:
+        status = str(((item.get("delivery_plan") or {}).get("status")) or "unknown")
+        by_status[status] = by_status.get(status, 0) + 1
+    return {
+        "mode": "preview_only",
+        "can_auto_send": False,
+        "allowed_now": allowed_now,
+        "blocked_reason": blocked_reason,
+        "by_status": by_status,
     }
 
 
@@ -187,7 +269,10 @@ def _handled_candidates_today(user_id: int, ts: int) -> set[tuple[int, str]]:
             SELECT conversation_id, candidate_type
             FROM proactive_contact_events
             WHERE user_id = ?
-              AND event_type IN ('candidate_opened', 'candidate_seen', 'candidate_dismissed', 'candidate_replied')
+              AND event_type IN (
+                  'candidate_opened', 'candidate_seen', 'candidate_dismissed', 'candidate_replied',
+                  'candidate_positive', 'candidate_negative'
+              )
               AND conversation_id IS NOT NULL
               AND created_at >= ?
               AND created_at < ?
@@ -296,6 +381,8 @@ def proactive_contact_event_summary(user_id: int, *, days: int = 30) -> dict[str
     opened = by_event.get("candidate_opened", 0)
     replied = by_event.get("candidate_replied", 0)
     dismissed = by_event.get("candidate_dismissed", 0)
+    positive = by_event.get("candidate_positive", 0)
+    negative = by_event.get("candidate_negative", 0)
     by_type_summary = {
         candidate_type: _proactive_contact_type_summary(counts, by_type_last_event_at.get(candidate_type, 0))
         for candidate_type, counts in by_type.items()
@@ -309,8 +396,12 @@ def proactive_contact_event_summary(user_id: int, *, days: int = 30) -> dict[str
         "opened": opened,
         "replied": replied,
         "dismissed": dismissed,
+        "positive": positive,
+        "negative": negative,
         "reply_rate": round(replied / opened, 3) if opened else 0,
         "dismiss_rate": round(dismissed / opened, 3) if opened else 0,
+        "positive_rate": round(positive / opened, 3) if opened else 0,
+        "negative_rate": round(negative / opened, 3) if opened else 0,
     }
 
 
@@ -318,14 +409,20 @@ def _proactive_contact_type_summary(counts: dict[str, int], last_event_at: int) 
     opened = int(counts.get("candidate_opened") or 0) + int(counts.get("candidate_seen") or 0)
     replied = int(counts.get("candidate_replied") or 0)
     dismissed = int(counts.get("candidate_dismissed") or 0)
-    interaction_count = opened + replied + dismissed
+    positive = int(counts.get("candidate_positive") or 0)
+    negative = int(counts.get("candidate_negative") or 0)
+    interaction_count = opened + replied + dismissed + positive + negative
     return {
         "opened": opened,
         "replied": replied,
         "dismissed": dismissed,
+        "positive": positive,
+        "negative": negative,
         "interaction_count": interaction_count,
         "reply_rate": round(replied / interaction_count, 3) if interaction_count else 0,
         "dismiss_rate": round(dismissed / interaction_count, 3) if interaction_count else 0,
+        "positive_rate": round(positive / interaction_count, 3) if interaction_count else 0,
+        "negative_rate": round(negative / interaction_count, 3) if interaction_count else 0,
         "last_event_at": int(last_event_at or 0),
     }
 
@@ -337,8 +434,12 @@ def proactive_contact_feedback_policy(user_id: int, *, days: int = 30) -> dict[s
     type_scores: dict[str, dict[str, Any]] = {}
     for candidate_type, counts in (summary.get("by_type") or {}).items():
         dismissed = int(counts.get("candidate_dismissed") or 0)
+        explicit_negative = int(counts.get("candidate_negative") or 0)
+        explicit_positive = int(counts.get("candidate_positive") or 0)
         replied = int(counts.get("candidate_replied") or 0)
         opened = int(counts.get("candidate_opened") or 0) + int(counts.get("candidate_seen") or 0)
+        negative_feedback = dismissed + explicit_negative
+        positive_feedback = replied + explicit_positive
         score = _proactive_contact_type_score(counts)
         type_scores[str(candidate_type)] = {
             "score": score,
@@ -346,11 +447,17 @@ def proactive_contact_feedback_policy(user_id: int, *, days: int = 30) -> dict[s
             "opened": opened,
             "replied": replied,
             "dismissed": dismissed,
+            "positive": explicit_positive,
+            "negative": explicit_negative,
             "last_event_at": int((summary.get("by_type_last_event_at") or {}).get(candidate_type) or 0),
         }
-        if dismissed >= 2 and replied == 0 and dismissed >= opened:
+        if negative_feedback >= 2 and positive_feedback == 0 and negative_feedback >= opened:
             suppressed_types.append(str(candidate_type))
-            reasons[str(candidate_type)] = "recent_dismissals_without_replies"
+            reasons[str(candidate_type)] = (
+                "recent_dismissals_without_replies"
+                if dismissed >= 2
+                else "recent_negative_feedback_without_replies"
+            )
             type_scores[str(candidate_type)]["outcome"] = "suppressed"
         type_scores[str(candidate_type)].update(_proactive_contact_feedback_action(type_scores[str(candidate_type)]))
     return {
@@ -366,7 +473,9 @@ def _proactive_contact_type_score(counts: dict[str, int]) -> float:
     seen = int(counts.get("candidate_seen") or 0)
     replied = int(counts.get("candidate_replied") or 0)
     dismissed = int(counts.get("candidate_dismissed") or 0)
-    score = replied * 1.0 + opened * 0.25 + seen * 0.1 - dismissed * 0.75
+    positive = int(counts.get("candidate_positive") or 0)
+    negative = int(counts.get("candidate_negative") or 0)
+    score = replied * 1.0 + positive * 1.1 + opened * 0.25 + seen * 0.1 - dismissed * 0.75 - negative * 1.25
     return round(max(-3.0, min(3.0, score)), 3)
 
 
@@ -728,6 +837,8 @@ def _with_arbitration(
         "opened": int(feedback_metrics.get("opened") or 0),
         "replied": int(feedback_metrics.get("replied") or 0),
         "dismissed": int(feedback_metrics.get("dismissed") or 0),
+        "positive": int(feedback_metrics.get("positive") or 0),
+        "negative": int(feedback_metrics.get("negative") or 0),
     }
     reviewed["adjusted_priority"] = round(
         max(0.0, float(reviewed.get("priority") or 0) + max(-0.2, min(0.2, feedback_score * 0.05))),

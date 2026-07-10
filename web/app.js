@@ -8,6 +8,7 @@ const GROUP_AUTO_USER_WINDOW_SECONDS = 600;
 const GROUP_AUTO_FAILURE_BACKOFF_SECONDS = 300;
 const GROUP_MAX_MEMBERS = 6;
 const MAX_ASSISTANT_SEGMENTS = 8;
+const PROFILE_TIMEZONE_SYNC_KEY = "mnemosyne:profile-timezone-sync";
 
 const groupAutoCooldowns = new Map();
 let groupAutoPromptTimer = null;
@@ -83,6 +84,7 @@ let state = {
   sending: false,
   sendingStartedAt: 0,
   networkOffline: typeof navigator !== "undefined" && navigator.onLine === false,
+  error: "",
 };
 
 let sendingTicker = null;
@@ -167,6 +169,37 @@ async function uploadAvatarFile(file) {
   return data.url;
 }
 
+function clientTimezone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+  } catch {
+    return "";
+  }
+}
+
+async function syncProfileTimezone() {
+  const timezone = clientTimezone();
+  const profile = state.profile || {};
+  const preferences = profile.preferences || {};
+  if (!timezone || preferences.timezone === timezone || !state.user?.id) return;
+  const syncKey = `${PROFILE_TIMEZONE_SYNC_KEY}:${state.user.id}:${timezone}`;
+  try {
+    if (sessionStorage.getItem(syncKey) === "1") return;
+    sessionStorage.setItem(syncKey, "1");
+  } catch {
+    // Session storage may be unavailable; syncing once per load is still harmless.
+  }
+  try {
+    const data = await api("/api/profile", {
+      method: "PUT",
+      body: JSON.stringify({ preferences: { ...preferences, timezone } }),
+    });
+    state.profile = data.profile;
+  } catch {
+    // Timezone sync is a convenience; profile editing and chat should continue if it fails.
+  }
+}
+
 function h(tag, attrs = {}, children = []) {
   const el = document.createElement(tag);
   for (const [key, value] of Object.entries(attrs)) {
@@ -187,6 +220,7 @@ async function bootstrap() {
     const me = await api("/api/me");
     state.user = me.user;
     state.profile = me.profile;
+    await syncProfileTimezone();
     await loadMainData({ openLatest: true });
     renderShell();
     scrollChat();
@@ -246,6 +280,7 @@ function renderAuth(mode) {
           acceptAuthSession(data, isolated);
           state.user = data.user;
           state.profile = data.profile;
+          await syncProfileTimezone();
           await loadMainData({ openLatest: true });
           renderShell();
           scrollChat();
@@ -253,7 +288,8 @@ function renderAuth(mode) {
           error.textContent = err.message;
         }
       },
-    })
+    }),
+    h("a", { class: "auth-privacy-link", href: "/privacy", target: "_blank", rel: "noopener", text: "隐私与数据说明" })
   );
 
   const error = h("p", { class: "error" });
@@ -273,6 +309,7 @@ function renderAuth(mode) {
       acceptAuthSession(data, isolated);
       state.user = data.user;
       state.profile = data.profile;
+      await syncProfileTimezone();
       await loadMainData({ openLatest: true });
       renderShell();
       scrollChat();
@@ -306,6 +343,7 @@ async function loadMainData({ openLatest = false } = {}) {
   state.groupConversations = groupConversations.group_conversations || [];
   state.archivedGroupConversations = archivedGroupConversations.group_conversations || [];
   state.proactiveContact = proactiveContact;
+  state.error = "";
   if (state.view === "home") {
     state.activePersona = null;
     state.activeConversationId = null;
@@ -570,13 +608,13 @@ function renderShell() {
   saveLastActive();
   const restoreSearchFocus = document.activeElement?.classList?.contains("conversation-search");
   app.className = `app-shell view-${state.view || "chat"} ${state.activePersona || state.activeGroupConversation ? "has-persona" : "no-persona"}`;
-  const children = [renderSidebar(), renderMain(), renderNetworkBanner()];
+  const children = [renderSidebar(), renderMain(), renderStatusBanner(), renderGuestDataBanner()];
   if (state.profileOpen) children.push(renderProfileModal());
   if (state.personaPanelOpen) children.push(renderPersonaModal());
   if (state.threadPanelOpen) children.push(renderThreadModal());
   if (state.deletedPanelOpen) children.push(renderDeletedPersonasModal());
   if (state.groupCreateOpen) children.push(renderGroupCreateModal());
-  app.replaceChildren(...children);
+  app.replaceChildren(...children.filter(Boolean));
   if (restoreSearchFocus) {
     requestAnimationFrame(() => {
       const input = document.querySelector(".conversation-search");
@@ -688,6 +726,20 @@ function renderProactiveCandidate(item) {
       "aria-label": "\u5ffd\u7565\u4e3b\u52a8\u8054\u7cfb\u5019\u9009",
       onclick: () => dismissProactiveCandidate(item),
     }, "\u00d7"),
+    h("div", { class: "proactive-candidate-feedback" }, [
+      h("button", {
+        type: "button",
+        class: "ghost compact",
+        text: "有帮助",
+        onclick: () => rateProactiveCandidate(item, "candidate_positive"),
+      }),
+      h("button", {
+        type: "button",
+        class: "ghost compact danger-soft",
+        text: "不喜欢",
+        onclick: () => rateProactiveCandidate(item, "candidate_negative"),
+      }),
+    ]),
   ]);
 }
 
@@ -721,13 +773,7 @@ async function openProactiveCandidate(item) {
 }
 
 async function dismissProactiveCandidate(item) {
-  if (state.proactiveContact?.candidates) {
-    state.proactiveContact.candidates = state.proactiveContact.candidates.filter((candidate) => (
-      Number(candidate.conversation_id) !== Number(item.conversation_id)
-      || String(candidate.type || "") !== String(item.type || "")
-    ));
-    render();
-  }
+  hideProactiveCandidate(item);
   try {
     await api("/api/proactive-contact/events", {
       method: "POST",
@@ -741,6 +787,34 @@ async function dismissProactiveCandidate(item) {
     });
   } catch (err) {
     console.warn("proactive contact dismissal failed", err);
+  }
+}
+
+async function rateProactiveCandidate(item, eventType) {
+  hideProactiveCandidate(item);
+  try {
+    await api("/api/proactive-contact/events", {
+      method: "POST",
+      body: JSON.stringify({
+        event_type: eventType,
+        conversation_id: item.conversation_id,
+        persona_id: item.persona_id,
+        candidate_type: item.type || "",
+        detail: { reason: item.reason || "" },
+      }),
+    });
+  } catch (err) {
+    console.warn("proactive contact feedback failed", err);
+  }
+}
+
+function hideProactiveCandidate(item) {
+  if (state.proactiveContact?.candidates) {
+    state.proactiveContact.candidates = state.proactiveContact.candidates.filter((candidate) => (
+      Number(candidate.conversation_id) !== Number(item.conversation_id)
+      || String(candidate.type || "") !== String(item.type || "")
+    ));
+    renderShell();
   }
 }
 
@@ -863,6 +937,7 @@ function renderProfileModal() {
                 bio: bio.value,
                 preferences: {
                   ...preferences,
+                  timezone: clientTimezone() || preferences.timezone || "",
                   proactive_contact: {
                     ...(proactive || {}),
                     enabled: proactiveEnabled.checked,
@@ -913,7 +988,14 @@ function renderProfileModal() {
             ])),
           ]),
         ]),
+        h("section", { class: "profile-danger-zone" }, [
+          h("strong", { text: "危险操作" }),
+          h("small", { text: "删除账号会移除当前账号、人格、聊天、记忆和上传文件；操作不可恢复，建议先导出账号数据。" }),
+          h("button", { type: "button", class: "danger-button", text: "删除账号", onclick: deleteAccount }),
+        ]),
         h("div", { class: "actions modal-actions" }, [
+          h("button", { type: "button", class: "ghost", text: "导出账号数据", onclick: exportAccountData }),
+          h("a", { class: "ghost profile-privacy-link", href: "/privacy", target: "_blank", rel: "noopener", text: "隐私与数据说明" }),
           h("button", { type: "submit", text: text.save }),
           h("button", { type: "button", class: "ghost", text: "取消", onclick: close }),
         ]),
@@ -921,6 +1003,26 @@ function renderProfileModal() {
       ]),
     ]),
   ]);
+}
+
+function exportAccountData() {
+  window.open("/api/me/export", "_blank", "noopener");
+}
+
+async function deleteAccount() {
+  const username = state.user?.username || "";
+  const confirmName = window.prompt(`删除账号后无法恢复。建议先导出账号数据；若确认删除，请输入当前用户名「${username}」。`);
+  if (confirmName === null) return;
+  try {
+    await api("/api/me", {
+      method: "DELETE",
+      body: JSON.stringify({ confirm_username: confirmName.trim() }),
+    });
+    resetClientState();
+    renderAuth("login");
+  } catch (err) {
+    window.alert(err.message || "删除账号失败。");
+  }
 }
 
 function renderGuestConvertBox(profile) {
@@ -1579,6 +1681,29 @@ function guestExpiryText() {
   return `游客模式，约 ${Math.max(1, hours)} 小时后自动清除数据`;
 }
 
+function renderGuestDataBanner() {
+  if (!state.user?.is_guest) return null;
+  const expiresAt = Number(state.user?.guest_expires_at || 0);
+  const remaining = expiresAt ? Math.max(0, expiresAt - nowSeconds()) : 0;
+  const urgent = remaining > 0 && remaining <= 86400;
+  return h("aside", { class: `guest-data-banner ${urgent ? "urgent" : ""}` }, [
+    h("span", {
+      text: urgent
+        ? `${guestExpiryText()}。转成正式账号后会保留当前人格和聊天。`
+        : `${guestExpiryText()}。游客数据会按期自动清理；需要长期保留请转成正式账号。`,
+    }),
+    h("button", {
+      type: "button",
+      class: "ghost compact",
+      text: "保留数据",
+      onclick: () => {
+        state.profileOpen = true;
+        renderShell();
+      },
+    }),
+  ]);
+}
+
 function renderMain() {
   if (state.view === "home") {
     return renderHome();
@@ -1709,14 +1834,34 @@ function renderGroupChat() {
   ]);
 }
 
-function renderNetworkBanner() {
-  if (!state.networkOffline) return null;
+function renderStatusBanner() {
+  if (state.networkOffline) {
+    return h("div", {
+      class: "network-banner",
+      role: "status",
+      "aria-live": "polite",
+      text: "当前离线。已打开的页面可以继续查看，发送消息需要恢复网络。",
+    });
+  }
+  if (!state.error) return null;
   return h("div", {
-    class: "network-banner",
-    role: "status",
-    "aria-live": "polite",
-    text: "当前离线。已打开的页面可以继续查看，发送消息需要恢复网络。",
-  });
+    class: "network-banner app-error-banner",
+    role: "alert",
+    "aria-live": "assertive",
+  }, [
+    h("span", { text: `刷新失败：${state.error}` }),
+    h("button", { type: "button", class: "ghost compact", text: "重试刷新", onclick: retryMainDataRefresh }),
+  ]);
+}
+
+async function retryMainDataRefresh() {
+  try {
+    await loadMainData();
+    renderShell();
+  } catch (err) {
+    state.error = err.message;
+    renderShell();
+  }
 }
 
 function renderGroupSettingsModal(group) {
@@ -1819,12 +1964,19 @@ function renderGroupSettingsModal(group) {
         h("h3", { text: "群设置" }),
         h("button", { type: "button", class: "ghost compact", text: "关闭", onclick: close }),
       ]),
-      h("div", { class: "group-settings-row" }, [
+      h("div", { class: "group-settings-summary" }, [
+        h("span", { text: `${activeMembers.length}/${GROUP_MAX_MEMBERS} 位成员` }),
+        h("span", { text: groupAutoTurnEnabled(group.id) ? "自主续聊开启" : "自主续聊关闭" }),
+        isPinnedConversation(group) ? h("span", { text: "已置顶" }) : null,
+      ]),
+      h("div", { class: "group-settings-title-row" }, [
         h("label", {}, [
           h("span", { text: "群名" }),
           input,
         ]),
         h("button", { type: "button", class: "compact", text: "保存", onclick: saveTitle }),
+      ]),
+      h("div", { class: "group-settings-actions" }, [
         h("button", {
           type: "button",
           class: "ghost compact",
@@ -1862,21 +2014,24 @@ function renderGroupSettingsModal(group) {
         ))),
         renderGroupRelationSummary(activeMembers),
       ]),
-      h("div", { class: "group-member-add" }, [
-        groupIsFull
-          ? h("small", { text: `\u7fa4\u804a\u6700\u591a ${GROUP_MAX_MEMBERS} \u4f4d\u6210\u5458` })
-          : candidatePersonas.length
-          ? memberSelect
-          : h("small", { text: "\u6ca1\u6709\u53ef\u52a0\u5165\u7684\u5176\u4ed6\u4eba\u683c\u3002" }),
-        h("button", {
-          type: "button",
-          class: "ghost compact",
-          text: "加入群聊",
-          disabled: !groupIsFull && candidatePersonas.length ? null : "disabled",
-          onclick: addMember,
-        }),
+      h("details", { class: "group-member-add-panel" }, [
+        h("summary", { text: "添加成员" }),
+        h("div", { class: "group-member-add" }, [
+          groupIsFull
+            ? h("small", { text: `\u7fa4\u804a\u6700\u591a ${GROUP_MAX_MEMBERS} \u4f4d\u6210\u5458` })
+            : candidatePersonas.length
+            ? memberSelect
+            : h("small", { text: "\u6ca1\u6709\u53ef\u52a0\u5165\u7684\u5176\u4ed6\u4eba\u683c\u3002" }),
+          h("button", {
+            type: "button",
+            class: "ghost compact",
+            text: "加入群聊",
+            disabled: !groupIsFull && candidatePersonas.length ? null : "disabled",
+            onclick: addMember,
+          }),
+        ]),
       ]),
-      h("label", { class: "group-auto-toggle" }, [
+      h("label", { class: "group-auto-toggle group-auto-toggle-card" }, [
         autoTurnToggle,
         h("span", { text: "自主续聊" }),
       ]),
@@ -3440,7 +3595,7 @@ async function maybeRequestGroupAutonomousTurn() {
     });
     if (data.degraded) {
       groupAutoCooldowns.set(cooldownKey, nowSeconds() + GROUP_AUTO_FAILURE_BACKOFF_SECONDS);
-      setGroupAutoStatus(data.error_message || "这轮自主续聊没有成功接上，稍后再试。", { renderNow: true });
+      setGroupAutoStatus(groupAutoDetailText(data.status_detail, data.error_message || "这轮自主续聊没有成功接上，稍后再试。"), { renderNow: true });
     }
     if (state.view !== "group" || Number(state.activeGroupConversationId) !== groupId) return;
     if ((data.messages || []).length) {
@@ -3455,7 +3610,7 @@ async function maybeRequestGroupAutonomousTurn() {
       renderShell();
       scrollChat();
     } else if (!data.degraded) {
-      setGroupAutoStatus(groupAutoSkipText(data.reason), { renderNow: true });
+      setGroupAutoStatus(groupAutoSkipText(data.reason, data.status_detail || {}), { renderNow: true });
     }
   } catch {
     groupAutoCooldowns.set(cooldownKey, nowSeconds() + GROUP_AUTO_FAILURE_BACKOFF_SECONDS);
@@ -3464,7 +3619,31 @@ async function maybeRequestGroupAutonomousTurn() {
   }
 }
 
-function groupAutoSkipText(reason) {
+function groupAutoDetailText(detail, fallback = "") {
+  const item = detail || {};
+  const reason = item.reason || "";
+  if (reason === "degraded") {
+    return fallback || `自主续聊没有成功接上：${item.degraded_reason || "unknown"}。`;
+  }
+  return groupAutoSkipText(reason, item) || fallback || "这轮没有合适的自主接话。";
+}
+
+function groupAutoSkipText(reason, detail = {}) {
+  const nextCheck = Number(detail.next_check_seconds || 0);
+  const age = Number(detail.latest_message_age_seconds || 0);
+  const status = detail.latest_message_reply_status || "";
+  if (reason === "last_user_turn_unresolved" && status) {
+    return `上一条用户消息仍是 ${status} 状态，已等待 ${Math.max(0, age)} 秒，暂不自主续聊。`;
+  }
+  if (reason === "too_fresh" && nextCheck > 0) {
+    return `刚刚才有人说话，还要约 ${nextCheck} 秒再判断是否接话。`;
+  }
+  if (reason === "turn_cap" && detail.persona_turns_since_user !== undefined) {
+    return `这一轮已有 ${detail.persona_turns_since_user} 条接话，先保持安静。`;
+  }
+  if (reason === "reused" && detail.message_count !== undefined) {
+    return `这轮自主续聊已处理过，共 ${detail.message_count} 条。`;
+  }
   const labels = {
     empty: "还没有群聊消息，自主续聊暂不启动。",
     last_user_turn_unresolved: "上一条用户消息还没稳定落地，暂不自主续聊。",
@@ -3631,6 +3810,8 @@ function renderMessageList(messages) {
       nodes.push(renderFailedReplyNotice(message));
     } else if (isStalledReply(message)) {
       nodes.push(renderStalledReplyNotice(message));
+    } else if (isPendingReply(message)) {
+      nodes.push(renderPendingReplyNotice(message));
     }
   }
   return nodes;
@@ -3788,6 +3969,25 @@ function isStalledReply(message) {
     && Boolean(message.client_message_id)
     && nowSeconds() - Number(message.created_at || 0) >= 120
   );
+}
+
+function isPendingReply(message) {
+  return (
+    message.role === "user"
+    && message.reply_status === "generating"
+    && Boolean(message.client_message_id)
+    && nowSeconds() - Number(message.created_at || 0) < 120
+  );
+}
+
+function renderPendingReplyNotice(userMessage) {
+  return renderMessage({
+    role: "notice",
+    content: "这句话已经送出，正在等 TA 回复。",
+    status: "pending",
+    local_id: `pending-${userMessage.id}`,
+    created_at: userMessage.created_at,
+  });
 }
 
 function renderStalledReplyNotice(userMessage) {
@@ -4124,6 +4324,7 @@ function resetClientState() {
     sending: false,
     sendingStartedAt: 0,
     networkOffline: typeof navigator !== "undefined" && navigator.onLine === false,
+    error: "",
   };
 }
 
@@ -4136,12 +4337,20 @@ function scrollChat() {
 
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
-  if (state.profileOpen || state.personaPanelOpen || state.threadPanelOpen || state.deletedPanelOpen || state.groupCreateOpen) {
+  if (
+    state.profileOpen
+    || state.personaPanelOpen
+    || state.threadPanelOpen
+    || state.deletedPanelOpen
+    || state.groupCreateOpen
+    || state.groupSettingsOpen
+  ) {
     state.profileOpen = false;
     state.personaPanelOpen = false;
     state.threadPanelOpen = false;
     state.deletedPanelOpen = false;
     state.groupCreateOpen = false;
+    state.groupSettingsOpen = false;
     state.editingPersona = false;
     renderShell();
     return;
@@ -4174,7 +4383,10 @@ window.addEventListener("online", () => {
   loadMainData().then(() => {
     renderShell();
     scrollChat();
-  }).catch(() => {});
+  }).catch((err) => {
+    state.error = err.message;
+    renderShell();
+  });
 });
 
 if ("serviceWorker" in navigator) {

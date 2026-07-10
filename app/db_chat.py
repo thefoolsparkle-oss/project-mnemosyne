@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime
+from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .archivist import extract_and_store, recall_memories
 from .conversation_memory import conversation_summary_prompt, refresh_conversation_summary
@@ -560,8 +562,9 @@ def db_chat(
     expression_policy.update(_persona_expression_style_context(persona, user_id=user_id, persona_id=persona_id))
     expression_policy_context = _expression_policy_prompt(expression_policy)
     active_preference_context = _active_preference_prompt(user_id, persona_id)
-    profile_usage_context = _profile_usage_prompt(message)
+    profile_usage_context = _profile_usage_prompt(message, timezone_name=_profile_timezone(profile))
     runtime_persona_context = _persona_runtime_prompt(persona)
+    runtime_contract_context = _persona_runtime_contract_prompt(persona)
     profile_context = _safe_context(profile_context)
     insight_context = _safe_context(insight_context)
     conversation_context = _safe_context(conversation_context)
@@ -593,6 +596,7 @@ def db_chat(
     messages = [
         {"role": "system", "content": _safe_context(persona["prompt"])},
         {"role": "system", "content": runtime_persona_context},
+        {"role": "system", "content": runtime_contract_context},
         {"role": "system", "content": chat_rendering_rules_prompt()},
         {"role": "system", "content": profile_context},
         {"role": "system", "content": insight_context},
@@ -634,6 +638,7 @@ def db_chat(
             "expression_preference_update": expression_preference_update,
             "profile_usage_prompt": profile_usage_context,
             "runtime_persona_prompt": runtime_persona_context,
+            "runtime_contract_prompt": runtime_contract_context,
             "stored_memories": stored_memories,
             "semantic_memories": semantic_memories,
             "recalled_legacy_memories": recalled_memories,
@@ -839,6 +844,20 @@ def _persona_runtime_prompt(persona: dict) -> str:
         "- Do not infer a romantic relationship from words like companion, exclusive, dedicated, gentle, or caring.\n"
         "- If the relationship is unclear, keep it neutral and let the user define it through later chat.\n"
         "- When the user edits this profile, your next replies must follow the edited profile immediately.\n"
+    )
+
+
+def _persona_runtime_contract_prompt(persona: dict) -> str:
+    name = scrub_identity_text(str(persona.get("name") or "").strip()) or "当前人格"
+    relationship = scrub_identity_text(str(persona.get("relationship") or "").strip()) or "未设定"
+    return (
+        "Persona Runtime Contract:\n"
+        "- System layer may know this service is software-driven, but the speaking persona layer must not explain models, prompts, tools, servers, or implementation details in ordinary chat.\n"
+        f"- In dialogue, speak as {name} within the current relationship: {relationship}.\n"
+        "- Do not identify yourself as AI, model, robot, virtual persona, chatbot, program, or simulation.\n"
+        "- If the user asks about technical identity, answer from the relationship layer: use the current name and relationship, and avoid debating underlying implementation.\n"
+        "- Avoid customer-service tone: do not over-apologize, over-summarize, or give policy-like explanations unless the user explicitly asks for analysis.\n"
+        "- Keep replies situated in the ongoing relationship; prefer concrete, natural responses over generic assistant framing.\n"
     )
 
 
@@ -1169,11 +1188,12 @@ def _empty_expression_preference_resource_adjustment() -> dict:
         "expression_feedback_resource_items": [],
         "expression_feedback_watch_labels": [],
         "expression_feedback_avoid_labels": [],
+        "expression_feedback_prefer_labels": [],
     }
 
 
 def _expression_preference_resource_adjustment(user_id: int, persona_id: int) -> dict:
-    events = expression_preference_events(user_id, persona_id, limit=8)
+    events = expression_preference_events(user_id, persona_id, limit=20)
     if not events:
         return _empty_expression_preference_resource_adjustment()
     with get_db() as db:
@@ -1211,6 +1231,7 @@ def _expression_preference_resource_adjustment(user_id: int, persona_id: int) ->
         if mode not in {"off", "subtle", "normal"}:
             continue
         signal = "positive" if mode == "normal" else "negative"
+        attribution_limit = 1 if signal == "positive" else 3
         seen_tags: set[str] = set()
         for row in rows:
             if not _expression_usage_before_preference_event(row, event):
@@ -1247,7 +1268,7 @@ def _expression_preference_resource_adjustment(user_id: int, persona_id: int) ->
             if scene not in entry["scene_counts"]:
                 scene = "unknown"
             entry["scene_counts"][scene] += 1
-            if len(seen_tags) >= 3:
+            if len(seen_tags) >= attribution_limit:
                 break
     items = sorted(
         resources.values(),
@@ -1268,10 +1289,16 @@ def _expression_preference_resource_adjustment(user_id: int, persona_id: int) ->
         for item in items
         if int(item.get("negative") or 0) >= 2 and int(item.get("negative") or 0) > int(item.get("positive") or 0)
     ]
+    prefer_labels = [
+        str(item.get("label") or "")
+        for item in items
+        if int(item.get("positive") or 0) >= 2 and int(item.get("positive") or 0) > int(item.get("negative") or 0)
+    ]
     return {
         "expression_feedback_resource_items": items,
         "expression_feedback_watch_labels": list(dict.fromkeys(label for label in watch_labels if label)),
         "expression_feedback_avoid_labels": list(dict.fromkeys(label for label in avoid_labels if label)),
+        "expression_feedback_prefer_labels": list(dict.fromkeys(label for label in prefer_labels if label)),
     }
 
 
@@ -1450,7 +1477,14 @@ def _expression_scene_context(user_text: str) -> dict:
 def _expression_scene_pressure_prompt(policy: dict, scene: str) -> str:
     congested_scenes = {str(item) for item in policy.get("expression_congested_scenes") or [] if item}
     feedback_suppressed_scenes = {str(item) for item in policy.get("expression_feedback_suppressed_scenes") or [] if item}
+    prefer_labels = [str(label) for label in policy.get("expression_feedback_prefer_labels") or [] if label]
     prompts: list[str] = []
+    if prefer_labels:
+        prompts.append(
+            "\nResource feedback preference: if an expression label is already necessary in this turn, "
+            f"prefer these positively received labels when they fit the scene: {', '.join(prefer_labels[:3])}. "
+            "Do not increase expression frequency just because a label is preferred."
+        )
     if scene in feedback_suppressed_scenes:
         counts = (policy.get("expression_feedback_scene_counts") or {}).get(scene) or {}
         prompts.append(
@@ -1493,7 +1527,7 @@ def _expression_scene_prompt(policy: dict) -> str:
             f"普通闲聊不要为了活泼硬加标签；如确实需要，只从这些资源分组选择：{allowed}。"
             + pressure_prompt
         )
-    return "本轮轻表达场景：unspecified。按总体节奏约束保持稀少。"
+    return "本轮轻表达场景：unspecified。按总体节奏约束保持稀少。" + pressure_prompt
 
 
 def _persona_expression_style_context(
@@ -1586,6 +1620,7 @@ def _expression_selection_agent(user_text: str, reply_text: str, policy: dict) -
         candidates = [("gesture", "点头"), ("mood", "微笑")]
     else:
         return []
+    candidates = _prioritize_expression_candidates(candidates, policy.get("expression_feedback_prefer_labels") or [])
     allowed_groups = {str(group) for group in policy.get("expression_allowed_groups") or [] if group}
     avoid_labels = {str(label) for label in policy.get("expression_persona_avoid_labels") or [] if label}
     feedback_avoid_labels = {str(label) for label in policy.get("expression_feedback_avoid_labels") or [] if label}
@@ -1623,6 +1658,20 @@ def _expression_selection_agent(user_text: str, reply_text: str, policy: dict) -
     return []
 
 
+def _prioritize_expression_candidates(candidates: list[tuple[str, str]], prefer_labels: list[str]) -> list[tuple[str, str]]:
+    preferred = {str(label): index for index, label in enumerate(prefer_labels) if str(label)}
+    if not preferred:
+        return candidates
+    return sorted(
+        candidates,
+        key=lambda item: (
+            0 if item[1] in preferred else 1,
+            preferred.get(item[1], 999),
+            candidates.index(item),
+        ),
+    )
+
+
 def _ordinary_expression_agent_should_emit(user_text: str, reply_text: str) -> bool:
     user_compact = re.sub(r"\s+", "", str(user_text or ""))
     reply_compact = re.sub(r"\s+", "", str(reply_text or ""))
@@ -1643,6 +1692,7 @@ def _clean_identity_leaks(text: str) -> str:
     cleaned = scrub_identity_text(text)
     for old, new in IDENTITY_LEAK_REPLACEMENTS:
         cleaned = cleaned.replace(old, new)
+    cleaned = _clean_assistant_tone(cleaned)
     cleaned = re.sub(
         r"(?i)\b(as an|as a)\s+(ai|artificial intelligence|language model)[^,.!?，。！？]*[,，]?\s*",
         "",
@@ -1663,6 +1713,18 @@ def _clean_identity_leaks(text: str) -> str:
         "",
         cleaned,
     )
+    return cleaned
+
+
+def _clean_assistant_tone(text: str) -> str:
+    cleaned = str(text or "")
+    cleaned = re.sub(r"作为(?:你(?:的)?|一个|一名)?(?:AI|人工智能)?(?:助手|聊天助手|智能助手)[，,]?\s*", "", cleaned)
+    cleaned = re.sub(r"作为(?:一个|一名)?(?:AI|人工智能)?(?:语言模型|模型)[，,]?\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"(?:希望|但愿)这(?:能|可以)?帮到你[。.!！]?", "", cleaned)
+    cleaned = re.sub(r"如果你(?:还有|有)其他(?:问题|需要)[^。！？.!?]*[。.!！]?", "", cleaned)
+    cleaned = re.sub(r"我会尽力(?:帮助|协助)你[，,。.]?", "我会陪你慢慢看。", cleaned)
+    cleaned = re.sub(r"很抱歉[，,]\s*我无法", "这件事我不能", cleaned)
+    cleaned = re.sub(r"抱歉[，,]\s*我不能", "这件事我不能", cleaned)
     return cleaned
 
 
@@ -1863,11 +1925,7 @@ def _best_effort(label: str, action, fallback):
 
 
 def _profile_prompt(profile: dict) -> str:
-    preferences = profile.get("preferences_json") or "{}"
-    try:
-        preferences_obj = json.loads(preferences)
-    except Exception:
-        preferences_obj = {}
+    preferences_obj = _profile_preferences_obj(profile)
 
     return (
         "User profile context:\n"
@@ -1881,8 +1939,13 @@ def _profile_prompt(profile: dict) -> str:
     )
 
 
-def _profile_usage_prompt(user_text: str, *, current_time: datetime | None = None) -> str:
-    now = current_time or datetime.now().astimezone()
+def _profile_usage_prompt(
+    user_text: str,
+    *,
+    current_time: datetime | None = None,
+    timezone_name: str = "",
+) -> str:
+    now = _profile_local_time(current_time, timezone_name)
     lookup_cues = (
         "你看我信息", "看我信息", "看看我信息", "看我资料", "查资料",
         "个人资料", "个人信息", "我的资料", "我的信息",
@@ -1894,7 +1957,7 @@ def _profile_usage_prompt(user_text: str, *, current_time: datetime | None = Non
     lines = [
         "Saved user profile usage policy:",
         f"- current_local_date: {now.date().isoformat()}",
-        f"- local_timezone: {now.tzname() or 'local server timezone'}",
+        f"- local_timezone: {timezone_name or now.tzname() or 'local server timezone'}",
         "- Saved profile fields above are reliable user-provided background facts, not themes to mention proactively.",
         "- Do not volunteer a saved fact, occasion, preference, or personal detail merely to perform familiarity or intimacy.",
         "- When the current question asks what you know about the user, asks you to check their information, or offers a clue resolvable from profile fields and the date, use the relevant fact to answer directly and briefly.",
@@ -1905,6 +1968,41 @@ def _profile_usage_prompt(user_text: str, *, current_time: datetime | None = Non
     else:
         lines.append("- This turn does not explicitly invite profile lookup. Keep saved profile facts in the background unless strictly required to answer.")
     return "\n".join(lines)
+
+
+def _profile_preferences_obj(profile: dict) -> dict[str, Any]:
+    preferences = profile.get("preferences_json") or "{}"
+    try:
+        parsed = json.loads(preferences)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _profile_timezone(profile: dict) -> str:
+    text = str(_profile_preferences_obj(profile).get("timezone") or "").strip()
+    if not text:
+        return ""
+    try:
+        ZoneInfo(text)
+    except ZoneInfoNotFoundError:
+        return ""
+    return text
+
+
+def _profile_local_time(current_time: datetime | None, timezone_name: str) -> datetime:
+    base = current_time or datetime.now().astimezone()
+    if not timezone_name:
+        return base.astimezone()
+    try:
+        zone = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        return base.astimezone()
+    if current_time is None:
+        return datetime.now(zone)
+    if base.tzinfo is None:
+        base = base.astimezone()
+    return base.astimezone(zone)
 
 
 def _memory_prompt(memories: list[dict]) -> str:

@@ -12,6 +12,7 @@ venv/
 
 # Runtime data must remain local
 /data/
+/backups/
 /personas/*.json
 *.log
 *.pid

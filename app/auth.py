@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import secrets
 import sqlite3
 import shutil
@@ -145,6 +146,13 @@ def cleanup_expired_guest_users(ts: int | None = None) -> int:
         if user_ids:
             placeholders = ",".join("?" for _ in user_ids)
             db.execute(f"DELETE FROM users WHERE id IN ({placeholders})", user_ids)
+            db.execute(
+                """
+                INSERT INTO guest_cleanup_events (deleted_count, user_ids_json, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (len(user_ids), json.dumps(user_ids, ensure_ascii=False), ts),
+            )
 
     for user_id in user_ids:
         shutil.rmtree(UPLOAD_ROOT / str(user_id), ignore_errors=True)
