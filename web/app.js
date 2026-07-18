@@ -402,6 +402,7 @@ async function loadGroupMessages(groupConversationId) {
 
 function returnToHome() {
   clearGroupAutoPrompt();
+  resetGroupAutoStatus();
   state.view = "home";
   state.activePersona = null;
   state.activeConversationId = null;
@@ -425,6 +426,7 @@ function isMobileShell() {
 
 async function openConversationItem(item) {
   clearGroupAutoPrompt();
+  resetGroupAutoStatus();
   const persona = state.personas.find((entry) => Number(entry.id) === Number(item.persona_id));
   if (persona) state.activePersona = persona;
   state.activeConversationId = item.id;
@@ -442,6 +444,7 @@ async function openConversationItem(item) {
 }
 
 async function openGroupConversationItem(item) {
+  resetGroupAutoStatus();
   state.activeGroupConversation = item;
   state.activeGroupConversationId = item.id;
   state.activePersona = null;
@@ -460,6 +463,7 @@ async function openGroupConversationItem(item) {
 
 async function openPersonaItem(persona) {
   clearGroupAutoPrompt();
+  resetGroupAutoStatus();
   state.activePersona = persona;
   state.activeGroupConversationId = null;
   state.activeGroupConversation = null;
@@ -1996,39 +2000,42 @@ function renderGroupSettingsModal(group) {
         }),
         h("button", { type: "button", class: "ghost compact danger-soft", text: "移到历史", onclick: archiveGroup }),
       ]),
-      h("div", { class: "group-settings-members" }, [
-        h("strong", { text: "群成员" }),
-        h("div", { class: "group-member-strip" }, activeMembers.map((member) => (
-          h("span", { class: "group-member-pill" }, [
-            avatar(member.display_name || member.name || "TA", member.avatar_url),
-            h("span", { text: member.display_name || member.name || "TA" }),
+      h("details", { class: "group-members-details" }, [
+        h("summary", { text: `成员管理（${activeMembers.length}/${GROUP_MAX_MEMBERS}）` }),
+        h("div", { class: "group-settings-members" }, [
+          h("strong", { text: "群成员" }),
+          h("div", { class: "group-member-strip" }, activeMembers.map((member) => (
+            h("span", { class: "group-member-pill" }, [
+              avatar(member.display_name || member.name || "TA", member.avatar_url),
+              h("span", { text: member.display_name || member.name || "TA" }),
+              h("button", {
+                type: "button",
+                class: "group-member-remove",
+                title: activeMembers.length <= 2 ? "群聊至少保留两位成员" : "移出群聊",
+                text: "×",
+                disabled: activeMembers.length <= 2 ? "disabled" : null,
+                onclick: () => removeMember(member.persona_id),
+              }),
+            ])
+          ))),
+          renderGroupRelationSummary(activeMembers),
+        ]),
+        h("details", { class: "group-member-add-panel" }, [
+          h("summary", { text: "添加成员" }),
+          h("div", { class: "group-member-add" }, [
+            groupIsFull
+              ? h("small", { text: `\u7fa4\u804a\u6700\u591a ${GROUP_MAX_MEMBERS} \u4f4d\u6210\u5458` })
+              : candidatePersonas.length
+              ? memberSelect
+              : h("small", { text: "\u6ca1\u6709\u53ef\u52a0\u5165\u7684\u5176\u4ed6\u4eba\u683c\u3002" }),
             h("button", {
               type: "button",
-              class: "group-member-remove",
-              title: activeMembers.length <= 2 ? "群聊至少保留两位成员" : "移出群聊",
-              text: "×",
-              disabled: activeMembers.length <= 2 ? "disabled" : null,
-              onclick: () => removeMember(member.persona_id),
+              class: "ghost compact",
+              text: "加入群聊",
+              disabled: !groupIsFull && candidatePersonas.length ? null : "disabled",
+              onclick: addMember,
             }),
-          ])
-        ))),
-        renderGroupRelationSummary(activeMembers),
-      ]),
-      h("details", { class: "group-member-add-panel" }, [
-        h("summary", { text: "添加成员" }),
-        h("div", { class: "group-member-add" }, [
-          groupIsFull
-            ? h("small", { text: `\u7fa4\u804a\u6700\u591a ${GROUP_MAX_MEMBERS} \u4f4d\u6210\u5458` })
-            : candidatePersonas.length
-            ? memberSelect
-            : h("small", { text: "\u6ca1\u6709\u53ef\u52a0\u5165\u7684\u5176\u4ed6\u4eba\u683c\u3002" }),
-          h("button", {
-            type: "button",
-            class: "ghost compact",
-            text: "加入群聊",
-            disabled: !groupIsFull && candidatePersonas.length ? null : "disabled",
-            onclick: addMember,
-          }),
+          ]),
         ]),
       ]),
       h("label", { class: "group-auto-toggle group-auto-toggle-card" }, [
@@ -3274,6 +3281,10 @@ function setGroupAutoStatus(message, { renderNow = false } = {}) {
   }
 }
 
+function resetGroupAutoStatus() {
+  state.groupAutoStatus = "";
+}
+
 function scheduleGroupAutoPrompt(groupId, delayMs = GROUP_AUTO_PROMPT_DELAY_MS) {
   const id = Number(groupId);
   if (!id || !groupAutoTurnEnabled(id)) {
@@ -4309,6 +4320,7 @@ function resetClientState() {
     messages: [],
     groupMessages: [],
     view: "chat",
+    groupAutoStatus: "",
     editingPersona: false,
     profileOpen: false,
     personaPanelOpen: false,

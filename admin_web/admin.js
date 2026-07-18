@@ -24,6 +24,7 @@ let state = {
   proactiveContactSummary: null,
   guestSummary: null,
   serverErrors: [],
+  serverErrorSummary: null,
   growthDemo: null,
   expressionAssetFilter: "all",
   runningEval: false,
@@ -135,6 +136,7 @@ async function loadReview() {
     state.proactiveContactSummary = null;
     state.guestSummary = null;
     state.serverErrors = [];
+    state.serverErrorSummary = null;
     return;
   }
   const [data, traceData, expressionData, assetData, revisionData, growthData, versionData, evalData, llmData, routeData, healthData, proactiveData, proactiveEventData, guestData, serverErrorData] = await Promise.all([
@@ -170,6 +172,7 @@ async function loadReview() {
   state.proactiveContactSummary = proactiveEventData.summary || null;
   state.guestSummary = guestData;
   state.serverErrors = serverErrorData.errors || [];
+  state.serverErrorSummary = serverErrorData.summary || null;
 }
 
 function render() {
@@ -342,7 +345,7 @@ function renderReview() {
     card("会话滚动摘要", renderConversationSummaries(review.conversation_summaries || []), "wide"),
     card("人格调整建议", renderRevisionPanel(), "wide"),
     card("轻表达使用", renderExpressionUsage(state.expressionUsage), "wide"),
-    card("服务错误监控", renderServerErrors(state.serverErrors), "wide"),
+    card("服务错误监控", renderServerErrors(state.serverErrors, state.serverErrorSummary), "wide"),
     card("最近注入上下文", renderTraceList(state.traces || []), "wide"),
     card("当前事实", renderMemoryList(review.facts || []), "wide"),
     card("当前关系", renderMemoryList(review.relations || []), "wide"),
@@ -421,16 +424,39 @@ function renderExpressionUsage(data) {
   ]);
 }
 
-function renderServerErrors(items = []) {
+function renderServerErrors(items = [], summary = null) {
   const list = Array.isArray(items) ? items : [];
-  if (!list.length) return h("p", { class: "muted", text: "暂无服务错误事件。" });
-  return h("div", { class: "llm-calls" }, list.map((item) => h("article", { class: "llm-call failed" }, [
+  const kindItems = Array.isArray(summary?.by_kind) ? summary.by_kind : [];
+  const sourceItems = Array.isArray(summary?.by_source) ? summary.by_source : [];
+  const children = [
+    h("div", { class: "expression-usage-counts" }, [
+      h("small", { text: `最近 ${summary?.window_days || 30} 天错误事件：${summary?.total || 0}` }),
+      kindItems.length
+        ? h("div", { class: "expression-usage-tags" }, kindItems.slice(0, 6).map((item) => h("span", {
+          class: "expression-usage-tag disabled watch",
+          text: `类型 ${item.event_kind || "error"} × ${item.count || 0}`,
+        })))
+        : null,
+      sourceItems.length
+        ? h("div", { class: "expression-usage-tags" }, sourceItems.slice(0, 6).map((item) => h("span", {
+          class: "expression-usage-tag disabled watch",
+          text: `来源 ${item.source || "unknown"} × ${item.count || 0}`,
+        })))
+        : null,
+    ]),
+  ];
+  if (!list.length) {
+    children.push(h("p", { class: "muted", text: "暂无服务错误事件。" }));
+    return h("div", { class: "llm-calls" }, children);
+  }
+  children.push(...list.map((item) => h("article", { class: "llm-call failed" }, [
     h("div", { class: "memory-title" }, [
       h("strong", { text: `${item.event_kind || "error"} / ${item.source || "unknown"}` }),
       h("small", { text: item.created_at ? formatTs(item.created_at) : "-" }),
     ]),
     item.error_text ? h("pre", { text: item.error_text }) : null,
   ])));
+  return h("div", { class: "llm-calls" }, children);
 }
 
 function renderExpressionResourceFeedback(items) {

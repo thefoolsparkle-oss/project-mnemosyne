@@ -163,6 +163,16 @@ except Exception as exc:
 
 app = FastAPI(title="忆界树 / Project Mnemosyne")
 
+
+@app.middleware("http")
+async def record_unhandled_request_error(request: Request, call_next):
+    try:
+        return await call_next(request)
+    except Exception as exc:
+        source = f"{request.method} {request.url.path}"
+        _record_server_error_event("request_exception", source, f"{type(exc).__name__}: {exc}")
+        raise
+
 PERSONA_OPTIONS = {
     "atmosphere": [
         "\u6e29\u67d4\u966a\u4f34",
@@ -1882,6 +1892,7 @@ def admin_llm_health(admin: dict = Depends(current_admin), limit: int = 120):
 @app.get("/api/admin/server-errors")
 def admin_server_errors(admin: dict = Depends(current_admin), limit: int = 20):
     limit = max(1, min(int(limit or 20), 100))
+    cutoff = now_ts() - 30 * 24 * 60 * 60
     with get_db() as db:
         rows = db.execute(
             """
@@ -1892,7 +1903,44 @@ def admin_server_errors(admin: dict = Depends(current_admin), limit: int = 20):
             """,
             (limit,),
         ).fetchall()
-    return {"errors": [dict_from_row(row) for row in rows]}
+        total_30d = int(
+            db.execute(
+                "SELECT COUNT(*) AS total FROM server_error_events WHERE created_at >= ?",
+                (cutoff,),
+            ).fetchone()["total"]
+            or 0
+        )
+        by_kind = db.execute(
+            """
+            SELECT event_kind, COUNT(*) AS count, MAX(created_at) AS last_at
+            FROM server_error_events
+            WHERE created_at >= ?
+            GROUP BY event_kind
+            ORDER BY count DESC, last_at DESC
+            LIMIT 8
+            """,
+            (cutoff,),
+        ).fetchall()
+        by_source = db.execute(
+            """
+            SELECT source, COUNT(*) AS count, MAX(created_at) AS last_at
+            FROM server_error_events
+            WHERE created_at >= ?
+            GROUP BY source
+            ORDER BY count DESC, last_at DESC
+            LIMIT 8
+            """,
+            (cutoff,),
+        ).fetchall()
+    return {
+        "errors": [dict_from_row(row) for row in rows],
+        "summary": {
+            "window_days": 30,
+            "total": total_30d,
+            "by_kind": [dict_from_row(row) for row in by_kind],
+            "by_source": [dict_from_row(row) for row in by_source],
+        },
+    }
 
 
 def _estimate_tokens_from_chars(value: int) -> int:

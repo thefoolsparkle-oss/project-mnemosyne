@@ -58,6 +58,13 @@ if ($IncludeLogs) {
     }
 }
 
+$checksums = [ordered]@{}
+Get-ChildItem -LiteralPath $backupDir -File -Recurse | Sort-Object FullName | ForEach-Object {
+    $relativePath = $_.FullName.Substring($backupDir.Length).TrimStart("\", "/")
+    $normalizedPath = $relativePath.Replace("\", "/")
+    $checksums[$normalizedPath] = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
 $manifest = [ordered]@{
     schema = "mnemosyne_local_backup_v1"
     created_at = (Get-Date).ToString("o")
@@ -66,6 +73,7 @@ $manifest = [ordered]@{
     include_logs = [bool]$IncludeLogs
     included = @($included)
     missing = @($missing)
+    checksums = $checksums
     notes = @(
         "This local backup intentionally excludes .env files and API keys.",
         "For a live SQLite database, app.db-wal and app.db-shm are copied when present."

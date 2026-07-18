@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import tempfile
 import sys
@@ -7,6 +8,7 @@ from http.cookies import SimpleCookie
 from pathlib import Path
 
 from fastapi import BackgroundTasks, HTTPException, Response
+from starlette.requests import Request
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -1069,10 +1071,41 @@ def verify_profile_proactive_preferences(server, user_id: int) -> None:
 
 def verify_admin_server_error_monitor(server, user_id: int) -> None:
     server._record_server_error_event("test", "phase1", "synthetic server error")
+
+    async def failing_handler(_request):
+        raise RuntimeError("synthetic request failure")
+
+    request = Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": "/phase1-synthetic-error",
+            "raw_path": b"/phase1-synthetic-error",
+            "query_string": b"",
+            "headers": [],
+            "client": ("127.0.0.1", 0),
+            "server": ("testserver", 80),
+        }
+    )
+    try:
+        asyncio.run(server.record_unhandled_request_error(request, failing_handler))
+        raise AssertionError("request error middleware should re-raise the original exception")
+    except RuntimeError as exc:
+        assert str(exc) == "synthetic request failure"
+
     report = server.admin_server_errors({"id": user_id, "role": "admin"}, limit=3)
-    assert report["errors"][0]["event_kind"] == "test"
-    assert report["errors"][0]["source"] == "phase1"
-    assert "synthetic server error" in report["errors"][0]["error_text"]
+    assert report["errors"][0]["event_kind"] == "request_exception"
+    assert report["errors"][0]["source"] == "GET /phase1-synthetic-error"
+    assert "RuntimeError: synthetic request failure" in report["errors"][0]["error_text"]
+    assert any(item["event_kind"] == "test" for item in report["errors"])
+    assert report["summary"]["window_days"] == 30
+    assert report["summary"]["total"] >= 2
+    assert any(item["event_kind"] == "test" and item["count"] >= 1 for item in report["summary"]["by_kind"])
+    assert any(item["event_kind"] == "request_exception" and item["count"] >= 1 for item in report["summary"]["by_kind"])
+    assert any(item["source"] == "phase1" and item["count"] >= 1 for item in report["summary"]["by_source"])
+    assert any(item["source"] == "GET /phase1-synthetic-error" and item["count"] >= 1 for item in report["summary"]["by_source"])
 
 
 def verify_frontend_home_navigation_state() -> None:
@@ -1082,6 +1115,8 @@ def verify_frontend_home_navigation_state() -> None:
     assert 'if (state.view === "home") {' in source
     assert "state.activePersona = null;" in source
     assert "state.activeGroupConversationId = null;" in source
+    assert "function resetGroupAutoStatus()" in source
+    assert "resetGroupAutoStatus();" in source
     assert 'if (state.view !== "chat" || !state.activePersona) return;' in source
     assert 'disabled: state.sending ? "disabled" : null' in source
     assert "完成后可继续输入" in source
@@ -1097,6 +1132,8 @@ def verify_frontend_home_navigation_state() -> None:
     assert "|| state.groupSettingsOpen" in source
     assert "state.groupSettingsOpen = false;" in source
     assert "group-settings-summary" in source
+    assert "group-members-details" in source
+    assert "成员管理" in source
     assert "group-member-add-panel" in source
     assert "group-auto-toggle group-auto-toggle-card" in source
     assert "function groupAutoDetailText(detail" in source
@@ -1130,6 +1167,9 @@ def verify_frontend_home_navigation_state() -> None:
     assert "/api/admin/server-errors" in admin_source
     assert "服务错误监控" in admin_source
     assert "暂无服务错误事件" in admin_source
+    assert "最近 ${summary?.window_days || 30} 天错误事件" in admin_source
+    assert "类型 ${item.event_kind || \"error\"}" in admin_source
+    assert "来源 ${item.source || \"unknown\"}" in admin_source
     assert "缃" not in source
     assert "澶" not in source
 

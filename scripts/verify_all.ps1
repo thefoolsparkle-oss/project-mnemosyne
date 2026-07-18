@@ -57,6 +57,97 @@ function Test-PowerShellScriptSyntax {
     }
 }
 
+function Assert-Condition {
+    param(
+        [bool]$Condition,
+        [string]$Message
+    )
+    if (-not $Condition) {
+        throw $Message
+    }
+}
+
+function Invoke-BackupSmokeTest {
+    $tempRoot = [System.IO.Path]::GetTempPath()
+    $backupOutput = Join-Path $tempRoot ("mnemosyne-backup-smoke-" + [guid]::NewGuid().ToString("N"))
+    $restoreOutput = Join-Path $tempRoot ("mnemosyne-backup-restore-" + [guid]::NewGuid().ToString("N"))
+    $resolvedOutput = $null
+    $resolvedRestore = $null
+    try {
+        & powershell.exe -ExecutionPolicy Bypass -File "scripts\backup_local_data.ps1" -OutputDir $backupOutput
+        if ($LASTEXITCODE -ne 0) {
+            throw "backup_local_data.ps1 failed with exit code $LASTEXITCODE."
+        }
+
+        $resolvedOutput = (Resolve-Path -LiteralPath $backupOutput).Path
+        Assert-Condition $resolvedOutput.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase) "Backup smoke output escaped the temp directory."
+
+        $latest = Get-ChildItem -LiteralPath $backupOutput -Directory |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+        Assert-Condition ($null -ne $latest) "Backup smoke did not create a backup directory."
+
+        $manifestPath = Join-Path $latest.FullName "manifest.json"
+        Assert-Condition (Test-Path -LiteralPath $manifestPath) "Backup smoke did not create manifest.json."
+
+        $manifest = Get-Content -Raw -Encoding utf8 -LiteralPath $manifestPath | ConvertFrom-Json
+        Assert-Condition ($manifest.schema -eq "mnemosyne_local_backup_v1") "Backup manifest schema is unexpected."
+        Assert-Condition (($manifest.notes -join " ") -match "excludes \.env files and API keys") "Backup manifest lost the sensitive-file exclusion note."
+
+        foreach ($required in @("config.yaml", "README.md", "SYSTEM_PLAN.md")) {
+            Assert-Condition ($manifest.included -contains $required) "Backup manifest missing required item: $required."
+            Assert-Condition (Test-Path -LiteralPath (Join-Path $latest.FullName $required)) "Backup output missing required file: $required."
+            $checksum = $manifest.checksums.PSObject.Properties[$required].Value
+            Assert-Condition ($checksum -match "^[0-9a-f]{64}$") "Backup manifest missing checksum for required file: $required."
+        }
+
+        & powershell.exe -ExecutionPolicy Bypass -File "scripts\verify_local_backup.ps1" -BackupDir $latest.FullName
+        if ($LASTEXITCODE -ne 0) {
+            throw "verify_local_backup.ps1 rejected the generated backup with exit code $LASTEXITCODE."
+        }
+
+        $null = New-Item -ItemType Directory -Force -Path $restoreOutput
+        Copy-Item -Path (Join-Path $latest.FullName "*") -Destination $restoreOutput -Recurse -Force
+        $resolvedRestore = (Resolve-Path -LiteralPath $restoreOutput).Path
+        Assert-Condition $resolvedRestore.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase) "Backup restore rehearsal escaped the temp directory."
+        & powershell.exe -ExecutionPolicy Bypass -File "scripts\verify_local_backup.ps1" -BackupDir $resolvedRestore
+        if ($LASTEXITCODE -ne 0) {
+            throw "verify_local_backup.ps1 rejected the temporary restore rehearsal with exit code $LASTEXITCODE."
+        }
+
+        Set-Content -LiteralPath (Join-Path $resolvedRestore "README.md") -Value "tampered backup smoke file" -Encoding utf8
+        $previousErrorActionPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            $null = & powershell.exe -ExecutionPolicy Bypass -File "scripts\verify_local_backup.ps1" -BackupDir $resolvedRestore 2>&1
+            $tamperExitCode = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
+        if ($tamperExitCode -eq 0) {
+            throw "verify_local_backup.ps1 accepted a tampered restore rehearsal."
+        }
+        $global:LASTEXITCODE = 0
+    } finally {
+        if ($resolvedRestore -and $resolvedRestore.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+            Remove-Item -LiteralPath $resolvedRestore -Recurse -Force -ErrorAction SilentlyContinue
+        } elseif (Test-Path -LiteralPath $restoreOutput) {
+            $restoreCandidate = (Resolve-Path -LiteralPath $restoreOutput).Path
+            if ($restoreCandidate.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                Remove-Item -LiteralPath $restoreCandidate -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+        if ($resolvedOutput -and $resolvedOutput.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+            Remove-Item -LiteralPath $resolvedOutput -Recurse -Force -ErrorAction SilentlyContinue
+        } elseif (Test-Path -LiteralPath $backupOutput) {
+            $candidate = (Resolve-Path -LiteralPath $backupOutput).Path
+            if ($candidate.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                Remove-Item -LiteralPath $candidate -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
+
 $Python = Resolve-PythonExecutable $Python
 Write-Host "Using Python: $Python"
 
@@ -77,9 +168,11 @@ try {
             "scripts\start_local_server.ps1",
             "scripts\start_remote_tunnel.ps1",
             "scripts\stop_project_services.ps1",
-            "scripts\backup_local_data.ps1"
+            "scripts\backup_local_data.ps1",
+            "scripts\verify_local_backup.ps1"
         )
     }
+    Invoke-Checked "backup local data smoke" { Invoke-BackupSmokeTest }
 } finally {
     Pop-Location
 }
